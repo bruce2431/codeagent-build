@@ -209,7 +209,7 @@ description: <何时用/怎么用，一句话，供 Skill 工具自动命中>
 - 产物命名（`scripts/build.ts`，2026-08-14 起）= `<前缀>-<YYYYMMDDHHMMSS>[-<显式 --feature 代号>]`，显式 feature 代号用 `+` 连接（如 `cli-dev-20260814114321-PRIVATE_GATEWAY.exe`）；前缀 dev=`cli-dev`、compile=`dist/cli`。默认两个 feature（VOICE_MODE + BUILTIN_EXPLORE_PLAN_AGENTS）与 `--feature-set=dev-full` 不进文件名。
 - 产物是**自包含单文件二进制**（`bun build --compile --bytecode --packages bundle`），拷到任意项目目录即可用，运行时不需要 src/node_modules。**exe 产物带时间戳是强制规范，不允许覆盖**（禁止覆盖成固定名如 `cli-dev.exe`）；部署/换新 = 直接用新时间戳 exe 启动，旧产物原样保留。
 - codegraph 索引：`Pj16-CodeAgent构建/_agent-src/src/.codegraph/`（相对路径存储，随 src 迁移有效）；MCP 查询带 `projectPath=Pj16-CodeAgent构建/_agent-src/src`。
-- dev 版本号从 git 派生（本目录非 git 仓库时 sha=`unknown`）。
+- dev 版本号从 git 派生（本目录 2026-08-15 起已 git init，sha 取自 git HEAD；仓库仅跟踪 `_agent-src/`、`README.md`、`STANDARDS.md`，其余项目文件由 .gitignore 排除）。
 
 ## 11. 与官方版本的主要差异
 

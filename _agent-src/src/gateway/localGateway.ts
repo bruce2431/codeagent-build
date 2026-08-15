@@ -51,6 +51,9 @@ const sseSizes = new Map<string, { size: number; mtime: number }>()
 const conversationDisplays = new Map<string, { messages: unknown[]; updatedAt: number }>()
 // CLI 侧 sendSessionActivity 上报的活动状态（内存，进程退出即消失）
 const sessionActivity = new Map<string, { status: string; pid: number; cwd?: string; updatedAt: number }>()
+// C1 修复：两个内存 Map 无上限（只增不删）→ 长跑泄漏。加 TTL + 死进程惰性清扫。
+const DISPLAY_TTL_MS = 10 * 60 * 1000 // conversationDisplays 10 分钟无刷新视为过期
+const ACTIVITY_TTL_MS = 10 * 60 * 1000 // sessionActivity 10 分钟无上报视为过期
 
 // ============================================================================
 // 小工具
@@ -197,7 +200,20 @@ function isPidAlive(pid: number): boolean {
   }
 }
 
+// C1 修复：惰性清扫。删除超过 TTL 的展示/活动记录，以及进程已退出的活动记录。
+// 挂在 listSessions / pollSse / 上报入口上（这些是 Map 写入与读取的高频点），
+// 不设独立定时器，避免无前端连接时空转。规模 = 活跃会话数，O(n) 遍历无碍。
+function sweepStaleMaps(now = Date.now()): void {
+  for (const [sid, v] of conversationDisplays) {
+    if (now - v.updatedAt > DISPLAY_TTL_MS) conversationDisplays.delete(sid)
+  }
+  for (const [sid, v] of sessionActivity) {
+    if (now - v.updatedAt > ACTIVITY_TTL_MS || !isPidAlive(v.pid)) sessionActivity.delete(sid)
+  }
+}
+
 async function listSessions(root: string) {
+  sweepStaleMaps()
   const groups = findProjects(root)
   const sessions: unknown[] = []
   for (const g of groups) {
@@ -259,6 +275,103 @@ function readSession(id: string, root: string) {
 }
 
 // ============================================================================
+// 插件/技能清单（便携根扫描；供 MGR 管理视图 GET /api/plugins）
+//  - 已安装插件：.claude/plugins/<name>/.claude-plugin/plugin.json
+//  - 已安装技能：.claude/skills/<name>/SKILL.md 的 frontmatter（name/description）
+//  - 公开市场：.claude/plugins/marketplaces/*/.claude-plugin/marketplace.json 的 plugins[]
+//    （技能类条目按名称含 "skill" 归类；inst=1 表示已安装，便于前端打「已安装」徽标）
+// ============================================================================
+function readJsonObject(p: string): Record<string, unknown> | null {
+  try {
+    return JSON.parse(readFileSync(p, 'utf8')) as Record<string, unknown>
+  } catch {
+    return null
+  }
+}
+
+function parseSkillFrontmatter(text: string): { name: string; description: string } {
+  const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)
+  const out = { name: '', description: '' }
+  if (!m) return out
+  for (const line of m[1].split(/\r?\n/)) {
+    const i = line.indexOf(':')
+    if (i <= 0) continue
+    const key = line.slice(0, i).trim()
+    const val = line.slice(i + 1).trim()
+    if (key === 'name') out.name = val
+    else if (key === 'description') out.description = val
+  }
+  return out
+}
+
+function listPlugins(root: string): Record<string, unknown> {
+  const pluginsDir = join(root, '.claude', 'plugins')
+  const skillsDir = join(root, '.claude', 'skills')
+
+  // 已安装插件（跳过 data/marketplaces 等系统目录与隐藏目录）
+  const personalPlugins: Array<Record<string, unknown>> = []
+  if (isDir(pluginsDir)) {
+    for (const e of readdirSync(pluginsDir, { withFileTypes: true })) {
+      if (!e.isDirectory() || e.name.startsWith('.') || e.name === 'data' || e.name === 'marketplaces') continue
+      const m = readJsonObject(join(pluginsDir, e.name, '.claude-plugin', 'plugin.json'))
+      if (!m) continue
+      personalPlugins.push({
+        n: String(m.name || e.name),
+        d: String(m.description || ''),
+        v: String(m.version || ''),
+        inst: 1,
+      })
+    }
+  }
+
+  // 已安装技能（只有带 SKILL.md 的目录才算技能）
+  const personalSkills: Array<Record<string, unknown>> = []
+  if (isDir(skillsDir)) {
+    for (const e of readdirSync(skillsDir, { withFileTypes: true })) {
+      if (!e.isDirectory() || e.name.startsWith('.')) continue
+      const fp = join(skillsDir, e.name, 'SKILL.md')
+      if (!existsSync(fp)) continue
+      const fm = parseSkillFrontmatter(readFileSync(fp, 'utf8'))
+      personalSkills.push({ n: fm.name || e.name, d: fm.description, inst: 1 })
+    }
+  }
+
+  // 公开市场（官方 marketplace.json 的 plugins[]；技能条目按名称含 skill 归类）
+  const marketPlugins: Array<Record<string, unknown>> = []
+  const marketSkills: Array<Record<string, unknown>> = []
+  const mktDir = join(pluginsDir, 'marketplaces')
+  if (isDir(mktDir)) {
+    const installed = new Set(personalPlugins.map((p) => String(p.n)))
+    for (const e of readdirSync(mktDir, { withFileTypes: true })) {
+      if (!e.isDirectory()) continue
+      const m = readJsonObject(join(mktDir, e.name, '.claude-plugin', 'marketplace.json'))
+      const items = Array.isArray(m?.plugins) ? (m.plugins as Array<{ name?: unknown; description?: unknown }>) : []
+      for (const it of items) {
+        const name = String(it?.name || '')
+        if (!name) continue
+        const rec = { n: name, d: String(it?.description || ''), inst: installed.has(name) ? 1 : 0 }
+        if (/skill/i.test(name)) marketSkills.push(rec)
+        else marketPlugins.push(rec)
+      }
+    }
+  }
+
+  // 已安装置顶（inst 降序优先），同安装状态按名称字母序
+  const sortN = (a: Record<string, unknown>, b: Record<string, unknown>) =>
+    (Number(b.inst) - Number(a.inst)) || String(a.n).localeCompare(String(b.n))
+  personalPlugins.sort(sortN)
+  personalSkills.sort(sortN)
+  marketPlugins.sort(sortN)
+  marketSkills.sort(sortN)
+
+  return {
+    workspace: root,
+    plugins: { personal: personalPlugins, public: marketPlugins },
+    skills: { personal: personalSkills, public: marketSkills },
+  }
+}
+
+// ============================================================================
 // SSE 实时事件（jsonl 变化轮询）
 // ============================================================================
 function pollSse(root: string): void {
@@ -269,6 +382,7 @@ function pollSse(root: string): void {
     }
     return
   }
+  sweepStaleMaps()
   const groups = findProjects(root)
   for (const g of groups) {
     let files: string[] = []
@@ -325,6 +439,16 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
     }
     return
   }
+  if (req.method === 'GET' && url.pathname === '/api/plugins') {
+    try {
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-cache' })
+      res.end(JSON.stringify(listPlugins(root)))
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify({ error: String((e && (e as Error).message) || e) }))
+    }
+    return
+  }
   if (req.method === 'GET' && url.pathname === '/api/session') {
     const id = url.searchParams.get('id')
     if (!id) {
@@ -361,6 +485,7 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
         const msgs = Array.isArray(parsed?.messages) ? parsed.messages : null
         if (sid && msgs) {
           conversationDisplays.set(sid, { messages: msgs, updatedAt: Date.now() })
+          sweepStaleMaps()
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
           res.end(JSON.stringify({ ok: true }))
         } else {
@@ -389,6 +514,7 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
             cwd: parsed.cwd ? String(parsed.cwd) : undefined,
             updatedAt: Date.now(),
           })
+          sweepStaleMaps()
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
           res.end(JSON.stringify({ ok: true }))
         } else {
@@ -571,6 +697,9 @@ export function stopLocalGateway(): boolean {
   sseClients.clear()
   sseSizes.clear()
   ssePrimed = false
+  // C1 修复：停网关时一并清空 CLI 上报的内存缓存（内存数据本就随网关重启失效）
+  conversationDisplays.clear()
+  sessionActivity.clear()
   try {
     wss?.close()
   } catch {

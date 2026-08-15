@@ -23,6 +23,39 @@
     collapse: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 6 15.5 12 9.5 18"/></svg>',
     folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></svg>',
     msg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M5 5h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-8l-5 3.5V19H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z"/></svg>',
+    refresh: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 6.3"/><path d="M20 5v6h-6"/></svg>',
+    gear: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.09a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.09a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/></svg>',
+  }
+
+  // ---------- 管理视图数据源（2026-08-15 起接后端 /api/plugins：真实已安装插件/技能 + 官方市场） ----------
+  // 结构镜像后端返回：{ plugins:{personal,public}, skills:{personal,public} }，每项 {n, d, v, inst}。
+  // 首次进入管理视图 fetch，刷新按钮 force 重新拉取；失败显示错误 + 重试（不回落假数据）。
+  let MGR = null
+  let MGR_LOADING = false
+  let MGR_ERR = ''
+  async function loadMgrData(force) {
+    if (MGR && !force) return MGR
+    MGR_LOADING = true
+    MGR_ERR = ''
+    renderMgrGrid()
+    try {
+      const res = await fetch('/api/plugins')
+      const data = await res.json()
+      if (!data || !data.plugins || !data.skills) throw new Error(data.error || 'bad response')
+      MGR = data
+    } catch (e) {
+      MGR_ERR = e.message || String(e)
+    } finally {
+      MGR_LOADING = false
+      renderMgrGrid()
+    }
+    return MGR
+  }
+  const MGR_PALETTE = ['#5b8ff9', '#61a1c2', '#7b6bd6', '#5aa57a', '#d98a4a', '#c96a6a', '#4aa3a0', '#a06ba8', '#6b8f71', '#b48a5a']
+  function mgrColor(n) {
+    let h = 0
+    for (const c of n) h = (h * 31 + c.charCodeAt(0)) >>> 0
+    return MGR_PALETTE[h % MGR_PALETTE.length]
   }
 
   // ---------- 元素 ----------
@@ -42,7 +75,7 @@
   const modeTabsEl = $('mode-tabs')
 
   // ---------- 状态 ----------
-  const state = { mode: 'list', pt: 'projects', panelOpen: false, folded: false, currentHash: null }
+  const state = { mode: 'list', pt: 'projects', panelOpen: false, folded: false, currentHash: null, mgr: null, mgrView: { kind: 'plugins', cat: 'public', q: '' } }
   let ALL = []
   let timer = null
   // 阶段1 实时同步：SSE 变更驱动的去重/防抖状态
@@ -350,9 +383,17 @@
 
   function route() {
     const r = parseRoute()
+    // 任何导航（route 被调用）→ 退出管理视图；管理视图只由 mgr-tab 点击直接 renderMgr 进入，不走 route
+    state.mgr = null
+    syncMgrTabs()
     renderRecent()
     if (r.name === 'home') renderHome()
     else renderSession(r.hash)
+  }
+
+  // 同步管理 tab 高亮（route/renderRecent 前调用）
+  function syncMgrTabs() {
+    document.querySelectorAll('.mgr-tab').forEach((x) => x.classList.toggle('on', x.dataset.mgr === state.mgr))
   }
 
   function navigate(hash) {
@@ -368,11 +409,13 @@
     setChar(1) // 首页空态 → 默认形象
     inputWrap.classList.remove('docked')
     chatArea.classList.remove('in-session')
+    chatArea.classList.remove('mgr-on')
   }
 
   function renderSession(hash) {
     stopLiveFoldTimer()
     pinRelease()
+    chatArea.classList.remove('mgr-on')
     const s = findSession(hash)
     state.currentHash = hash
     if (!s) {
@@ -442,6 +485,54 @@
     const d = typeof detail === 'string' && detail ? ' · ' + String(detail).slice(0, 70) : ''
     return `<span class="tool-line"><span class="t-ico">⚙</span>${esc(zh)}${esc(d)}</span>`
   }
+
+  // ---- 文件变更汇总卡片（Codex 风格：+N 绿 / -N 红）----
+  // 数据源：源码 Edit/Write 工具在 tool_result 文本末尾追加真实增删行数 `(+N -M)`，
+  // 前端从文本解析出 {file, added, removed}，按段聚合去重，回合/段结束时渲染圆角卡片。
+  function baseName(p) {
+    const s = String(p || '').replace(/\\/g, '/')
+    return s.split('/').pop() || s
+  }
+  // 从 tool_result 文本提取文件路径与增删行数（Edit/Write 统一格式）
+  function parseFileChange(text) {
+    if (!text) return null
+    const t = String(text).trim()
+    const m = /\([+-](\d+)\s*[+-](\d+)\)\s*\.?\s*$/.exec(t)
+    if (!m) return null
+    let path = null
+    const fm = /The file\s+(.+?)\s+has been updated/.exec(t)
+    if (fm) path = fm[1]
+    else {
+      const cm = /File created successfully at:\s+(.+?)\s*\(/.exec(t)
+      if (cm) path = cm[1]
+    }
+    if (!path) return null
+    return { path: path.trim(), added: Number(m[1]), removed: Number(m[2]) }
+  }
+  function mergeChanges(map, fc) {
+    const prev = map.get(fc.path)
+    map.set(fc.path, prev ? { added: prev.added + fc.added, removed: prev.removed + fc.removed } : { added: fc.added, removed: fc.removed })
+  }
+  function renderChangeCardHtml(changes) {
+    if (!changes || !changes.size) return ''
+    let totalAdd = 0, totalDel = 0
+    let rows = ''
+    for (const [path, c] of changes) {
+      totalAdd += c.added
+      totalDel += c.removed
+      rows += `<div class="ch-row"><span class="ch-file">${esc(baseName(path))}</span><span class="ch-add">+${c.added}</span><span class="ch-del">-${c.removed}</span></div>`
+    }
+    return `<div class="msg change-card"><div class="ch-title"><span class="ch-count">${changes.size}个文件已更改</span><span class="ch-add">+${totalAdd}</span><span class="ch-del">-${totalDel}</span><button class="ch-toggle" title="收起/展开文件列表">▾</button></div><div class="ch-list">${rows}</div></div>`
+  }
+  // 卡片右上角隐藏按钮：点击切换列表收起/展开（事件委托，innerHTML 重建不受影响）
+  document.addEventListener('click', (e) => {
+    const btn = e.target && e.target.closest ? e.target.closest('.ch-toggle') : null
+    if (!btn || !messagesEl.contains(btn)) return
+    const card = btn.closest('.change-card')
+    if (!card) return
+    const collapsed = card.classList.toggle('collapsed')
+    btn.textContent = collapsed ? '▸' : '▾'
+  })
 
   // 系统注入文本（转录把系统消息记成 type:user；后端已标 role:'system'，前端再兜底滤一层）
   const SYNTH_RE = [
@@ -562,6 +653,9 @@
         // 段被中断（无回复）：已处理折叠独立展示
         html += foldHtml
       }
+
+      // 段末文件变更汇总卡片（回合内 Edit/Write 的真实增删行数）
+      if (s.changes && s.changes.size) html += renderChangeCardHtml(s.changes)
     }
 
     for (let i = 0; i < messages.length; i++) {
@@ -588,15 +682,16 @@
       }
       if (isRealUser(m)) {
         closeSeg(false)
-        seg = { user: m, items: [], texts: [], lastTs: null, key: i, thinks: [], lastTool: null }
+        seg = { user: m, items: [], texts: [], lastTs: null, key: i, thinks: [], lastTool: null, changes: new Map() }
         continue
       }
-      if (!seg) seg = { user: null, items: [], texts: [], lastTs: null, key: i, thinks: [], lastTool: null }
+      if (!seg) seg = { user: null, items: [], texts: [], lastTs: null, key: i, thinks: [], lastTool: null, changes: new Map() }
       const hasText = m.blocks.some((b) => b.kind === 'text' && b.text && b.text.trim())
       for (const b of m.blocks) {
         // 思考块先进 items 占位并记下索引，closeSeg 时只保留本回合最后一个（对齐 CLI hidePastThinking）
         if (b.kind === 'thinking') { seg.thinks.push(seg.items.length); seg.items.push(processTextHtml(b.text)) }
         else if (b.kind === 'tool_use') { seg.items.push(toolLine(b)); seg.lastTool = b.name } // 记录段内最近工具 → 供形象切换
+        else if (b.kind === 'tool_result') { const fc = parseFileChange(b.text); if (fc) mergeChanges(seg.changes, fc) } // 聚合文件变更 → 段末汇总卡片
       }
       if (hasText) {
         seg.texts.push({ text: m.blocks.filter((b) => b.kind === 'text').map((b) => b.text).join('\n'), ts: m.timestamp })
@@ -660,6 +755,119 @@
     })
     renderBubble()
     renderSearch()
+  }
+
+  // 管理视图（插件/技能预览，Codex 风格）：渲染到主聊天区（侧栏会话列表保持不变）。
+  // 插件与技能预览都从「插件」入口进入，顶部插件/技能切换；数据源 = 网关 /api/plugins 实时扫描。
+  // 重渲保留滚动位置（切换 kind/cat 时内容高度变化，避免 scrollTop 被重置成可见跳动）。
+  function renderMgr() {
+    stopLiveFoldTimer()
+    pinRelease()
+    state.currentHash = null
+    const scrollEl = document.querySelector('#chat-scroll')
+    const prevTop = scrollEl ? scrollEl.scrollTop : 0
+    // 「项目」入口：预览未涉及，先占位（列表数据源待接后端接口）
+    if (state.mgr === 'projects') {
+      messagesEl.innerHTML =
+        '<div class="mgr-pane"><div class="mgr-head"><h2 class="mgr-title">项目</h2>' +
+        '<div class="mgr-sub">管理内容待接入</div></div>' +
+        '<div class="mgr-foot">预览模式 · 数据源待接后端接口</div></div>'
+      inputWrap.classList.remove('docked')
+      chatArea.classList.remove('in-session')
+      chatArea.classList.add('mgr-on')
+      return
+    }
+    const v = state.mgrView
+    const kindName = v.kind === 'skills' ? '技能' : '插件'
+    const sub =
+      v.kind === 'skills'
+        ? '个人 = 已安装技能（扫描便携根 .claude/skills）· 公开 = 官方市场技能'
+        : '个人 = 已安装插件（扫描便携根 .claude/plugins）· 公开 = 官方市场插件'
+    messagesEl.innerHTML =
+      '<div class="mgr-pane">' +
+      '<div class="mgr-top">' +
+      '<div class="mgr-kind">' +
+      `<button class="mgr-kind-btn${v.kind === 'plugins' ? ' on' : ''}" data-kind="plugins">插件</button>` +
+      `<button class="mgr-kind-btn${v.kind === 'skills' ? ' on' : ''}" data-kind="skills">技能</button>` +
+      '</div>' +
+      '<div class="mgr-acts">' +
+      `<button class="mgr-act" title="刷新">${I.refresh}</button>` +
+      `<button class="mgr-act" title="设置">${I.gear}</button>` +
+      '</div>' +
+      '</div>' +
+      `<div class="mgr-head"><h2 class="mgr-title">${kindName}</h2><div class="mgr-sub">${sub}</div></div>` +
+      `<div class="mgr-search">${I.mag}<input id="mgr-q" type="text" placeholder="${v.kind === 'skills' ? '搜索技能…' : '搜索插件…'}" value="${esc(v.q)}"></div>` +
+      '<div class="mgr-cats">' +
+      `<button class="mgr-cat${v.cat === 'public' ? ' on' : ''}" data-cat="public">公开</button>` +
+      `<button class="mgr-cat${v.cat === 'personal' ? ' on' : ''}" data-cat="personal">个人</button>` +
+      '</div>' +
+      '<div class="mgr-grid" id="mgr-grid"></div>' +
+      '<div class="mgr-foot">数据源：网关 /api/plugins 实时扫描</div>' +
+      '</div>'
+    inputWrap.classList.remove('docked')
+    chatArea.classList.remove('in-session')
+    chatArea.classList.add('mgr-on')
+    renderMgrGrid()
+    loadMgrData(false) // 真实数据：首次进入拉取，刷新按钮 force 重拉
+    // 恢复滚动位置（scroll-behavior:smooth 会让赋值动画，临时切 auto 立即归位）
+    if (scrollEl) {
+      const old = scrollEl.style.scrollBehavior
+      scrollEl.style.scrollBehavior = 'auto'
+      scrollEl.scrollTop = prevTop
+      scrollEl.style.scrollBehavior = old
+    }
+    const pane = messagesEl.querySelector('.mgr-pane')
+    pane.querySelectorAll('.mgr-kind-btn').forEach((b) =>
+      b.addEventListener('click', () => {
+        v.kind = b.dataset.kind
+        renderMgr()
+      }),
+    )
+    pane.querySelectorAll('.mgr-cat').forEach((b) =>
+      b.addEventListener('click', () => {
+        v.cat = b.dataset.cat
+        renderMgr()
+      }),
+    )
+    // 刷新按钮：强制重新拉取后端真实清单
+    const refresh = pane.querySelector('.mgr-act[title="刷新"]')
+    if (refresh) refresh.addEventListener('click', () => loadMgrData(true))
+    const q = $('mgr-q')
+    if (q) q.addEventListener('input', () => { v.q = q.value; renderMgrGrid() })
+  }
+
+  // 管理视图：插件/技能卡片网格（按 kind + cat + 搜索词过滤；数据源 = 后端 /api/plugins）
+  function renderMgrGrid() {
+    const v = state.mgrView
+    const grid = $('mgr-grid')
+    if (!grid) return
+    const label = v.kind === 'skills' ? '技能' : '插件'
+    if (MGR_LOADING) {
+      grid.innerHTML = '<div class="mgr-empty">加载真实清单中…</div>'
+      return
+    }
+    if (MGR_ERR) {
+      grid.innerHTML =
+        '<div class="mgr-empty">清单加载失败：' + esc(MGR_ERR) +
+        '<br><button class="mgr-retry" id="mgr-retry">重试</button></div>'
+      const retry = $('mgr-retry')
+      if (retry) retry.addEventListener('click', () => loadMgrData(true))
+      return
+    }
+    const src = (MGR && MGR[v.kind] && MGR[v.kind][v.cat]) || []
+    const q = (v.q || '').trim().toLowerCase()
+    const rows = q ? src.filter((x) => x.n.toLowerCase().includes(q) || x.d.toLowerCase().includes(q)) : src
+    grid.innerHTML = rows.length
+      ? rows.map(mgrCardHtml).join('')
+      : `<div class="mgr-empty">没有匹配的${label}</div>`
+  }
+  function mgrCardHtml(x) {
+    const badge = x.inst ? '<span class="inst-badge">已安装</span>' : ''
+    return (
+      `<div class="mgr-card"><div class="mgr-ic" style="background:${mgrColor(x.n)}">${esc((x.n[0] || '?').toUpperCase())}</div>` +
+      `<div class="mgr-meta"><div class="mgr-name">${esc(x.n)}${badge}</div><div class="mgr-desc">${esc(x.d)}</div></div>` +
+      '<button class="mgr-more" title="更多">…</button></div>'
+    )
   }
 
   function renderList() {
@@ -794,6 +1002,17 @@
       document.querySelectorAll('.mtab').forEach((x) => x.classList.toggle('on', x === b))
       state.pt = b.dataset.pt
       renderProject()
+    }),
+  )
+
+  // 管理入口 tab（插件，含技能预览）：点击 → 主区切换管理视图（侧栏会话列表不变）；再点已选中 tab → 退出管理
+  document.querySelectorAll('.mgr-tab').forEach((b) =>
+    b.addEventListener('click', () => {
+      const k = b.dataset.mgr
+      state.mgr = state.mgr === k ? null : k
+      syncMgrTabs()
+      if (state.mgr) renderMgr()
+      else route()
     }),
   )
 
@@ -1159,6 +1378,7 @@
   let proc = null // 当前实时 .done-fold 元素
   let procStart = 0 // 本次处理开始时间（ms）
   let procTimer = null // 计时器 id
+  let liveChanges = new Map() // 当前回合文件变更聚合（tool_result 解析 → result 时渲染卡片）
   function procLabel(verb, dur) {
     return `<span class="d-chev">▸</span>${verb}${dur ? `<span class="d-dur"> ${dur}</span>` : ''}`
   }
@@ -1322,7 +1542,13 @@
     } else if (t === 'user') {
       const content = (m.message && m.message.content) || []
       const tr = content.filter((c) => c && c.type === 'tool_result')
-      if (tr.length) addToolResult(tr.map((c) => (typeof c.content === 'string' ? c.content : '')).join('\n'))
+      for (const c of tr) {
+        const text = typeof c.content === 'string' ? c.content : ''
+        if (!text) continue
+        addToolResult(text)
+        const fc = parseFileChange(text)
+        if (fc) mergeChanges(liveChanges, fc) // 聚合文件变更 → 回合结束渲染汇总卡片
+      }
     } else if (t === 'stream_event') {
       const se = m.event || {}
       if (se.type === 'content_block_delta') {
@@ -1338,6 +1564,8 @@
       procClose()
       cur = null
       pinMaybeRelease() // 回合结束且回复填满视口 → 平滑解除钉顶；短回复保持占位
+      // 回合结束：渲染本回合文件变更汇总卡片（Codex 风格 +N 绿 / -N 红）
+      if (liveChanges && liveChanges.size) { appendMsg(renderChangeCardHtml(liveChanges)); liveChanges = new Map() }
     }
   }
 

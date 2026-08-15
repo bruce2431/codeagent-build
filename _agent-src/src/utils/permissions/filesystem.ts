@@ -1012,7 +1012,11 @@ export function matchingRuleForInput(
     // it as a relative-style path: pure-glob rules like Read(**) keep matching
     // anywhere, while concrete relative patterns (e.g. "src/**") don't match
     // unrelated absolute paths.
-    if (root === null && relativePathStr.startsWith(`..${DIR_SEP}`)) {
+    if (
+      root === null &&
+      (relativePathStr === '..' ||
+        relativePathStr.startsWith(`..${DIR_SEP}`))
+    ) {
       const absoluteRelative = fileAbsolutePath
         .replace(/^\/[A-Za-z]:\//, '')
         .replace(/^\//, '')
@@ -1028,7 +1032,7 @@ export function matchingRuleForInput(
       continue
     }
 
-    if (relativePathStr.startsWith(`..${DIR_SEP}`)) {
+    if (relativePathStr === '..' || relativePathStr.startsWith(`..${DIR_SEP}`)) {
       // The path is outside the root, so ignore it
       continue
     }

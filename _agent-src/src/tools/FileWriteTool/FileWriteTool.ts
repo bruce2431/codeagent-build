@@ -16,7 +16,11 @@ import type { ToolUseContext } from '../../Tool.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { getCwd } from '../../utils/cwd.js'
 import { logForDebugging } from '../../utils/debug.js'
-import { countLinesChanged, getPatchForDisplay } from '../../utils/diff.js'
+import {
+  countLinesChanged,
+  getPatchForDisplay,
+  sumLinesChanged,
+} from '../../utils/diff.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import { isENOENT } from '../../utils/errors.js'
 import { getFileModificationTime, writeTextContent } from '../../utils/file.js'
@@ -415,20 +419,27 @@ export const FileWriteTool = buildTool({
       data,
     }
   },
-  mapToolResultToToolResultBlockParam({ filePath, type }, toolUseID) {
+  mapToolResultToToolResultBlockParam(data: Output, toolUseID) {
+    const { filePath, type, content, structuredPatch } = data
     switch (type) {
-      case 'create':
+      case 'create': {
+        // 新文件：全行算新增
+        const { added } = sumLinesChanged([], content)
         return {
           tool_use_id: toolUseID,
           type: 'tool_result',
-          content: `File created successfully at: ${filePath}`,
+          content: `File created successfully at: ${filePath} (+${added} -0)`,
         }
-      case 'update':
+      }
+      case 'update': {
+        // 真实增删行数（结构化 patch 统计），供遥测端「N 个文件已更改 +N -N」汇总卡片展示
+        const { added, removed } = sumLinesChanged(structuredPatch)
         return {
           tool_use_id: toolUseID,
           type: 'tool_result',
-          content: `The file ${filePath} has been updated successfully.`,
+          content: `The file ${filePath} has been updated successfully (+${added} -${removed}).`,
         }
+      }
     }
   },
 } satisfies ToolDef<InputSchema, Output>)

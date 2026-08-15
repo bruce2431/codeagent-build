@@ -41,6 +41,32 @@ function unescapeFromDiff(s: string): string {
 }
 
 /**
+ * 纯函数：统计 patch 的增删行数。新文件（patch 空 + 传入全文）全算新增。
+ * 供工具 mapResult 与 countLinesChanged 复用，避免两套统计口径。
+ * @param patch Array of diff hunks
+ * @param newFileContent Optional content string for new files
+ */
+export function sumLinesChanged(
+  patch: StructuredPatchHunk[],
+  newFileContent?: string,
+): { added: number; removed: number } {
+  if (patch.length === 0 && newFileContent) {
+    // For new files, count all lines as additions
+    return { added: newFileContent.split(/\r?\n/).length, removed: 0 }
+  }
+  return {
+    added: patch.reduce(
+      (acc, hunk) => acc + count(hunk.lines, _ => _.startsWith('+')),
+      0,
+    ),
+    removed: patch.reduce(
+      (acc, hunk) => acc + count(hunk.lines, _ => _.startsWith('-')),
+      0,
+    ),
+  }
+}
+
+/**
  * Count lines added and removed in a patch and update the total
  * For new files, pass the content string as the second parameter
  * @param patch Array of diff hunks
@@ -50,22 +76,10 @@ export function countLinesChanged(
   patch: StructuredPatchHunk[],
   newFileContent?: string,
 ): void {
-  let numAdditions = 0
-  let numRemovals = 0
-
-  if (patch.length === 0 && newFileContent) {
-    // For new files, count all lines as additions
-    numAdditions = newFileContent.split(/\r?\n/).length
-  } else {
-    numAdditions = patch.reduce(
-      (acc, hunk) => acc + count(hunk.lines, _ => _.startsWith('+')),
-      0,
-    )
-    numRemovals = patch.reduce(
-      (acc, hunk) => acc + count(hunk.lines, _ => _.startsWith('-')),
-      0,
-    )
-  }
+  const { added: numAdditions, removed: numRemovals } = sumLinesChanged(
+    patch,
+    newFileContent,
+  )
 
   addToTotalLinesChanged(numAdditions, numRemovals)
 

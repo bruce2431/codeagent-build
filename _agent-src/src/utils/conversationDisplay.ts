@@ -9,6 +9,7 @@
  * `Messages.tsx` 与 REPL 的导出共用这里，显示 = 导出，永不跑偏。
  */
 
+import { COMMAND_MESSAGE_TAG } from '../constants/xml.js'
 import { isNotEmptyMessage, normalizeMessages, shouldShowUserMessage } from './messages.js'
 
 export type DisplayBlock = {
@@ -123,6 +124,11 @@ export function filterConversationForDisplay(messages: readonly SourceMessage[],
       const blocks: DisplayBlock[] = []
       for (const b of content) {
         const db = toDisplayBlock(b)
+        // 遥测端不渲染 slash command（/xxx）：命令消息的 text 块是
+        // <command-name>/xxx</command-name>… 的 XML，CLI REPL 侧由 UserCommandMessage 渲染，
+        // 遥测端直接剔除（既不显示也不参与段切分）。判定对齐 CLI UserTextMessage：
+        // 文本含 <command-message> 标签即命令消息（含 skill-format 技能命令）。
+        if (db?.kind === 'text' && db.text && db.text.includes(`<${COMMAND_MESSAGE_TAG}>`)) continue
         if (db) blocks.push(db)
       }
       if (blocks.length) out.push({ role: 'user', blocks, timestamp })

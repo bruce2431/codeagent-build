@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>floria</title>
+  <meta name="theme-color" content="#ffffff" />
+  <link rel="manifest" href="manifest.json" />
+  <link rel="icon" href="icon.ico" type="image/x-icon" />
+  <link rel="apple-touch-icon" href="icon.ico" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<div id="app">
+
+  <!-- 左侧侧栏：rail（折叠态 64px 极简）+ panel（展开态 280px） -->
+  <div id="sidebar">
+    <nav id="rail">
+      <div id="rail-top">
+        <button id="rail-logo" class="rail-ico" title="floria · 展开侧栏"></button>
+      </div>
+      <div id="rail-mid">
+        <button id="rail-toggle" class="rail-ico" title="展开侧栏"></button>
+        <button id="rail-new" class="rail-ico" title="新建对话（回到首页）"></button>
+        <button id="rail-search" class="rail-ico" title="搜索会话"></button>
+        <button id="rail-bubble" class="rail-ico" title="最近会话"></button>
+      </div>
+      <div id="rail-bottom">
+        <div id="rail-avatar" title="只读查看 · 本地工作区">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 12a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9zm0 2c-4.4 0-8 2.7-8 6v2h16v-2c0-3.3-3.6-6-8-6z"/></svg>
+        </div>
+      </div>
+    </nav>
+    <aside id="panel">
+      <div class="panel-inner">
+        <div class="panel-header">
+          <a class="floria-logo" href="#/">
+            <img class="brand-ico" src="icon.ico" alt="Floria" />
+            <span>Floria</span><span id="floria-conn"></span>
+          </a>
+          <div class="panel-actions">
+            <button id="panel-search" class="act-btn" title="搜索会话"></button>
+            <button id="panel-collapse" class="act-btn" title="折叠侧栏"></button>
+          </div>
+        </div>
+        <div id="recent">
+          <div id="recent-head">
+            <div id="recent-left">
+              <span id="recent-label">最近</span>
+              <button id="recent-fold" class="fold-btn" title="折叠/展开会话">▼</button>
+            </div>
+            <div id="recent-right">
+              <button id="recent-more" class="rh-btn" title="整理会话">…</button>
+              <button id="recent-write" class="rh-btn" title="新建对话（回到首页）"></button>
+            </div>
+            <div id="organize-pop" class="popup">
+              <div class="org-title">整理会话</div>
+              <div class="org-opts">
+                <button class="org-opt on" data-mode="list"><span>在一个列表中</span><span class="check">✓</span></button>
+                <button class="org-opt" data-mode="project"><span>按项目展开</span><span class="check">✓</span></button>
+              </div>
+            </div>
+          </div>
+          <div class="mode-tabs hidden" id="mode-tabs">
+            <button class="mtab on" data-pt="projects">项目</button>
+            <button class="mtab" data-pt="chats">聊天</button>
+          </div>
+          <div id="recent-body"></div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- 移动端抽屉遮罩（≤720px 侧栏滑入时出现，点空白关闭） -->
+  <div id="scrim"></div>
+
+  <!-- 主聊天区 -->
+  <main id="chat-area">
+    <button id="menu-btn" title="打开侧栏" aria-label="打开侧栏">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+    </button>
+    <!-- 角色形象：左侧空缺处展示，随 AI 操作切换（读/搜=3、写/编=2、执行/命令=4、其余=1）。
+         仅已开始的对话（#chat-area.in-session）+ 侧栏折叠（#sidebar 无 .open）+ 宽屏时显示，
+         首页新对话不显示；pointer-events:none 不挡交互 -->
+    <img id="char" src="char/1.jpg" alt="AI 形象" draggable="false" />
+    <div id="chat-scroll"><div id="messages"></div></div>
+    <div id="empty-hint">
+      <img class="empty-ico" src="icon.ico" alt="" />
+    </div>
+    <div id="input-wrap">
+      <div id="input-bar">
+        <button id="upload-btn" title="上传文件（只读）" aria-label="上传文件"></button>
+        <textarea id="input" rows="1" placeholder="只读查看 · 无法发送" disabled></textarea>
+        <button id="think-btn" title="思考（只读）" aria-label="思考">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2A2.5 2.5 0 0 0 7 4.5v.1A3.5 3.5 0 0 0 4.5 8v.1A3.5 3.5 0 0 0 3 14.5a3.5 3.5 0 0 0 3.5 3.5v.1A3.5 3.5 0 0 0 9.5 22a2.5 2.5 0 0 0 4.7-1.1A3.5 3.5 0 0 0 17 17.5v-.1a3.5 3.5 0 0 0 2.5-6.4 3.5 3.5 0 0 0-2.5-6.4 2.5 2.5 0 0 0-4.7-1A2.5 2.5 0 0 0 9.5 2z"/></svg><span>思考</span>
+        </button>
+        <button id="mic-btn" title="语音输入（只读）" aria-label="语音输入"></button>
+        <button id="send-btn" title="只读查看 · 无法发送" aria-label="发送"></button>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- 聊天气泡弹层（最近会话，贴在 rail 附近） -->
+<div id="bubble-pop" class="popup"></div>
+
+<!-- 搜索覆盖层 -->
+<div id="search-overlay">
+  <div id="search-box">
+    <div class="s-top">
+      <span class="s-title">搜索</span>
+      <button id="search-close" title="关闭">✕</button>
+    </div>
+    <div class="search-row"><span id="s-mag"></span><input id="search-input" placeholder="搜索全部对话…"></div>
+    <div id="search-results"></div>
+  </div>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+<script src="app.js"></script>
+</body>
+</html>

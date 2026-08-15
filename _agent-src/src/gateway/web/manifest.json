@@ -1,0 +1,16 @@
+{
+  "name": "floria",
+  "short_name": "floria",
+  "description": "查看 Claude Code 会话进展（全局根 + 各项目）",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
+  "lang": "zh-CN",
+  "icons": [
+    { "src": "icon.ico", "sizes": "256x256", "type": "image/x-icon" },
+    { "src": "icon.ico", "sizes": "512x512", "type": "image/x-icon", "purpose": "any maskable" }
+  ]
+}

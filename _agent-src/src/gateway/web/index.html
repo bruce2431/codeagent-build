@@ -81,7 +81,8 @@
     </button>
     <!-- 角色形象：左侧空缺处展示，随 AI 操作切换（读/搜=3、写/编=2、执行/命令=4、其余=1）。
          仅已开始的对话（#chat-area.in-session）+ 侧栏折叠（#sidebar 无 .open）+ 宽屏时显示，
-         首页新对话不显示；pointer-events:none 不挡交互 -->
+         首页新对话不显示；pointer-events:none 不挡交互。
+         2026-08-15 临时隐藏中：styles.css #char display:none（代码保留空跑），删除该行即恢复 -->
     <img id="char" src="char/1.jpg" alt="AI 形象" draggable="false" />
     <div id="chat-scroll"><div id="messages"></div></div>
     <div id="empty-hint">

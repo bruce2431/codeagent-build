@@ -35,11 +35,12 @@
   let MGR_ERR = ''
   async function loadMgrData(force) {
     if (MGR && !force) return MGR
+    if (needToken()) return null // token 门锁定态：不发起数据请求（hideGate 解锁后刷新）
     MGR_LOADING = true
     MGR_ERR = ''
     renderMgrGrid()
     try {
-      const res = await fetch('/api/plugins')
+      const res = await fetch(apiUrl('/api/plugins'))
       const data = await res.json()
       if (!data || !data.plugins || !data.skills) throw new Error(data.error || 'bad response')
       MGR = data
@@ -75,7 +76,7 @@
   const modeTabsEl = $('mode-tabs')
 
   // ---------- 状态 ----------
-  const state = { mode: 'list', pt: 'projects', panelOpen: false, folded: false, currentHash: null, mgr: null, mgrView: { kind: 'plugins', cat: 'public', q: '' } }
+  const state = { mode: 'list', pt: 'projects', panelOpen: false, folded: false, currentHash: null, mgr: null, preview: null, mgrView: { kind: 'plugins', cat: 'public', q: '' } }
   let ALL = []
   let timer = null
   // 阶段1 实时同步：SSE 变更驱动的去重/防抖状态
@@ -114,6 +115,11 @@
     s = s.replace(/~~([^~]+)~~/g, '<del>$1</del>')
     s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, t, u) => (MD_LINK_OK(u) ? `<a href="${u}" target="_blank" rel="noopener">${t}</a>` : t))
     s = s.replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, (_, p, u) => p + `<a href="${u}" target="_blank" rel="noopener">${u}</a>`)
+    // @ 提及令牌 → chip（[插件:名称] / [会话:名称]，名称已转义）。
+    // ⚠️ 必须在行内代码还原（下一行）之前替换：行内代码 `[插件:X]` 已抽成占位符 \u0000N\u0000，
+    // 令牌替换命中不到代码内文本，避免 chip 嵌套进 <code>（白胶囊+灰代码气泡叠一起）。
+    s = s.replace(MENTION_PLUGIN_RE, (_, n) => mentionChipHtml('plugin', n))
+         .replace(MENTION_SESSION_RE, (_, n) => mentionChipHtml('session', n))
     s = s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code>${codes[+i]}</code>`)
     return s
   }
@@ -211,8 +217,9 @@
 
   // ---------- 数据 ----------
   async function loadSessions() {
+    if (needToken()) return // token 门锁定态：不发请求（hideGate 解锁后刷新）
     try {
-      const res = await fetch('/api/sessions')
+      const res = await fetch(apiUrl('/api/sessions'))
       const data = await res.json()
       if (!Array.isArray(data.sessions)) throw new Error(data.error || 'bad response')
       ALL = data.sessions
@@ -225,7 +232,8 @@
   }
 
   async function fetchMessages(sessionId) {
-    const res = await fetch('/api/session?id=' + encodeURIComponent(sessionId))
+    if (needToken()) return { messages: [] } // token 门锁定态
+    const res = await fetch(apiUrl('/api/session?id=' + encodeURIComponent(sessionId)))
     const data = await res.json()
     if (!Array.isArray(data.messages)) throw new Error(data.error || 'bad response')
     // CLI 已按「复用已有实现」原则导出过滤后的会话展示（display，见 conversationDisplay.ts /
@@ -239,7 +247,8 @@
   // 只读视图下最后一段「处理中（尚无回复）」的已处理折叠默认展开，回复落地后自动收起。
   function initLive() {
     if (!('EventSource' in window)) return
-    try { live.es = new EventSource('/api/events') } catch { return }
+    if (needToken()) return // token 门锁定态：不建 SSE（避免 401 重连刷屏，hideGate 解锁后再建）
+    try { live.es = new EventSource(apiUrl('/api/events')) } catch { return }
     live.es.onmessage = (e) => {
       let ev
       try { ev = JSON.parse(e.data) } catch { return }
@@ -260,8 +269,9 @@
     if (live.listT) return
     live.listT = setTimeout(async () => {
       live.listT = null
+      if (needToken()) return // token 门锁定态
       try {
-        const res = await fetch('/api/sessions')
+        const res = await fetch(apiUrl('/api/sessions'))
         const data = await res.json()
         if (!Array.isArray(data.sessions)) return
         const top = data.sessions[0]
@@ -382,9 +392,11 @@
   }
 
   function route() {
+    closeMentionPop()
     const r = parseRoute()
     // 任何导航（route 被调用）→ 退出管理视图；管理视图只由 mgr-tab 点击直接 renderMgr 进入，不走 route
     state.mgr = null
+    state.preview = null
     syncMgrTabs()
     renderRecent()
     if (r.name === 'home') renderHome()
@@ -627,7 +639,7 @@
 
       if (s.user) {
         const m = s.user
-        const txt = m.blocks.filter((b) => b.kind === 'text').map((b) => b.text).join('\n')
+        const txt = m.blocks.filter((b) => b.kind === 'text').map((b) => b.text).join('')
         const hasImg = m.blocks.some((b) => b.kind === 'image')
         const body = hasImg && !txt ? '[图片]' : txt
         html += `<div class="msg user" data-m="${s.key}" data-t="u"><div class="body">${mdHtml(body)}</div></div>`
@@ -694,7 +706,7 @@
         else if (b.kind === 'tool_result') { const fc = parseFileChange(b.text); if (fc) mergeChanges(seg.changes, fc) } // 聚合文件变更 → 段末汇总卡片
       }
       if (hasText) {
-        seg.texts.push({ text: m.blocks.filter((b) => b.kind === 'text').map((b) => b.text).join('\n'), ts: m.timestamp })
+        seg.texts.push({ text: m.blocks.filter((b) => b.kind === 'text').map((b) => b.text).join(''), ts: m.timestamp })
       }
       // finished = 该消息是「纯文本回复」（无 tool_use）= 段已收尾；
       // 末尾仍在调工具/思考（含旁白文本后再跟 tool_use）= 处理中
@@ -721,8 +733,7 @@
     // 会话状态点：busy=绿（正在运行）· idle/waiting=红（运行暂停）· 无=透明（CLI 未打开）
     const dotCls = s.state === 'busy' ? ' st-busy' : (s.state === 'idle' || s.state === 'waiting') ? ' st-wait' : ''
     return `<button class="sess-item${on ? ' on' : ''}" data-hash="${esc(hashOf(s))}" title="${esc(s.file)}">
-      <span class="dot${dotCls}"></span><span class="title">${esc(s.title)}</span>
-      <span class="cnt">${s.messageCount}</span><span class="time">${relTime(s.updatedAt)}</span></button>`
+      <span class="dot${dotCls}"></span><span class="title">${esc(s.title)}</span></button>`
   }
 
   function bindSessClicks(root) {
@@ -761,20 +772,34 @@
   // 插件与技能预览都从「插件」入口进入，顶部插件/技能切换；数据源 = 网关 /api/plugins 实时扫描。
   // 重渲保留滚动位置（切换 kind/cat 时内容高度变化，避免 scrollTop 被重置成可见跳动）。
   function renderMgr() {
+    closeMentionPop()
     stopLiveFoldTimer()
     pinRelease()
     state.currentHash = null
+    state.preview = null
     const scrollEl = document.querySelector('#chat-scroll')
     const prevTop = scrollEl ? scrollEl.scrollTop : 0
-    // 「项目」入口：预览未涉及，先占位（列表数据源待接后端接口）
+    // 「项目」入口：仿照插件布设，每个项目胶囊占据一整行（数据源 = 会话按 projectLabel 分组）
     if (state.mgr === 'projects') {
+      // 顶部结构与插件视图完全同构（mgr-top mgr-kind + mgr-cats 占位），避免切换跳动；无刷新/设置按钮
+      const projCount = new Set(ALL.filter((s) => s.projectScope === 'project' && s.projectLabel).map((s) => s.projectLabel)).size
       messagesEl.innerHTML =
-        '<div class="mgr-pane"><div class="mgr-head"><h2 class="mgr-title">项目</h2>' +
-        '<div class="mgr-sub">管理内容待接入</div></div>' +
-        '<div class="mgr-foot">预览模式 · 数据源待接后端接口</div></div>'
+        '<div class="mgr-pane">' +
+        // 空 mgr-top 占位：与插件视图「插件/技能」切换行等高（.mgr-top min-height），避免切换时标题跳动
+        '<div class="mgr-top"></div>' +
+        '<div class="mgr-head"><h2 class="mgr-title">项目</h2>' +
+        '<div class="mgr-sub">按项目文件夹分组 · 会话按最近活跃排序</div></div>' +
+        `<div class="mgr-search">${I.mag}<input id="mgr-pq" type="text" placeholder="搜索项目…" value="${esc(state.mgrView.q)}"></div>` +
+        `<div class="mgr-cats"><span class="mgr-cat on">共 ${projCount} 个项目</span></div>` +
+        '<div class="mgr-list" id="mgr-list"></div>' +
+        '<div class="mgr-foot">数据源：会话按项目分组（/api/sessions）</div>' +
+        '</div>'
       inputWrap.classList.remove('docked')
       chatArea.classList.remove('in-session')
       chatArea.classList.add('mgr-on')
+      renderMgrProj()
+      const pq = $('mgr-pq')
+      if (pq) pq.addEventListener('input', () => { state.mgrView.q = pq.value; renderMgrProj() })
       return
     }
     const v = state.mgrView
@@ -789,10 +814,6 @@
       '<div class="mgr-kind">' +
       `<button class="mgr-kind-btn${v.kind === 'plugins' ? ' on' : ''}" data-kind="plugins">插件</button>` +
       `<button class="mgr-kind-btn${v.kind === 'skills' ? ' on' : ''}" data-kind="skills">技能</button>` +
-      '</div>' +
-      '<div class="mgr-acts">' +
-      `<button class="mgr-act" title="刷新">${I.refresh}</button>` +
-      `<button class="mgr-act" title="设置">${I.gear}</button>` +
       '</div>' +
       '</div>' +
       `<div class="mgr-head"><h2 class="mgr-title">${kindName}</h2><div class="mgr-sub">${sub}</div></div>` +
@@ -829,9 +850,6 @@
         renderMgr()
       }),
     )
-    // 刷新按钮：强制重新拉取后端真实清单
-    const refresh = pane.querySelector('.mgr-act[title="刷新"]')
-    if (refresh) refresh.addEventListener('click', () => loadMgrData(true))
     const q = $('mgr-q')
     if (q) q.addEventListener('input', () => { v.q = q.value; renderMgrGrid() })
   }
@@ -868,6 +886,100 @@
       `<div class="mgr-meta"><div class="mgr-name">${esc(x.n)}${badge}</div><div class="mgr-desc">${esc(x.d)}</div></div>` +
       '<button class="mgr-more" title="更多">…</button></div>'
     )
+  }
+
+  // 管理视图：项目列表（仿照插件布设，每个项目胶囊占据一整行）
+  // 数据源 = 已加载会话 ALL 按 projectLabel 分组（projectScope==='project'），不另起后端接口。
+  function renderMgrProj() {
+    const list = $('mgr-list')
+    if (!list) return
+    const q = (state.mgrView.q || '').trim().toLowerCase()
+    const byProject = {}
+    for (const s of ALL) if (s.projectScope === 'project' && s.projectLabel) (byProject[s.projectLabel] = byProject[s.projectLabel] || []).push(s)
+    const labels = Object.keys(byProject).filter((l) => !q || l.toLowerCase().includes(q))
+    // 按项目最近活跃时间降序（同 renderProject 排序）
+    labels.sort((a, b) => {
+      const la = Math.max(0, ...byProject[a].map((s) => s.updatedAt))
+      const lb = Math.max(0, ...byProject[b].map((s) => s.updatedAt))
+      return lb - la
+    })
+    // 该项目是否带 .claude/preview/（会话 preview 标志由后端 findProjects.hasPreview 透传）
+    const hasPreview = (l) => ALL.some((s) => s.projectScope === 'project' && s.projectLabel === l && s.preview)
+    list.innerHTML = labels.length
+      ? labels.map((l) => mgrProjHtml(l, byProject[l], hasPreview(l))).join('')
+      : '<div class="mgr-empty">' + (q ? '没有匹配的项目' : '暂无项目会话') + '</div>'
+    list.querySelectorAll('.mgr-proj').forEach((b) =>
+      b.addEventListener('click', () => {
+        // 带预览的项目：点胶囊 → 加载 <项目>/.claude/preview/ 网页替换主界面；不带 → 维持原行为进会话
+        if (b.dataset.preview === '1' && b.dataset.label) {
+          openProjectPreview(b.dataset.label)
+          if (isMobile()) setPanel(false)
+          return
+        }
+        const hash = b.dataset.hash
+        if (!hash) return
+        navigate('#/' + encodeURIComponent(hash))
+        if (isMobile()) setPanel(false)
+      }),
+    )
+  }
+  function mgrProjHtml(label, chats, hasPreview) {
+    const latest = [...chats].sort((a, b) => b.updatedAt - a.updatedAt)[0]
+    const n = chats.length
+    return (
+      `<button class="mgr-proj" data-hash="${latest ? esc(hashOf(latest)) : ''}" data-label="${esc(label)}" data-preview="${hasPreview ? '1' : '0'}" title="${esc(label)} · ${n} 个会话${hasPreview ? '（点击进入项目预览）' : ''}">` +
+      `<span class="mgr-ic" style="background:${mgrColor(label)}">${I.folder}</span>` +
+      `<span class="mgr-meta"><span class="mgr-name">${esc(label)}${hasPreview ? '<span class="pv-badge">预览</span>' : ''}<span class="inst-badge">${n} 个会话</span></span>` +
+      `<span class="mgr-desc">${hasPreview ? '点击打开项目预览页（.claude/preview）' : (latest ? esc(latest.title) : '暂无会话')}</span></span>` +
+      '<span class="mgr-more" title="打开">›</span></button>'
+    )
+  }
+  // 项目预览：主聊天区渲染返回栏 + iframe 加载 <项目>/.claude/preview/index.html，替换管理/会话界面
+  function openProjectPreview(label) {
+    state.currentHash = null
+    stopLiveFoldTimer()
+    pinRelease()
+    state.preview = label
+    inputWrap.classList.remove('docked')
+    chatArea.classList.remove('in-session')
+    chatArea.classList.add('mgr-on')
+    // iframe 加载带 token（/preview/* 与 /api/* 一致要求校验，见 localGateway.handleRequest）
+    const src = `/preview/${encodeURIComponent(label)}/index.html${gToken ? '?token=' + encodeURIComponent(gToken) : ''}`
+    messagesEl.innerHTML =
+      '<div class="preview-shell">' +
+      '<div class="preview-bar">' +
+      '<button class="preview-back" id="preview-back">← 返回项目列表</button>' +
+      `<span class="preview-title">${esc(label)} · 项目预览</span>` +
+      '</div>' +
+      '<div class="preview-body"><div class="preview-loading">正在加载预览页…</div></div>' +
+      '</div>'
+    const back = $('preview-back')
+    if (back) back.addEventListener('click', () => closeProjectPreview())
+    // 404/失败兜底（2026-08-15）：先 fetch 探测预览入口，命中才挂 iframe；
+    // 缺失/被删/无权限 → 显示「该项目暂无可用预览页」占位 + 返回按钮。
+    fetch(src, { method: 'GET' })
+      .then((r) => {
+        if (!r.ok) throw new Error('HTTP ' + r.status)
+        const body = document.querySelector('.preview-body')
+        if (body) body.innerHTML = `<iframe class="preview-frame" title="${esc(label)} 项目预览" src="${src}"></iframe>`
+      })
+      .catch(() => {
+        const body = document.querySelector('.preview-body')
+        if (body) {
+          body.innerHTML =
+            '<div class="preview-empty">' +
+            '<div class="preview-empty-title">该项目暂无可用预览页</div>' +
+            '<div class="preview-empty-sub">' + esc(label) + ' · .claude/preview 入口不可用（缺失或已被删除）</div>' +
+            '<button class="preview-empty-back" id="preview-empty-back">← 返回项目列表</button>' +
+            '</div>'
+          const eb = $('preview-empty-back')
+          if (eb) eb.addEventListener('click', () => closeProjectPreview())
+        }
+      })
+  }
+  function closeProjectPreview() {
+    state.preview = null
+    renderMgr() // 回到当前管理视图（state.mgr 仍是 'projects' → 重渲项目列表）
   }
 
   function renderList() {
@@ -1038,6 +1150,13 @@
 
   // 点击空白关闭弹层
   document.addEventListener('click', (e) => {
+    // @ 浮窗：点浮窗外任意处关闭；点输入内 chip 的 × 删除该 chip
+    if (e.target.closest('.mention .m-x')) {
+      const chip = e.target.closest('.mention')
+      if (chip) removeChip(chip)
+      return
+    }
+    if (!e.target.closest('#mention-pop')) closeMentionPop()
     if (!$('organize-pop').contains(e.target) && !e.target.closest('#recent-more')) $('organize-pop').classList.remove('show')
     if (!bubblePop.contains(e.target) && !e.target.closest('#rail-bubble')) bubblePop.classList.remove('show')
     // 「已处理」折叠展开时，点击列表任意部分 → 收起（summary 点击走原生切换，跳过）
@@ -1057,6 +1176,23 @@
   })
   $('upload-btn').addEventListener('click', () => toast(GATEWAY ? '暂不支持上传' : '只读查看 · 无法发送'))
   inputEl.addEventListener('keydown', (e) => {
+    // token 门态：输入框只做 token 提交
+    if (gateAwait) {
+      if (e.key === 'Enter') { e.preventDefault(); gateSubmit() }
+      return
+    }
+    // @ 浮窗打开：方向键/回车/ESC 走选择逻辑（不移动光标、不发送）
+    if (mention.open) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); moveMentionSel(1); return }
+      if (e.key === 'ArrowUp') { e.preventDefault(); moveMentionSel(-1); return }
+      if (e.key === 'Enter') { e.preventDefault(); selectMention(); return }
+      if (e.key === 'Escape') { e.preventDefault(); closeMentionPop(); return }
+    }
+    // 退格删除光标前的 @chip（含尾随空格）
+    if (e.key === 'Backspace' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      const chip = mentionBeforeCaret()
+      if (chip) { e.preventDefault(); removeChip(chip); return }
+    }
     if (e.key === 'Enter') {
       e.preventDefault()
       if (gateAwait) { gateSubmit(); return } // token 门态：回车 = 提交 token
@@ -1091,6 +1227,14 @@
   let gws = null
   let cur = null // 当前正在流的 assistant 消息元素
 
+  // 安全加固（2026-08-15）：数据接口 URL 统一附加网关 token（query），与 WS 升级校验一致。
+  // token 门锁定态（GATEWAY 且尚无 token）下不发数据请求，待 hideGate 解锁后重新加载。
+  const needToken = () => GATEWAY && !gToken
+  function apiUrl(path) {
+    const q = path.includes('?') ? '&' : '?'
+    return path + q + 'token=' + encodeURIComponent(gToken)
+  }
+
   function gatewayCss() {
     const s = document.createElement('style')
     s.textContent = `
@@ -1105,6 +1249,230 @@
       .appr-deny{background:#fff;color:var(--text-2)}`
     document.head.appendChild(s)
   }
+
+  // ---------- @ 提及（2026-08-15）：输入 @ 弹出「插件/技能 + 近48h 会话」浮窗，选中插入内联 chip ----------
+  // 消息文本中 chip 序列化为 [插件:名称] / [会话:名称] 令牌（CLI 终端渲染为 [名称]，遥测端渲染为 chip；
+  // 令牌保留 kind 供两端差异化渲染 + 未来插件激活扩展）。
+  const MENTION_PLUGIN_RE = /\[插件:([^\]]+)\]/g
+  const MENTION_SESSION_RE = /\[会话:([^\]]+)\]/g
+  // @ 提及 icon：与侧栏插件/项目 tab 一致，纯线条（stroke）风格，颜色走 currentColor
+  const MENTION_PLUGIN_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M10.2 3.5H4.6a1.1 1.1 0 0 0-1.1 1.1v5.6a1.1 1.1 0 0 0 1.1 1.1h5.6a1.1 1.1 0 0 0 1.1-1.1V4.6a1.1 1.1 0 0 0-1.1-1.1z"/><path d="M19.4 3.5h-5.6a1.1 1.1 0 0 0-1.1 1.1v5.6a1.1 1.1 0 0 0 1.1 1.1h5.6a1.1 1.1 0 0 0 1.1-1.1V4.6a1.1 1.1 0 0 0-1.1-1.1z"/><path d="M10.2 13.7H4.6a1.1 1.1 0 0 0-1.1 1.1v5.6a1.1 1.1 0 0 0 1.1 1.1h5.6a1.1 1.1 0 0 0 1.1-1.1v-5.6a1.1 1.1 0 0 0-1.1-1.1z"/><path d="M19.4 13.7h-5.6a1.1 1.1 0 0 0-1.1 1.1v5.6a1.1 1.1 0 0 0 1.1 1.1h5.6a1.1 1.1 0 0 0 1.1-1.1v-5.6a1.1 1.1 0 0 0-1.1-1.1z"/></svg>'
+  const MENTION_SESSION_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M4 5h16a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-8l-5 3.5v-3.5H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z"/></svg>'
+  let mention = { open: false, sentinel: null, q: '', items: [], sel: 0 }
+
+  // chip HTML（name 为已转义文本：mdInline/addUser 入口已 esc，这里不再二次转义）
+  // 消息内渲染=透明胶囊（无图标），仅保留名称文本（用户要求「只要一个白色浮窗似的胶囊」→ 透明胶囊）
+  function mentionChipHtml(kind, name) {
+    return `<span class="mention-chip ${kind === 'session' ? 'm-session' : 'm-plugin'}">${name}</span>`
+  }
+
+  // 实时回显的用户消息：把令牌转 chip（与离线 messagesHtml 的 mdInline 一致）
+  function renderUserText(text) {
+    return esc(text)
+      .replace(MENTION_PLUGIN_RE, (_, n) => mentionChipHtml('plugin', n))
+      .replace(MENTION_SESSION_RE, (_, n) => mentionChipHtml('session', n))
+  }
+
+  // 序列化 contenteditable → 纯文本（chip → [插件:X]/[会话:X]，nbsp→空格，块级→换行）
+  function serializeInput() {
+    let out = ''
+    const walk = (nodes) => {
+      for (const n of nodes) {
+        if (n.nodeType === 3) { out += n.nodeValue; continue }
+        if (n.nodeType !== 1) continue
+        if (n.classList && n.classList.contains('mention')) {
+          out += n.dataset.kind === 'session' ? `[会话:${n.dataset.name}]` : `[插件:${n.dataset.name}]`
+        } else if (n.tagName === 'BR') {
+          out += '\n'
+        } else {
+          walk(n.childNodes)
+          if (/^(DIV|P)$/.test(n.tagName)) out += '\n'
+        }
+      }
+    }
+    walk(inputEl.childNodes)
+    return out.replace(/\u00A0/g, ' ')
+  }
+
+  function closeMentionPop() {
+    if (mention.sentinel && mention.sentinel.isConnected) mention.sentinel.remove()
+    mention.open = false
+    mention.sentinel = null
+    mention.q = ''
+    mention.items = []
+    mention.sel = 0
+    const pop = $('mention-pop')
+    if (pop) pop.hidden = true
+  }
+
+  // 在光标处插入零宽锚点（紧跟 @），作为「@查询区间」标记；后续输入夹在 @ 与锚点之间
+  function ensureSentinel() {
+    if (mention.sentinel && mention.sentinel.isConnected) return mention.sentinel
+    const sel = window.getSelection()
+    if (!sel || !sel.rangeCount) return null
+    const r = sel.getRangeAt(0)
+    if (!r.collapsed) return null
+    const sp = document.createElement('span')
+    sp.className = 'm-sentinel'
+    r.insertNode(sp)
+    r.setStartAfter(sp); r.setEndAfter(sp)
+    sel.removeAllRanges(); sel.addRange(r)
+    mention.sentinel = sp
+    return sp
+  }
+
+  function openMentionPopAtCaret() {
+    const sp = ensureSentinel()
+    if (!sp) return
+    mention.open = true
+    mention.sel = 0
+    mention.q = ''
+    renderMentionPop()
+    // 首次打开确保插件/技能清单已加载（异步），加载完用当前查询重新渲染
+    loadMgrData().then(() => { if (mention.open) renderMentionPop() }).catch(() => {})
+  }
+
+  function mentionItems(q) {
+    const ql = (q || '').trim().toLowerCase()
+    const match = (s) => !ql || String(s).toLowerCase().includes(ql)
+    const items = []
+    if (MGR) {
+      for (const p of (MGR.plugins && MGR.plugins.personal) || []) if (match(p.n)) items.push({ kind: 'plugin', name: p.n, desc: p.d })
+      for (const s of (MGR.skills && MGR.skills.personal) || []) if (match(s.n)) items.push({ kind: 'plugin', name: s.n, desc: s.d })
+    }
+    const cutoff = Date.now() - 48 * 3600 * 1000 // 会话仅展示近 48 小时
+    for (const s of [...ALL].filter((x) => x.updatedAt >= cutoff).sort((a, b) => b.updatedAt - a.updatedAt)) {
+      if (match(s.title || '')) items.push({ kind: 'session', name: s.title || '未命名会话', desc: relTime(s.updatedAt) })
+    }
+    return items
+  }
+
+  function renderMentionPop() {
+    const pop = $('mention-pop')
+    if (!pop || !mention.open) return
+    const items = mentionItems(mention.q)
+    if (!items.length) { closeMentionPop(); return }
+    mention.items = items
+    mention.sel = Math.min(mention.sel, items.length - 1)
+    let html = ''
+    let lastGroup = ''
+    let idx = 0
+    for (const it of items) {
+      const group = it.kind === 'session' ? '会话' : '插件 / 技能'
+      if (group !== lastGroup) { html += `<div class="mp-sec">${group}</div>`; lastGroup = group }
+      const on = idx === mention.sel ? ' on' : ''
+      const icon = `<span class="mp-ic">${it.kind === 'session' ? MENTION_SESSION_ICON : MENTION_PLUGIN_ICON}</span>`
+      html += `<button type="button" class="mp-item${on}" data-idx="${idx}">${icon}<span class="mp-t"><span class="mp-nm">${esc(it.name)}</span>${it.desc ? `<span class="mp-d">${esc(it.desc)}</span>` : ''}</span></button>`
+      idx++
+    }
+    pop.innerHTML = html
+    pop.hidden = false
+    pop.querySelectorAll('.mp-item').forEach((b) =>
+      b.addEventListener('click', () => {
+        const it = mention.items[+b.dataset.idx]
+        if (it) insertMention(it.kind, it.name)
+      }),
+    )
+  }
+
+  function moveMentionSel(d) {
+    const n = mention.items.length
+    if (!n) return
+    mention.sel = (mention.sel + d + n) % n
+    const pop = $('mention-pop')
+    if (!pop) return
+    pop.querySelectorAll('.mp-item').forEach((b, i) => b.classList.toggle('on', i === mention.sel))
+    const el = pop.querySelector('.mp-item.on')
+    if (el) el.scrollIntoView({ block: 'nearest' })
+  }
+
+  function selectMention() {
+    const it = mention.items[mention.sel]
+    if (it) insertMention(it.kind, it.name)
+  }
+
+  // 选中项 → 用 chip + 尾随空格替换 @查询区间，光标放到空格后
+  function insertMention(kind, name) {
+    const sp = mention.sentinel
+    if (sp && sp.isConnected) {
+      const prev = sp.previousSibling
+      if (prev && prev.nodeType === 3 && /@$/.test(prev.nodeValue || '')) {
+        prev.nodeValue = prev.nodeValue.replace(/@$/, '')
+        if (!prev.nodeValue) prev.remove()
+      }
+      let nx = sp.nextSibling
+      while (nx && nx.nodeType === 3) { const t = nx; nx = nx.nextSibling; t.remove() }
+      const chip = document.createElement('span')
+      chip.className = 'mention'
+      chip.contentEditable = 'false'
+      chip.dataset.kind = kind
+      chip.dataset.name = name
+      chip.innerHTML = `<span class="m-ic">${kind === 'session' ? MENTION_SESSION_ICON : MENTION_PLUGIN_ICON}</span><span class="m-nm">${esc(name)}</span><span class="m-x" title="删除">×</span>`
+      sp.replaceWith(chip)
+      const space = document.createTextNode('\u00A0')
+      chip.after(space)
+      const sel = window.getSelection()
+      const r = document.createRange()
+      r.setStartAfter(space); r.collapse(true)
+      sel.removeAllRanges(); sel.addRange(r)
+    }
+    closeMentionPop()
+    inputEl.focus()
+    syncGwSend()
+  }
+
+  function removeChip(chip) {
+    let nx = chip.nextSibling
+    if (nx && nx.nodeType === 3 && /^\s*$/.test(nx.nodeValue)) nx.remove()
+    chip.remove()
+    syncGwSend()
+  }
+
+  // 光标前的 @chip（跳过尾随空格文本），供退格/× 删除
+  function mentionBeforeCaret() {
+    const sel = window.getSelection()
+    if (!sel || !sel.rangeCount || !sel.isCollapsed) return null
+    const node = sel.anchorNode
+    if (!node) return null
+    let prev = null
+    if (node.nodeType === 3) {
+      const off = sel.anchorOffset
+      if (off === 0) prev = node.previousSibling
+      else if (off >= node.nodeValue.length && /^\s*$/.test(node.nodeValue)) prev = node.previousSibling
+      else if (/^\s+$/.test(node.nodeValue.slice(0, off))) prev = node.previousSibling
+      else return null
+    } else if (node.nodeType === 1) {
+      // 光标落在根元素（contenteditable 本体）边界：取光标前一个子节点（跳过随后的空白后找 chip）；
+      // 落在其它子元素（块级 div/p）时沿用「其前一个兄弟」。
+      prev = (node === inputEl) ? node.childNodes[sel.anchorOffset - 1] : node.previousSibling
+    }
+    while (prev && prev.nodeType === 3 && /^\s*$/.test(prev.nodeValue || '')) prev = prev.previousSibling
+    if (prev && prev.nodeType === 1 && prev.classList && prev.classList.contains('mention')) return prev
+    return null
+  }
+
+  // input 事件：检测 @ 触发 / 维护已打开的 @查询（光标前是 @ 则开浮窗）
+  function onInputMention() {
+    if (!GATEWAY || gateAwait || state.mgr) { closeMentionPop(); return }
+    if (mention.sentinel && mention.sentinel.isConnected) {
+      const sp = mention.sentinel
+      const prev = sp.previousSibling
+      const ok = prev && prev.nodeType === 3 && /@$/.test(prev.nodeValue || '')
+      if (!ok) { closeMentionPop(); return }
+      let q = ''
+      let nx = sp.nextSibling
+      while (nx && nx.nodeType === 3) { q += nx.nodeValue; nx = nx.nextSibling }
+      if (q !== mention.q) { mention.q = q; renderMentionPop() }
+      return
+    }
+    const sel = window.getSelection()
+    if (!sel || !sel.rangeCount || !sel.isCollapsed) return
+    const node = sel.anchorNode
+    if (node && node.nodeType === 3 && node.nodeValue.slice(0, sel.anchorOffset).endsWith('@')) {
+      openMentionPopAtCaret()
+    }
+  }
+  function onInputChange() { syncGwSend(); onInputMention() }
 
   function setConn(on, label) {
     const b = $('floria-conn')
@@ -1362,7 +1730,7 @@
     proc = null
     const div = document.createElement('div')
     div.className = 'msg user msg-in'
-    div.innerHTML = `<div class="body">${esc(text)}</div>`
+    div.innerHTML = `<div class="body">${renderUserText(text)}</div>`
     msgAppend(div)
     // 钉顶：平滑上划让该消息吸附到视口顶部，下方预留空间给回复滚动
     pinApply(div, true)
@@ -1599,22 +1967,27 @@
   // 输入正确 token 回车/点发送 → connect()，WS onopen（服务端放行）→ hideGate() 解锁正式界面：
   // 输入栏从正中央平滑拉伸平移为正式输入栏（空态位），侧栏/空态 icon/消息区随之淡入。
   function showGate() {
+    closeMentionPop()
     gateAwait = true
     document.body.classList.add('token-gate')
-    inputEl.placeholder = '请输入网关 token，回车连接'
-    inputEl.value = ''
+    inputEl.dataset.ph = '请输入网关 token，回车连接'
+    inputEl.textContent = ''
     inputEl.focus()
     syncGwSend()
   }
   function hideGate() {
     gateAwait = false
     document.body.classList.remove('token-gate')
-    inputEl.placeholder = '输入消息，Enter 发送'
-    inputEl.value = ''
+    inputEl.dataset.ph = '输入消息，Enter 发送'
+    inputEl.textContent = ''
     syncGwSend()
+    // token 门锁定态跳过的数据加载，解锁后补拉（SSE 重连 + 会话列表/当前会话）
+    loadSessions()
+    initLive()
+    refreshSession()
   }
   function gateSubmit() {
-    const t = inputEl.value.trim()
+    const t = inputEl.textContent.trim()
     if (!t) { inputEl.focus(); return }
     gToken = t
     connect()
@@ -1622,7 +1995,8 @@
 
   function gwSend() {
     if (!GATEWAY) return false
-    const text = inputEl.value.trim()
+    closeMentionPop()
+    const text = serializeInput().trim()
     if (!text) { inputEl.focus(); return true }
     if (!gws || gws.readyState !== 1) { toast('未连接，无法发送'); return true }
     if (!inputWrap.classList.contains('docked')) {
@@ -1632,13 +2006,13 @@
     }
     addUser(text)
     gws.send(JSON.stringify({ type: 'send', text }))
-    inputEl.value = ''
+    inputEl.textContent = ''
     syncGwSend()
     return true
   }
 
   function syncGwSend() {
-    const on = GATEWAY && gws && gws.readyState === 1 && inputEl.value.trim().length > 0
+    const on = GATEWAY && gws && gws.readyState === 1 && serializeInput().trim().length > 0
     sendBtn.classList.toggle('enabled', on)
   }
 
@@ -1647,9 +2021,9 @@
     // 连接状态徽章已改为 Floria 品牌名后的浅灰小字（index.html #floria-conn），不再动态建 #conn-badge。
     // 空态图标不隐藏：进会话时的隐藏由 #chat-area.in-session 的 CSS 承担，
     // 永久 display:none 会让首页图标只在网关检测完成前瞬间可见、刷新即消失。
-    inputEl.disabled = false
-    inputEl.placeholder = '输入消息，Enter 发送'
-    inputEl.addEventListener('input', syncGwSend)
+    inputEl.contentEditable = 'true'
+    inputEl.dataset.ph = '输入消息，Enter 发送'
+    inputEl.addEventListener('input', onInputChange)
     setConn(false, '连接中…')
     if (gToken) connect()
     else showGate()
@@ -1675,5 +2049,6 @@
     renderRecent()
     route()
     if (GATEWAY) initGateway()
+    else { inputEl.contentEditable = 'false'; inputEl.dataset.ph = '只读查看 · 无法发送' } // 只读查看器：输入不可编辑
   })()
 })()

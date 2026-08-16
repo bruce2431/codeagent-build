@@ -2258,7 +2258,8 @@ function runHeadlessStreaming(
           // 与 REPL 同等效果——复用 conversationDisplay.ts 过滤，POST 到 FLOIRA_GATEWAY 网关。
           // 网关 /api/conversation 内存 Map 按 sessionId 存，floria /api/session 附 display 消费。
           // fire-and-forget，网关未启动时静默失败（sendConversationToServer 内部 catch）。
-          void exportConversationToServer(mutableMessages, getSessionId(), 'transcript')
+          // mode 用 'prompt'（对齐 REPL 默认屏幕）：thinking 全隐藏，避免遥测端显示无效思考过程。
+          void exportConversationToServer(mutableMessages, getSessionId(), 'prompt')
 
           if (feature('FILE_PERSISTENCE') && turnStartTime !== undefined) {
             void executeFilePersistence(

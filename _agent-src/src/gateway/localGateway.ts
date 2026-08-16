@@ -16,6 +16,7 @@
  */
 import { createServer, type Server } from 'node:http'
 import { readFileSync, existsSync, statSync, readdirSync } from 'node:fs'
+import { open as fsOpen } from 'node:fs/promises'
 import { join, resolve, extname, basename, sep } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { networkInterfaces } from 'node:os'
@@ -23,12 +24,13 @@ import { WebSocketServer, WebSocket } from 'ws'
 import { getPortableRoot } from '../utils/envUtils.js'
 import { getProjectRoot } from '../bootstrap/state.js'
 import {
-  extractFirstPromptFromHead,
   extractJsonStringField,
   extractLastJsonStringField,
   readSessionLite,
 } from '../utils/sessionStoragePortable.js'
+import { parseSessionInfoFromLite } from '../utils/listSessionsImpl.js'
 import { filterConversationForDisplay } from '../utils/conversationDisplay.js'
+import { setGatewayToken } from '../utils/gatewayToken.js'
 import { webAssets } from './web-assets.generated.js'
 import { enqueue } from '../utils/messageQueueManager.js'
 import type { QueuedCommand } from '../types/textInputTypes.js'
@@ -132,10 +134,10 @@ const MIME: Record<string, string> = {
 // ============================================================================
 const SESSION_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$/i
 
-function findProjects(root: string): Array<{ label: string; dir: string; scope: string }> {
-  const groups: Array<{ label: string; dir: string; scope: string }> = []
+function findProjects(root: string): Array<{ label: string; dir: string; scope: string; hasPreview: boolean }> {
+  const groups: Array<{ label: string; dir: string; scope: string; hasPreview: boolean }> = []
   const global = join(root, '.claude', 'projects')
-  if (isDir(global)) groups.push({ label: '全局根 · 散装对话', dir: global, scope: 'global' })
+  if (isDir(global)) groups.push({ label: '全局根 · 散装对话', dir: global, scope: 'global', hasPreview: false })
   let entries: Array<{ name: string; isDirectory: () => boolean }> = []
   try {
     entries = readdirSync(root, { withFileTypes: true })
@@ -147,14 +149,12 @@ function findProjects(root: string): Array<{ label: string; dir: string; scope: 
     if (e.name.startsWith('.')) continue
     if (/^\d{8,14}-/.test(e.name)) continue // 根级临时任务目录
     const pd = join(root, e.name, '.claude', 'projects')
-    if (isDir(pd)) groups.push({ label: e.name, dir: pd, scope: 'project' })
+    if (isDir(pd)) {
+      // hasPreview：项目自带 .claude/preview/（网页渲染，点击项目胶囊时前端 iframe 加载替换界面）
+      groups.push({ label: e.name, dir: pd, scope: 'project', hasPreview: isDir(join(root, e.name, '.claude', 'preview')) })
+    }
   }
   return groups
-}
-
-const truncate = (s: string, n: number): string => {
-  s = (s || '').trim().replace(/\s+/g, ' ')
-  return s.length > n ? s.slice(0, n) + '…' : s
 }
 
 function countUserAssistant(text: string): number {
@@ -167,6 +167,46 @@ function countUserAssistant(text: string): number {
 
 type SessionMeta = { sidechain: true } | { title: string; messageCount: number; updatedAt: number }
 
+// 大文件兜底：head/tail 64KB 窗口可能不含最后一条 custom-title（CLI 进程未正常退出
+// 或最后一次 rename 后又追加大量消息，re-append 保证失效）。反向分块扫描文件，
+// 找最后一条 {"type":"custom-title",...} 记录。命中即返回；未命中至多反向扫一遍。
+const CUSTOM_TITLE_MARKER = '"type":"custom-title"'
+async function findLastCustomTitle(file: string): Promise<string | undefined> {
+  const CHUNK = 512 * 1024
+  const OVERLAP = 64 * 1024
+  const fh = await fsOpen(file, 'r')
+  try {
+    const { size } = await fh.stat()
+    let end = size
+    while (end > 0) {
+      const start = Math.max(0, end - CHUNK)
+      const len = end - start
+      const buf = Buffer.allocUnsafe(len)
+      const { bytesRead } = await fh.read(buf, 0, len, start)
+      const chunk = buf.toString('utf8', 0, bytesRead)
+      let idx = chunk.lastIndexOf(CUSTOM_TITLE_MARKER)
+      while (idx >= 0) {
+        const lineStart = chunk.lastIndexOf('\n', idx - 1) + 1
+        const lineEnd = chunk.indexOf('\n', idx)
+        const line = lineEnd >= 0 ? chunk.slice(lineStart, lineEnd) : chunk.slice(lineStart)
+        // 只认真正的 custom-title 记录行（避免消息内容里恰好出现的相似文本）
+        if (!line.trimStart().startsWith('{"type":"custom-title"')) {
+          idx = chunk.lastIndexOf(CUSTOM_TITLE_MARKER, idx - 1)
+          continue
+        }
+        const t = extractLastJsonStringField(line, 'customTitle')
+        if (t) return t
+        idx = chunk.lastIndexOf(CUSTOM_TITLE_MARKER, idx - 1)
+      }
+      // 重叠向前推进，避免记录跨块边界被切漏
+      end = start + OVERLAP
+    }
+    return undefined
+  } finally {
+    await fh.close()
+  }
+}
+
 async function parseMeta(file: string): Promise<SessionMeta | null> {
   const lite = await readSessionLite(file)
   if (!lite) return null
@@ -174,20 +214,21 @@ async function parseMeta(file: string): Promise<SessionMeta | null> {
   if (head.includes('"isSidechain":true') || head.includes('"isSidechain": true')) return { sidechain: true }
   const teamName = extractJsonStringField(head, 'teamName')
   if (teamName) return { sidechain: true }
-  const title = extractLastJsonStringField(tail, 'customTitle') || extractLastJsonStringField(head, 'customTitle') || ''
   const messageCount =
     countUserAssistant(head) + (tail === head ? 0 : countUserAssistant(tail))
-  if (title) {
-    return { title, messageCount, updatedAt: mtime }
+  const uuid = basename(file).replace(/\.jsonl$/, '')
+  // 复用 CLI 权威标题提取（parseSessionInfoFromLite：customTitle → aiTitle →
+  // lastPrompt → summary → firstPrompt 回退链），不再本地复刻标题逻辑。
+  const info = parseSessionInfoFromLite(uuid, lite)
+  let title = info ? info.summary : '（空会话）'
+  // 大文件（head/tail 窗口不重叠）且窗口内无 customTitle：最后一条 custom-title
+  // 可能被后续消息推出 64KB tail 窗口，反向扫描兜底（CLI 侧 re-append 保证仅对
+  // 正常退出生效，此处覆盖进程非正常退出 / rename 后大量追加的场景）。
+  if (tail !== head && !info?.customTitle) {
+    const last = await findLastCustomTitle(file)
+    if (last) title = last
   }
-  // 无 customTitle：从 head 块提取首个有效用户消息作标题（复用 CLI 权威
-  // extractFirstPromptFromHead，不再全文件 readFileSync 逐行 JSON.parse）
-  const first = extractFirstPromptFromHead(head)
-  return {
-    title: first ? truncate(first, 60) : '（空会话）',
-    messageCount,
-    updatedAt: mtime,
-  }
+  return { title, messageCount, updatedAt: mtime }
 }
 
 function isPidAlive(pid: number): boolean {
@@ -236,6 +277,7 @@ async function listSessions(root: string) {
         id: Buffer.from(p).toString('base64url'),
         projectLabel: g.label,
         projectScope: g.scope,
+        preview: g.hasPreview,
         file: basename(p),
         title: meta.title,
         messageCount: meta.messageCount,
@@ -263,15 +305,57 @@ function readSession(id: string, root: string) {
     const s = line.trim()
     if (!s) continue
     try {
-      records.push(JSON.parse(s))
+      const r = JSON.parse(s)
+      // 只保留 normalizeMessages/filterConversationForDisplay 能处理的类型。
+      // custom-title/agent-name/file-history-snapshot/queue-operation/last-prompt 等
+      // 元记录会让 normalizeMessages 的 switch 无分支返回 undefined → isNotEmptyMessage
+      // 崩溃（历史会话全部 500，遥测端看不了）。user/assistant/system 之外的展示不需要。
+      if (
+        r &&
+        typeof r === 'object' &&
+        typeof (r as { type?: unknown }).type === 'string' &&
+        ['user', 'assistant', 'system', 'attachment', 'progress'].includes((r as { type: string }).type)
+      ) {
+        records.push(r)
+      }
     } catch {
       /* 跳过坏行 */
     }
   }
   // 复用 CLI 权威过滤（conversationDisplay.filterConversationForDisplay），
   // 与 CLI 上报的 display 同源，不再本地复刻 isSynth/toBlocks 等逻辑。
-  const messages = filterConversationForDisplay(records as never, 'transcript')
+  // mode 用 'prompt'（对齐 CLI 默认 REPL 显示）：thinking 全隐藏。原 'transcript' 会保留
+  // 全局最后一个 thinking，遥测端历史会话因此显示出不该出现的思考过程（无效思考过滤失效）。
+  const messages = filterConversationForDisplay(records as never, 'prompt')
   return { file: basename(p), path: p, messages }
+}
+
+// 统一时间戳为毫秒（CLI 导出与 /api/session 均用数字；字符串 ISO 兜底解析）。
+function tsMs(ts: unknown): number | undefined {
+  if (typeof ts === 'number' && Number.isFinite(ts)) return ts
+  if (typeof ts === 'string') {
+    const n = Date.parse(ts)
+    return Number.isFinite(n) ? n : undefined
+  }
+  return undefined
+}
+
+type MergeMsg = { role: string; blocks: unknown[]; timestamp?: unknown }
+// 合并展示消息：以磁盘 jsonl 全量历史为基底，把 live（CLI 上报的内存窗口）中比磁盘末尾
+// 更新的消息追加到尾部。原因：CLI 内存窗口在上下文压缩/续接后会缺历史真实用户消息，
+// 直接返回 live 会让遥测端看不到完整历史（前端按真实用户消息切段，历史被折叠成一个 blob）；
+// 磁盘是完整权威。live 未越过磁盘末尾 → 磁盘已覆盖 live 全部，整段丢弃 live 不重复。
+function mergeDisplayMessages(
+  disk: MergeMsg[],
+  live: MergeMsg[],
+): MergeMsg[] {
+  if (!live.length) return disk
+  if (!disk.length) return live
+  const dLast = tsMs(disk[disk.length - 1].timestamp)
+  const lLast = tsMs(live[live.length - 1].timestamp)
+  if (dLast == null || lLast == null || lLast <= dLast) return disk
+  const tail = live.filter((m) => (tsMs(m.timestamp) ?? 0) > (dLast ?? 0))
+  return tail.length ? [...disk, ...tail] : disk
 }
 
 // ============================================================================
@@ -423,9 +507,20 @@ function pollSse(root: string): void {
 // ============================================================================
 async function handleRequest(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse, root: string): Promise<void> {
   const url = new URL(req.url ?? '/', `http://${req.headers.host || 'localhost'}`)
+  // 安全加固（2026-08-15）：HTTP 数据接口与 WS 升级一致要求 token。
+  //  - /api/health 保持公开探活（/server status、前端 detectGateway 只读 mode），响应已精简不含路径泄露；
+  //  - 其余 /api/*（会话/插件/SSE/上报写接口）与 /preview/* 一律校验 query token，失败 401。
+  // token 通过 URL query 传递：前端从 location.search 提取附加，CLI 侧上报从 gatewayToken.ts 读取附加。
+  const isProtected =
+    (url.pathname.startsWith('/api/') && url.pathname !== '/api/health') || url.pathname.startsWith('/preview/')
+  if (isProtected && url.searchParams.get('token') !== currentToken) {
+    res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-cache' })
+    res.end(JSON.stringify({ error: 'unauthorized' }))
+    return
+  }
   if (req.method === 'GET' && url.pathname === '/api/health') {
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-cache' })
-    res.end(JSON.stringify({ ok: true, mode: 'gateway', workspace: root, public: publicDir(root), webAssets: Object.keys(webAssets).length }))
+    res.end(JSON.stringify({ ok: true, mode: 'gateway' }))
     return
   }
   if (req.method === 'GET' && url.pathname === '/api/sessions') {
@@ -449,6 +544,38 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
     }
     return
   }
+  // 项目预览页静态托管：/preview/<项目>/* → <root>/<项目>/.claude/preview/*（点击项目胶囊时前端 iframe 加载替换界面）
+  // label 必须是 findProjects 命中且带 .claude/preview 的真实项目（用 dir 推 preview 目录，避免按 label 拼路径）；
+  // 子路径 resolve 后必须落在 preview 目录内（越界防护），默认 index.html。
+  const pvMatch = /^\/preview\/([^/]+)((?:\/.*)?)$/.exec(url.pathname)
+  if (req.method === 'GET' && pvMatch) {
+    const pvLabel = decodeURIComponent(pvMatch[1])
+    const pvRel = (pvMatch[2] || '').replace(/^\//, '') || 'index.html'
+    const pvProj = findProjects(root).find((g) => g.scope === 'project' && g.label === pvLabel && g.hasPreview)
+    if (!pvProj) {
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' })
+      res.end('Not Found')
+      return
+    }
+    const pvDir = join(pvProj.dir, '..', 'preview') // pvProj.dir = <root>/<label>/.claude/projects
+    const pvFile = resolve(pvDir, pvRel)
+    if (pvFile !== pvDir && !pvFile.startsWith(pvDir + sep)) {
+      res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' })
+      res.end('Forbidden')
+      return
+    }
+    if (!existsSync(pvFile) || !statSync(pvFile).isFile()) {
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' })
+      res.end('Not Found')
+      return
+    }
+    res.writeHead(200, {
+      'Content-Type': MIME[extname(pvFile)] ?? 'application/octet-stream',
+      'Cache-Control': 'no-cache',
+    })
+    res.end(readFileSync(pvFile))
+    return
+  }
   if (req.method === 'GET' && url.pathname === '/api/session') {
     const id = url.searchParams.get('id')
     if (!id) {
@@ -458,15 +585,15 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
     }
     try {
       const { path: p, uuid } = decodeSessionPath(id, root)
-      // CLI 已上报 display 时直接返回，跳过 jsonl 全量解析
-      const disp = conversationDisplays.get(uuid)
-      if (disp) {
-        const data = { file: basename(p), path: p, messages: disp.messages, display: disp.messages }
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-cache' })
-        res.end(JSON.stringify(data))
-        return
-      }
+      // 历史一律以磁盘 jsonl 全量为基底（readSession，含上下文压缩前的完整历史）；
+      // CLI 上报的内存窗口（conversationDisplays）只作尾部追加——直接返回 live 会因
+      // 内存窗口缺失历史用户消息而看不到完整历史。
       const data = readSession(id, root)
+      const disp = conversationDisplays.get(uuid)
+      if (disp && Array.isArray(disp.messages) && disp.messages.length) {
+        data.messages = mergeDisplayMessages(data.messages as never, disp.messages as never)
+        data.display = data.messages
+      }
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-cache' })
       res.end(JSON.stringify(data))
     } catch (e) {
@@ -636,6 +763,8 @@ export function startLocalGateway(opts?: { host?: string; port?: number; token?:
   currentHost = opts?.host || process.env.GATEWAY_HOST || '0.0.0.0'
   currentPort = Number(opts?.port || process.env.GATEWAY_PORT || 8124)
   currentToken = opts?.token || process.env.SERVER_TOKEN || randomBytes(16).toString('hex')
+  // 共享 token：CLI 侧上报（conversationDisplay.ts /api/conversation、/api/activity）据此附加校验参数
+  setGatewayToken(currentToken)
   const root = getPortableRoot()
 
   server = createServer((req, res) => handleRequest(req, res, root))
@@ -700,6 +829,8 @@ export function stopLocalGateway(): boolean {
   // C1 修复：停网关时一并清空 CLI 上报的内存缓存（内存数据本就随网关重启失效）
   conversationDisplays.clear()
   sessionActivity.clear()
+  // 共享 token 一并清空：网关停止后 CLI 上报不再附加（保持静默失败，不报错）
+  setGatewayToken('')
   try {
     wss?.close()
   } catch {

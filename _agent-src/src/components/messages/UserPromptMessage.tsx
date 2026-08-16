@@ -62,10 +62,13 @@ export function UserPromptMessage({
 
   // Truncate before the early return so the hook order is stable.
   const displayText = useMemo(() => {
-    if (text.length <= MAX_DISPLAY_CHARS) return text;
-    const head = text.slice(0, TRUNCATE_HEAD_CHARS);
-    const tail = text.slice(-TRUNCATE_TAIL_CHARS);
-    const hiddenLines = countCharInString(text, '\n', TRUNCATE_HEAD_CHARS) - countCharInString(tail, '\n');
+    // @提及令牌（遥测端输入的 `[插件:X]`/`[会话:X]`）在 CLI 终端渲染为 `[X]`。
+    // 遥测端将其渲染为 chip；此处仅做显示层转换，不改动发往 LLM 的原文。
+    const t = text.replace(/\[(?:插件|会话):([^\]]+)\]/g, '[$1]');
+    if (t.length <= MAX_DISPLAY_CHARS) return t;
+    const head = t.slice(0, TRUNCATE_HEAD_CHARS);
+    const tail = t.slice(-TRUNCATE_TAIL_CHARS);
+    const hiddenLines = countCharInString(t, '\n', TRUNCATE_HEAD_CHARS) - countCharInString(tail, '\n');
     return `${head}\n… +${hiddenLines} lines …\n${tail}`;
   }, [text]);
   const isSelected = useContext(MessageActionsSelectedContext);

@@ -11,6 +11,7 @@
 
 import { COMMAND_MESSAGE_TAG } from '../constants/xml.js'
 import { isNotEmptyMessage, normalizeMessages, shouldShowUserMessage } from './messages.js'
+import { getGatewayToken } from './gatewayToken.js'
 
 export type DisplayBlock = {
   kind: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'image'
@@ -171,10 +172,20 @@ export function filterConversationForDisplay(messages: readonly SourceMessage[],
  * 未配置时回退网关默认本地地址 `http://127.0.0.1:8124`（`/server on` 默认 0.0.0.0:8124，
  * 本机 127.0.0.1 可达）——网关没起则 POST 静默失败，不打扰本地 CLI。
  */
+// 安全加固（2026-08-15）：网关 HTTP 数据接口要求 token。进程内网关启动时会把当前 token
+// 写入 gatewayToken.ts（见 localGateway.startLocalGateway）；本进程上报据此附加 query。
+// 网关未启动 / 未由本进程管理时 token 为空 → 不带参数，保持旧静默失败行为（不报错、不打扰）。
+function gatewayApiUrl(base: string, path: string): string {
+  const tok = getGatewayToken()
+  const b = base.replace(/\/+$/, '')
+  if (!tok) return `${b}${path}`
+  return `${b}${path}${path.includes('?') ? '&' : '?'}token=${encodeURIComponent(tok)}`
+}
+
 export async function sendConversationToServer(sessionId: string, display: DisplayMessage[]): Promise<boolean> {
   const base = process.env.FLOIRA_GATEWAY || 'http://127.0.0.1:8124'
   try {
-    const res = await fetch(`${base.replace(/\/+$/, '')}/api/conversation`, {
+    const res = await fetch(gatewayApiUrl(base, '/api/conversation'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sessionId, messages: display }),
@@ -218,7 +229,7 @@ export async function sendSessionActivity(
   const base = process.env.FLOIRA_GATEWAY || 'http://127.0.0.1:8124'
   if (!base) return false
   try {
-    const res = await fetch(`${base.replace(/\/+$/, '')}/api/activity`, {
+    const res = await fetch(gatewayApiUrl(base, '/api/activity'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sessionId, ...activity }),

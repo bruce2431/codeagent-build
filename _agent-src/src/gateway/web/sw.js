@@ -1,5 +1,5 @@
 /* 遥测 · 会话查看器 — Service Worker（静态资源缓存 + 离线兜底） */
-const CACHE = 'floria-v54'
+const CACHE = 'floria-v63'
 const CORE = ['./', './index.html', './styles.css', './app.js', './manifest.json', './icon.ico',
   './char/1.jpg', './char/2.jpg', './char/3.jpg', './char/4.jpg']
 
@@ -21,6 +21,8 @@ self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url)
   if (url.origin !== location.origin) return
   if (url.pathname.startsWith('/api/')) return
+  // /preview/ 不缓存：入口带网关 token（?token=），避免带凭据的响应进缓存残留，且预览页始终实时
+  if (url.pathname.startsWith('/preview/')) return
 
   e.respondWith(
     fetch(e.request)

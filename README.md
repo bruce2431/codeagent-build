@@ -13,7 +13,7 @@
 
 - 构建命令（在 `_agent-src/` 内执行）：`bun install` / `bun run dev`（源码直跑）/ `bun run build:dev`（dev 构建 `cli-dev-<ts>.exe`）/ `bun run build:dev:gateway`（内置私有化网关版 `cli-dev-<ts>-PRIVATE_GATEWAY.exe`，当前主要部署形态）/ `bun run compile`（正式编译 `dist/cli-<ts>.exe`）。
 - 构建产物：`_agent-src/cli-dev-<YYYYMMDDHHMMSS>[-<flag>].exe`（dev 构建）、`_agent-src/dist/cli-<YYYYMMDDHHMMSS>.exe`（正式编译）；带时间戳命名，独立保留。
-- 部署/运行：直接用带时间戳的产物 exe 启动（如 `cli-dev-<YYYYMMDDHHMMSS>-PRIVATE_GATEWAY.exe`，放项目根）。**产物带时间戳是强制规范，不允许覆盖**（不设固定名部署副本）。当前最新部署：`cli-dev-20260815132541-PRIVATE_GATEWAY.exe`（token 门 + #char 临时隐藏，sw v50）。
+- 部署/运行：直接用带时间戳的产物 exe 启动（如 `cli-dev-<YYYYMMDDHHMMSS>-PRIVATE_GATEWAY.exe`，放项目根）。**产物带时间戳是强制规范，不允许覆盖**（不设固定名部署副本）。当前最新部署：`cli-dev-20260815221416-PRIVATE_GATEWAY.exe`（HTTP/Preview token 安全加固 + 项目预览页 + @ 提及，sw v63；已发布 GitHub Release v3）。
 - codegraph 索引：`_agent-src/src/.codegraph/`（相对路径存储，随 `_agent-src` 迁移有效），MCP 查询带 `projectPath=Pj16-CodeAgent构建/_agent-src/src`。
 
 ## 版本控制（git）

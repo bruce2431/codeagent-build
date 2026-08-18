@@ -115,6 +115,31 @@ async function main(): Promise<void> {
     return;
   }
 
+  // Fast-path for `--gateway`（2026-08-17 网关独立化）：同一 exe 以「独立网关进程」模式运行。
+  // 只加载内置网关（src/gateway/localGateway.ts），不初始化 REPL/React/上报——进程长驻提供
+  // HTTP/WS 服务，退出即网关关闭（/server off 经 POST /api/shutdown 优雅关闭）。
+  // 由 /server on detached spawn（args = ['--gateway']）或手动启动；端口/host/token 走环境变量，
+  // token 写盘由 startLocalGateway 内部完成（供其它 CLI 进程读取后上报/连接）。
+  if (args[0] === '--gateway') {
+    profileCheckpoint('cli_gateway_path');
+    const {
+      startLocalGateway,
+      stopLocalGateway,
+    } = await import('../gateway/localGateway.js');
+    const host = process.env.GATEWAY_HOST || '0.0.0.0';
+    const port = Number(process.env.GATEWAY_PORT || 8124);
+    const token = process.env.SERVER_TOKEN || undefined;
+    // node:http server 保持事件循环，进程自然长驻
+    startLocalGateway({ host, port, token });
+    const shutdown = () => {
+      stopLocalGateway();
+      process.exit(0);
+    };
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
+    return;
+  }
+
   // Fast-path for `claude remote-control` (also accepts legacy `claude remote` / `claude sync` / `claude bridge`):
   // serve local machine as bridge environment.
   // feature() must stay inline for build-time dead code elimination;

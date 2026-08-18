@@ -25,6 +25,9 @@
     msg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M5 5h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-8l-5 3.5V19H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z"/></svg>',
     refresh: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 6.3"/><path d="M20 5v6h-6"/></svg>',
     gear: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.09a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.09a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/></svg>',
+    chip: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="6.5" y="6.5" width="11" height="11" rx="2"/><path d="M9.5 3.5v3M14.5 3.5v3M9.5 17.5v3M14.5 17.5v3M3.5 9.5h3M3.5 14.5h3M17.5 9.5h3M17.5 14.5h3"/></svg>',
+    // DeepSeek 鲸鱼 logo（deepseek-harness packages/client/ui-primitives/src/FishLogo.tsx，figma I39:24057 精确提取，fill=currentColor 随父级）
+    whale: '<svg class="whale" viewBox="0 0 23.16 17.04" fill="none" aria-hidden="true"><path d="M22.9168 1.43018C22.6713 1.31018 22.5658 1.53918 22.4223 1.65519C22.3733 1.69269 22.3318 1.74169 22.2903 1.78669C21.9317 2.1697 21.5127 2.42121 20.9657 2.39121C20.1657 2.34621 19.4827 2.59771 18.8787 3.20973C18.7502 2.45521 18.3236 2.0047 17.6746 1.71569C17.3351 1.56568 16.9916 1.41518 16.7536 1.08867C16.5876 0.856163 16.5421 0.597155 16.4591 0.341647C16.4061 0.187643 16.3536 0.0301382 16.1761 0.00363739C15.9836 -0.0263635 15.9081 0.135141 15.8326 0.270145C15.5306 0.822162 15.4136 1.43018 15.4251 2.0462C15.4516 3.43174 16.0366 4.53527 17.1991 5.3203C17.3311 5.4103 17.3651 5.5003 17.3236 5.63181C17.2441 5.90231 17.1501 6.16482 17.0671 6.43533C17.0141 6.60784 16.9351 6.64584 16.7501 6.57033C16.1121 6.30383 15.5611 5.90931 15.074 5.4328C14.2475 4.63328 13.5 3.75075 12.568 3.05973C12.349 2.89822 12.13 2.74822 11.9034 2.60522C10.9524 1.68169 12.028 0.923165 12.277 0.833162C12.5375 0.739159 12.3675 0.41615 11.5259 0.42015C10.6844 0.42365 9.91439 0.705658 8.93286 1.08117C8.78935 1.13767 8.63835 1.17867 8.48384 1.21267C7.59332 1.04367 6.66829 1.00617 5.70226 1.11517C3.88321 1.31768 2.43016 2.1777 1.36213 3.64575C0.0790928 5.4103 -0.222916 7.41536 0.146595 9.50642C0.535106 11.7105 1.66014 13.535 3.38869 14.9616C5.18125 16.4406 7.24581 17.1657 9.60138 17.0266C11.0319 16.9441 12.6245 16.7526 14.421 15.2321C14.874 15.4576 15.3496 15.5476 16.1381 15.6151C16.7456 15.6716 17.3306 15.5851 17.7836 15.4911C18.4931 15.3411 18.4441 14.6841 18.1876 14.5636C16.1081 13.595 16.5646 13.9891 16.1496 13.67C17.2061 12.42 18.8202 10.1979 19.3182 7.17235C19.3672 6.83834 19.4297 6.36783 19.4222 6.09732C19.4182 5.93231 19.4562 5.86831 19.6447 5.84931C20.1657 5.78931 20.6712 5.64681 21.1357 5.3913C22.4833 4.65528 23.0268 3.44624 23.1548 1.9972C23.1738 1.77569 23.1508 1.54668 22.9168 1.43018ZM11.1749 14.4736C9.15936 12.889 8.18184 12.3675 7.77832 12.39C7.40081 12.4125 7.46881 12.8445 7.55182 13.126C7.63882 13.404 7.75182 13.5955 7.91033 13.8396C8.01983 14.0011 8.09533 14.2411 7.80083 14.4216C7.15181 14.8231 6.02327 14.2866 5.97027 14.2601C4.65673 13.4865 3.5587 12.4655 2.78467 11.069C2.03715 9.72493 1.60314 8.28289 1.53164 6.74384C1.51264 6.37233 1.62214 6.24082 1.99215 6.17332C2.47916 6.08332 2.98118 6.06432 3.46769 6.13582C5.52476 6.43633 7.27581 7.35586 8.74385 8.8129C9.58188 9.64243 10.2159 10.634 10.8689 11.6025C11.5634 12.631 12.3105 13.611 13.262 14.4146C13.598 14.6961 13.866 14.9101 14.1225 15.0681C13.349 15.1546 12.058 15.1731 11.1749 14.4746L11.1749 14.4736ZM12.141 8.25988C12.141 8.09488 12.273 7.96338 12.439 7.96338C12.4765 7.96338 12.5105 7.97088 12.541 7.98188C12.5825 7.99688 12.6205 8.01938 12.6505 8.05338C12.7035 8.10588 12.7335 8.18088 12.7335 8.25988C12.7335 8.42489 12.6015 8.55639 12.4355 8.55639C12.2695 8.55639 12.141 8.42489 12.141 8.25988ZM15.1415 9.79893C14.949 9.87793 14.7565 9.94544 14.5715 9.95294C14.2845 9.96794 13.9715 9.85143 13.8015 9.70893C13.5375 9.48742 13.3485 9.36342 13.2695 8.97691C13.2355 8.8119 13.2545 8.55639 13.2845 8.40989C13.3525 8.09438 13.277 7.89187 13.0545 7.70787C12.8735 7.55786 12.643 7.51636 12.39 7.51636C12.2955 7.51636 12.209 7.47486 12.1445 7.44136C12.039 7.38886 11.9519 7.25735 12.035 7.09585C12.0615 7.04335 12.19 6.91584 12.22 6.89334C12.5635 6.69784 12.9595 6.76184 13.326 6.90834C13.6655 7.04735 13.9225 7.30236 14.292 7.66287C14.6695 8.09838 14.7375 8.21838 14.9525 8.54539C15.1225 8.8009 15.277 9.06341 15.3831 9.36392C15.4471 9.55142 15.3641 9.70493 15.1415 9.79893Z" fill="currentColor"/></svg>',
   }
 
   // ---------- 管理视图数据源（2026-08-15 起接后端 /api/plugins：真实已安装插件/技能 + 官方市场） ----------
@@ -52,6 +55,29 @@
     }
     return MGR
   }
+  // 模型配置数据源（/api/models：便携根 settings.json 的 model + 模型类环境变量；只读展示）
+  let MODELS = null
+  let MODELS_LOADING = false
+  let MODELS_ERR = ''
+  async function loadModelsData(force) {
+    if (MODELS && !force) return MODELS
+    if (needToken()) return null // token 门锁定态：不发起数据请求
+    MODELS_LOADING = true
+    MODELS_ERR = ''
+    renderMgrModels()
+    try {
+      const res = await fetch(apiUrl('/api/models'))
+      const data = await res.json()
+      if (!data || !('model' in data)) throw new Error(data.error || 'bad response')
+      MODELS = data
+    } catch (e) {
+      MODELS_ERR = e.message || String(e)
+    } finally {
+      MODELS_LOADING = false
+      renderMgrModels()
+    }
+    return MODELS
+  }
   const MGR_PALETTE = ['#5b8ff9', '#61a1c2', '#7b6bd6', '#5aa57a', '#d98a4a', '#c96a6a', '#4aa3a0', '#a06ba8', '#6b8f71', '#b48a5a']
   function mgrColor(n) {
     let h = 0
@@ -77,6 +103,22 @@
 
   // ---------- 状态 ----------
   const state = { mode: 'list', pt: 'projects', panelOpen: false, folded: false, currentHash: null, mgr: null, preview: null, mgrView: { kind: 'plugins', cat: 'public', q: '' } }
+
+  // 界面状态持久化（2026-08-16）：管理视图内部状态（mgrView：插件/技能切换、公开/个人、搜索词）
+  // 存 localStorage，刷新后由 route 的 mgr 分支 loadMgrView 恢复——配合 hash 路由 #mgr/<kind>/#preview/<label>
+  // 实现「刷新保持当前界面」（会话/管理/预览三态均可恢复，不再回退初始界面）。
+  const UI_KEY = 'floria-ui-v1'
+  function saveMgrView() {
+    try { localStorage.setItem(UI_KEY, JSON.stringify({ mgrView: state.mgrView })) } catch { /* 存储不可用忽略 */ }
+  }
+  function loadMgrView() {
+    try {
+      const raw = localStorage.getItem(UI_KEY)
+      if (!raw) return
+      const d = JSON.parse(raw)
+      if (d && d.mgrView) state.mgrView = { ...state.mgrView, ...d.mgrView }
+    } catch { /* 忽略 */ }
+  }
   let ALL = []
   let timer = null
   // 阶段1 实时同步：SSE 变更驱动的去重/防抖状态
@@ -388,6 +430,10 @@
   function parseRoute() {
     const raw = location.hash.replace(/^#\/?/, '')
     if (!raw) return { name: 'home' }
+    // 管理视图 / 项目预览进入 hash 路由（2026-08-16）：刷新后恢复当前界面而非回到初始界面。
+    // 会话 UUID 不会以 mgr//preview/ 开头，前缀判定安全。
+    if (raw.startsWith('mgr/')) return { name: 'mgr', mgr: raw.slice(4) }
+    if (raw.startsWith('preview/')) return { name: 'preview', label: decodeURIComponent(raw.slice(8)) }
     return { name: 'session', hash: decodeURIComponent(raw) }
   }
 
@@ -400,6 +446,8 @@
     syncMgrTabs()
     renderRecent()
     if (r.name === 'home') renderHome()
+    else if (r.name === 'mgr') { state.mgr = r.mgr; loadMgrView(); renderMgr() }
+    else if (r.name === 'preview') { state.preview = r.label; openProjectPreview(r.label, true) }
     else renderSession(r.hash)
   }
 
@@ -413,6 +461,14 @@
     location.hash = hash
   }
 
+  // 2026-08-18 按 SubPj3 实现：空态输入栏挂 #empty-hint .g-stage 内真相对定位（top=台面 76.75%−26px），
+  // 会话态移回 #chat-area 沉底。界面切换时移动 DOM，保证定位基准正确且 transition 平滑。
+  const emptyStageEl = () => document.querySelector('#empty-hint .g-stage')
+  function mountInput(where) {
+    const target = where === 'stage' ? emptyStageEl() : chatArea
+    if (target && inputWrap.parentNode !== target) target.appendChild(inputWrap)
+  }
+
   function renderHome() {
     stopLiveFoldTimer()
     pinRelease()
@@ -422,12 +478,14 @@
     inputWrap.classList.remove('docked')
     chatArea.classList.remove('in-session')
     chatArea.classList.remove('mgr-on')
+    mountInput('stage')
   }
 
   function renderSession(hash) {
     stopLiveFoldTimer()
     pinRelease()
     chatArea.classList.remove('mgr-on')
+    mountInput('chat') // 输入栏移回 #chat-area 沉底
     const s = findSession(hash)
     state.currentHash = hash
     if (!s) {
@@ -755,6 +813,10 @@
       const k = el.dataset.hash || el.dataset.f
       if (k) prevKeys.add(k)
     })
+    // 保留展开的项目文件夹 + 侧栏滚动位置（2026-08-16：主区导航进管理视图/预览走 route→renderRecent，
+    // 重建列表时不重置侧栏状态，避免展开文件夹收起、滚动跳顶）
+    const openF = [...bodyEl.querySelectorAll('.folder.open')].map((f) => f.dataset.f)
+    const prevTop = bodyEl.scrollTop
     bodyEl.innerHTML = ''
     modeTabsEl.classList.toggle('hidden', state.mode !== 'project')
     recentLabel.textContent = state.mode === 'list' ? '最近' : '最近对话'
@@ -764,6 +826,12 @@
       const k = el.dataset.hash || el.dataset.f
       if (k && !prevKeys.has(k)) el.classList.add('item-in')
     })
+    if (openF.length) {
+      for (const f of bodyEl.querySelectorAll('.folder')) {
+        if (openF.includes(f.dataset.f)) f.classList.add('open')
+      }
+    }
+    if (prevTop) bodyEl.scrollTop = prevTop
     renderBubble()
     renderSearch()
   }
@@ -799,7 +867,24 @@
       chatArea.classList.add('mgr-on')
       renderMgrProj()
       const pq = $('mgr-pq')
-      if (pq) pq.addEventListener('input', () => { state.mgrView.q = pq.value; renderMgrProj() })
+      if (pq) pq.addEventListener('input', () => { state.mgrView.q = pq.value; saveMgrView(); renderMgrProj() })
+      return
+    }
+    // 「模型」入口：仿照项目布设，展示便携根 settings.json 的模型配置（只读）
+    if (state.mgr === 'models') {
+      // 顶部结构与插件视图完全同构（空 mgr-top 占位等高防跳）
+      messagesEl.innerHTML =
+        '<div class="mgr-pane">' +
+        '<div class="mgr-top"></div>' +
+        '<div class="mgr-head"><h2 class="mgr-title">模型列表</h2></div>' +
+        '<div class="mgr-model-list" id="mgr-model-list"></div>' +
+        '<div class="mgr-foot">数据源：网关 /api/models</div>' +
+        '</div>'
+      inputWrap.classList.remove('docked')
+      chatArea.classList.remove('in-session')
+      chatArea.classList.add('mgr-on')
+      renderMgrModels()
+      loadModelsData(false)
       return
     }
     const v = state.mgrView
@@ -841,17 +926,19 @@
     pane.querySelectorAll('.mgr-kind-btn').forEach((b) =>
       b.addEventListener('click', () => {
         v.kind = b.dataset.kind
+        saveMgrView()
         renderMgr()
       }),
     )
     pane.querySelectorAll('.mgr-cat').forEach((b) =>
       b.addEventListener('click', () => {
         v.cat = b.dataset.cat
+        saveMgrView()
         renderMgr()
       }),
     )
     const q = $('mgr-q')
-    if (q) q.addEventListener('input', () => { v.q = q.value; renderMgrGrid() })
+    if (q) q.addEventListener('input', () => { v.q = q.value; saveMgrView(); renderMgrGrid() })
   }
 
   // 管理视图：插件/技能卡片网格（按 kind + cat + 搜索词过滤；数据源 = 后端 /api/plugins）
@@ -910,9 +997,11 @@
       : '<div class="mgr-empty">' + (q ? '没有匹配的项目' : '暂无项目会话') + '</div>'
     list.querySelectorAll('.mgr-proj').forEach((b) =>
       b.addEventListener('click', () => {
-        // 带预览的项目：点胶囊 → 加载 <项目>/.claude/preview/ 网页替换主界面；不带 → 维持原行为进会话
-        if (b.dataset.preview === '1' && b.dataset.label) {
-          openProjectPreview(b.dataset.label)
+        // 点项目胶囊一律进预览：带 .claude/preview 加载真预览页；不带 → 默认项目主页
+        // （GitHub 仓库风格，web/default-preview/，由网关 /api/project 拉数据）。
+        if (b.dataset.label) {
+          // 进预览走 hash 路由（#preview/<label>），刷新后可恢复当前预览页
+          navigate('#preview/' + encodeURIComponent(b.dataset.label))
           if (isMobile()) setPanel(false)
           return
         }
@@ -927,15 +1016,113 @@
     const latest = [...chats].sort((a, b) => b.updatedAt - a.updatedAt)[0]
     const n = chats.length
     return (
-      `<button class="mgr-proj" data-hash="${latest ? esc(hashOf(latest)) : ''}" data-label="${esc(label)}" data-preview="${hasPreview ? '1' : '0'}" title="${esc(label)} · ${n} 个会话${hasPreview ? '（点击进入项目预览）' : ''}">` +
+      `<button class="mgr-proj" data-hash="${latest ? esc(hashOf(latest)) : ''}" data-label="${esc(label)}" data-preview="${hasPreview ? '1' : '0'}" title="${esc(label)} · ${n} 个会话（点击进入项目主页）">` +
       `<span class="mgr-ic" style="background:${mgrColor(label)}">${I.folder}</span>` +
       `<span class="mgr-meta"><span class="mgr-name">${esc(label)}${hasPreview ? '<span class="pv-badge">预览</span>' : ''}<span class="inst-badge">${n} 个会话</span></span>` +
-      `<span class="mgr-desc">${hasPreview ? '点击打开项目预览页（.claude/preview）' : (latest ? esc(latest.title) : '暂无会话')}</span></span>` +
+      `<span class="mgr-desc">${hasPreview ? '点击打开项目预览页（.claude/preview）' : '点击打开默认项目主页（无预览页）'}</span></span>` +
       '<span class="mgr-more" title="打开">›</span></button>'
     )
   }
-  // 项目预览：主聊天区渲染返回栏 + iframe 加载 <项目>/.claude/preview/index.html，替换管理/会话界面
-  function openProjectPreview(label) {
+
+  // 管理视图：模型列表（按供应商分组；数据源 = 网关 /api/models，只读展示）
+  const MODEL_PROVIDER_KEYS = [
+    [/^ANTHROPIC_/, 'Claude · Anthropic'],
+    [/^OPENAI_/, 'OpenAI'],
+    [/^GEMINI_/, 'Google Gemini'],
+    [/^DEEPSEEK_/, 'DeepSeek'],
+    [/^QWEN_/, 'Qwen · 通义千问'],
+    [/^DASHSCOPE_/, 'Qwen · 通义千问'],
+    [/^GLM_/, '智谱 GLM'],
+    [/^MOONSHOT_/, 'Moonshot Kimi'],
+    [/^OPENROUTER_/, 'OpenRouter'],
+  ]
+  // 供应商判定：key 优先（模型类环境变量名带供应商前缀），通用 model 键或未命中则按模型串前缀。
+  function modelProviderOf(it) {
+    const k = String(it.k || '')
+    const v = String(it.v || '')
+    if (k !== 'model') {
+      for (const [re, name] of MODEL_PROVIDER_KEYS) if (re.test(k)) return name
+    }
+    const vl = v.toLowerCase()
+    if (vl.startsWith('claude')) return 'Claude · Anthropic'
+    if (vl.startsWith('deepseek')) return 'DeepSeek'
+    if (vl.startsWith('qwen')) return 'Qwen · 通义千问'
+    if (vl.startsWith('gpt') || vl.startsWith('o1') || vl.startsWith('o3')) return 'OpenAI'
+    if (vl.startsWith('gemini')) return 'Google Gemini'
+    if (vl.startsWith('glm')) return '智谱 GLM'
+    if (vl.startsWith('moonshot') || vl.includes('kimi')) return 'Moonshot Kimi'
+    if (vl.includes('doubao')) return '字节豆包'
+    return '自定义 / 其他'
+  }
+  function renderMgrModels() {
+    const list = $('mgr-model-list')
+    if (!list) return
+    if (MODELS_LOADING) {
+      list.innerHTML = '<div class="mgr-empty">加载模型列表…</div>'
+      return
+    }
+    if (MODELS_ERR) {
+      list.innerHTML =
+        '<div class="mgr-empty">模型列表加载失败：' + esc(MODELS_ERR) +
+        '<br><button class="mgr-retry" id="mgr-models-retry">重试</button></div>'
+      const retry = $('mgr-models-retry')
+      if (retry) retry.addEventListener('click', () => loadModelsData(true))
+      return
+    }
+    const d = MODELS
+    if (!d) {
+      list.innerHTML = '<div class="mgr-empty">暂无模型配置</div>'
+      return
+    }
+    const items = Array.isArray(d.items) ? d.items : []
+    if (!items.length) {
+      list.innerHTML = '<div class="mgr-empty">暂无模型配置</div>'
+      return
+    }
+    // 按供应商分组（保持配置出现顺序，组内保持原序）
+    const groups = []
+    for (const it of items) {
+      const p = modelProviderOf(it)
+      let g = groups.find((x) => x.provider === p)
+      if (!g) {
+        g = { provider: p, items: [] }
+        groups.push(g)
+      }
+      g.items.push(it)
+    }
+    list.innerHTML = groups
+      .map(
+        (g) =>
+          '<div class="mgr-model-group">' +
+          `<div class="mgr-model-ghead"><span class="mgr-model-gname">${esc(g.provider)}</span></div>` +
+          g.items.map(modelCapHtml).join('') +
+          '</div>',
+      )
+      .join('')
+  }
+  // 模型胶囊：完全复用项目胶囊 .mgr-proj 的风格与尺寸（40px 彩块 icon + 名称行 + 描述行 + › 箭头），只读展示无点击动作。
+  function modelCapHtml(it) {
+    const name = String(it.v || '')
+    // 备注小字 = 是否为视觉模型（凭据池 modelVision 配置；未标记按非视觉）
+    const desc = it.vision === true ? '支持视觉' : '不支持视觉'
+    // DeepSeek 供应商 → 白底 + 蓝色鲸鱼；其它供应商保留彩块 + 芯片线条
+    const isDs = modelProviderOf(it) === 'DeepSeek'
+    const icStyle = isDs ? 'background:#fff;color:#4d6bfe;border:1px solid #d9e2f8' : 'background:' + mgrColor(name)
+    const icSvg = isDs ? I.whale : I.chip
+    return (
+      `<div class="mgr-proj mgr-model-item" title="${esc(name)}">` +
+      `<span class="mgr-ic" style="${icStyle}">${icSvg}</span>` +
+      `<span class="mgr-meta"><span class="mgr-name">${esc(name)}</span>` +
+      `<span class="mgr-desc">${esc(desc)}</span></span>` +
+      '<span class="mgr-more" title="模型">›</span>' +
+      '</div>'
+    )
+  }
+  // 项目预览：主聊天区渲染返回栏 + iframe，替换管理/会话界面。
+  // hasPreview=true → 加载 <项目>/.claude/preview/index.html；404/失败 → 兜底默认项目主页。
+  // hasPreview=false（项目无预览页）→ 直接加载默认项目主页（GitHub 仓库风格，web/default-preview/，
+  // 由网关 /api/project 拉取该项目的文件树 / README / 会话）。
+  function openProjectPreview(label, hasPreview) {
     state.currentHash = null
     stopLiveFoldTimer()
     pinRelease()
@@ -943,43 +1130,37 @@
     inputWrap.classList.remove('docked')
     chatArea.classList.remove('in-session')
     chatArea.classList.add('mgr-on')
-    // iframe 加载带 token（/preview/* 与 /api/* 一致要求校验，见 localGateway.handleRequest）
-    const src = `/preview/${encodeURIComponent(label)}/index.html${gToken ? '?token=' + encodeURIComponent(gToken) : ''}`
+    // iframe 加载带 token（/preview/* 与 /default-preview/* 与 /api/* 一致要求校验，见 localGateway.handleRequest）
+    const previewSrc = `/preview/${encodeURIComponent(label)}/index.html${gToken ? '?token=' + encodeURIComponent(gToken) : ''}`
+    const defaultSrc = `/default-preview/${encodeURIComponent(label)}/${gToken ? '?token=' + encodeURIComponent(gToken) : ''}`
     messagesEl.innerHTML =
       '<div class="preview-shell">' +
       '<div class="preview-bar">' +
       '<button class="preview-back" id="preview-back">← 返回项目列表</button>' +
-      `<span class="preview-title">${esc(label)} · 项目预览</span>` +
       '</div>' +
-      '<div class="preview-body"><div class="preview-loading">正在加载预览页…</div></div>' +
+      '<div class="preview-body"><div class="preview-loading">正在加载…</div></div>' +
       '</div>'
     const back = $('preview-back')
     if (back) back.addEventListener('click', () => closeProjectPreview())
-    // 404/失败兜底（2026-08-15）：先 fetch 探测预览入口，命中才挂 iframe；
-    // 缺失/被删/无权限 → 显示「该项目暂无可用预览页」占位 + 返回按钮。
-    fetch(src, { method: 'GET' })
-      .then((r) => {
-        if (!r.ok) throw new Error('HTTP ' + r.status)
-        const body = document.querySelector('.preview-body')
-        if (body) body.innerHTML = `<iframe class="preview-frame" title="${esc(label)} 项目预览" src="${src}"></iframe>`
-      })
-      .catch(() => {
-        const body = document.querySelector('.preview-body')
-        if (body) {
-          body.innerHTML =
-            '<div class="preview-empty">' +
-            '<div class="preview-empty-title">该项目暂无可用预览页</div>' +
-            '<div class="preview-empty-sub">' + esc(label) + ' · .claude/preview 入口不可用（缺失或已被删除）</div>' +
-            '<button class="preview-empty-back" id="preview-empty-back">← 返回项目列表</button>' +
-            '</div>'
-          const eb = $('preview-empty-back')
-          if (eb) eb.addEventListener('click', () => closeProjectPreview())
-        }
-      })
+    const mount = (src) => {
+      const body = document.querySelector('.preview-body')
+      if (body) body.innerHTML = `<iframe class="preview-frame" title="${esc(label)} 项目主页" src="${src}"></iframe>`
+    }
+    if (hasPreview) {
+      // 真预览：先 fetch 探测入口，命中才挂 iframe；缺失/被删/无权限 → 兜底默认项目主页
+      fetch(previewSrc, { method: 'GET' })
+        .then((r) => {
+          if (!r.ok) throw new Error('HTTP ' + r.status)
+          mount(previewSrc)
+        })
+        .catch(() => mount(defaultSrc))
+    } else {
+      mount(defaultSrc)
+    }
   }
   function closeProjectPreview() {
     state.preview = null
-    renderMgr() // 回到当前管理视图（state.mgr 仍是 'projects' → 重渲项目列表）
+    navigate('#mgr/projects') // 回到项目管理视图（hash 路由；预览只从项目胶囊进入）
   }
 
   function renderList() {
@@ -1121,10 +1302,9 @@
   document.querySelectorAll('.mgr-tab').forEach((b) =>
     b.addEventListener('click', () => {
       const k = b.dataset.mgr
-      state.mgr = state.mgr === k ? null : k
-      syncMgrTabs()
-      if (state.mgr) renderMgr()
-      else route()
+      // 管理视图进/出走 hash 路由（#mgr/<kind> / #/）：刷新后可恢复当前管理视图
+      if (state.mgr === k) navigate('#/')
+      else { saveMgrView(); navigate('#mgr/' + k) }
     }),
   )
 
@@ -1202,6 +1382,14 @@
 
   // 路由
   window.addEventListener('hashchange', route)
+  // 默认项目主页（default-preview iframe）点会话 → 父级打开该会话（hash = 会话 uuid）
+  window.addEventListener('message', (e) => {
+    const d = e.data || {}
+    if (d.type === 'floria-open-session' && d.hash) {
+      navigate('#/' + encodeURIComponent(d.hash))
+      if (isMobile()) setPanel(false)
+    }
+  })
   // 钉顶回合窗口尺寸变化（旋转/缩放）时，预留空间跟随新容器高度自适应
   window.addEventListener('resize', () => { if (pin.active && pin.reserve) pinReserveApply() })
 
@@ -1222,6 +1410,8 @@
   // 检测 /api/health 返回 mode==='gateway' 即启用：composer 可发、WS 双向、工具审批。
   // 只读查看模式（SubPj1 后端）下本块全部不生效。
   let GATEWAY = false
+  let GATEWAY_REVIEW = false // 审阅模式（server.mjs REVIEW_GATEWAY）：health 带 review 标志，token 门不建真 WS 直接走视觉流程
+  let HOT_RELOAD = false // 开发审阅热重载（server.mjs HOT_RELOAD）：health 带 hotReload 标志，建 SSE 监听 public 变化自动刷新
   let gateAwait = false // token 门态：网关 token 验证通过前锁定为全空白 + 中间输入框
   let gToken = new URLSearchParams(location.search).get('token') || ''
   let gws = null
@@ -1938,17 +2128,33 @@
   }
 
   function connect() {
+    if (GATEWAY_REVIEW) {
+      // 审阅模式（bun 编译 exe）：node:http 的 upgrade 握手在 bun 下 101 无法送达客户端、
+      // WS onopen 永不触发，token 门会卡在「正在验证」。审阅模式 token 非空即视为通过，
+      // 不建真 WS，直接走视觉流程（视频过渡 → 趴栏 → 空态）。正式网关（无 review 标志）不受影响。
+      gateVerified = true
+      setConn(true, '已连接')
+      gatePlayTransition()
+      return
+    }
     if (gws) { try { gws.close() } catch {} }
     const proto = location.protocol === 'https:' ? 'wss' : 'ws'
     gws = new WebSocket(`${proto}://${location.host}/ws?token=${encodeURIComponent(gToken)}`)
     gws.onopen = () => {
       setConn(true, '已连接')
-      hideGate() // 验证通过 → 解锁正式界面（输入栏平滑拉伸平移 + 侧栏/空态淡入）
+      gateVerified = true
+      if (gateAwait) gatePlayTransition() // 门流程：播过渡视频（白板拉伸成输入栏/角色转正趴栏），ended 后 hideGate
+      else hideGate() // URL 带 token 直连（无门）：验证通过直接解锁
       syncGwSend()
     }
     gws.onclose = () => {
       setConn(false, '未连接')
-      if (gateAwait) { toast('token 错误或连接失败，请重试'); showGate() } // 门态失败：回门重输
+      // 2026-08-18 修复：token 未验证成功即断开（URL token 过期——网关重启/换新 token、或门内输入错误）
+      // 一律回 token 门重输，避免静默卡在空态、后续数据请求带着无效 token 全 401。
+      if (!gateVerified) {
+        toast(gateAwait ? 'token 错误或连接失败，请重试' : '连接失败：token 无效或已过期，请重新输入')
+        showGate()
+      }
       gws = null
       syncGwSend()
     }
@@ -1963,35 +2169,110 @@
     }
   }
 
-  // ---- token 门（2026-08-15）：网关 token 未验证前 = 全空白锁定态，仅中间一个输入框 ----
-  // 输入正确 token 回车/点发送 → connect()，WS onopen（服务端放行）→ hideGate() 解锁正式界面：
-  // 输入栏从正中央平滑拉伸平移为正式输入栏（空态位），侧栏/空态 icon/消息区随之淡入。
+  // ---- token 门（2026-08-15；2026-08-17 SubPj3 复刻：白板内 token 表单 → 视频过渡 → 趴栏+胶囊+台面输入栏）----
+  // 输入 token 回车 → connect()（WS 服务端验证）→ onopen 置 gateVerified → 白板内表单淡出 + 过渡视频
+  // （白板拉伸成输入栏/角色转正趴栏）→ ended → 阶段3 趴栏+胶囊淡入 → 停留后 hideGate() 进空态
+  // （空态同趴栏 stage，位置一致无缝）。token 错误（onclose 未验证）→ 回门重输。
+  let gateVerified = false // WS 已验证 token
+  let finishGateTimer = null // 阶段3 停留后 hideGate 的定时器
+  let hideGateTimer = null // gate-screen 淡出后隐藏的定时器（hideGate 不再硬切）
+  const gateScreen = $('gate-screen')
+  const gTok = $('g-token'), gVid = $('g-video'), gNewImg = $('g-new')
+  const gCard = $('g-card')
+  const gTokenInput = $('g-token-input')
+
   function showGate() {
     closeMentionPop()
     gateAwait = true
+    gateVerified = false
     document.body.classList.add('token-gate')
-    inputEl.dataset.ph = '请输入网关 token，回车连接'
-    inputEl.textContent = ''
-    inputEl.focus()
+    // token 门态输入栏必须回到 chat 空态位（位置一致），防 hash 残留会话导致 docked 到底部
+    inputWrap.classList.remove('docked')
+    chatArea.classList.remove('in-session')
+    // 重置门到阶段1：举白板 + 白板内 token 表单
+    // 平滑浮现：先置透明再移除 fade-out（强制 reflow 让 transition 生效）→ 淡入
+    clearTimeout(hideGateTimer)
+    gateScreen.classList.add('fade-out')
+    gateScreen.hidden = false
+    void gateScreen.offsetWidth
+    gateScreen.classList.remove('fade-out')
+    clearTimeout(finishGateTimer)
+    gVid.pause(); gVid.currentTime = 0
+    gVid.classList.remove('show', 'fade-out')
+    gTok.classList.remove('fade-out')
+    gNewImg.classList.remove('show')
+    gCard.classList.remove('hide', 'shake')
+    gTokenInput.value = ''
+    gTokenInput.focus()
     syncGwSend()
   }
+  function gatePlayTransition() {
+    // 阶段1 → 阶段2：白板内表单淡出，过渡视频淡入播放（视频首帧≈举白板图，无缝衔接）
+    gCard.classList.add('hide')
+    gTok.classList.add('fade-out')
+    gVid.classList.add('show')
+    gVid.currentTime = 0
+    gVid.playbackRate = 1.5 // 过渡视频提速（用户「动画播放快一点」）
+    const p = gVid.play()
+    if (p && p.catch) p.catch(finishGate) // 视频不可播（不支持 webm/mp4）→ 直接进空态
+  }
+  function finishGate() {
+    if (!gateVerified) return
+    // 阶段2 → 阶段3：视频淡出，趴栏图淡入；停留片刻后 hideGate（空态同趴栏 stage，无缝）
+    gVid.classList.add('fade-out')
+    gVid.classList.remove('show')
+    gNewImg.classList.add('show')
+    clearTimeout(finishGateTimer)
+    finishGateTimer = setTimeout(hideGate, 300)
+  }
+  gVid.addEventListener('ended', finishGate)
+
   function hideGate() {
     gateAwait = false
     document.body.classList.remove('token-gate')
-    inputEl.dataset.ph = '输入消息，Enter 发送'
-    inputEl.textContent = ''
+    // 2026-08-18：token 验证通过后写入 URL（replaceState 不触发刷新）——地址栏显示 token，
+    // 刷新/收藏即带 token 直连，不再回门重输（用户实测「url 还是 ?token= 空」）。
+    try {
+      const u = new URL(location.href)
+      u.searchParams.set('token', gToken)
+      history.replaceState(null, '', u.toString())
+    } catch { /* 忽略 */ }
+    gVid.pause()
+    inputEl.dataset.ph = '输入消息，Enter 发送' // 占位符复位（token 提示 → 正常输入）
+    // gate-screen 淡出后隐藏，与空态（同款渐变背景）交叉过渡 → 切换平滑浮现，不做硬切
+    gateScreen.classList.add('fade-out')
+    clearTimeout(hideGateTimer)
+    hideGateTimer = setTimeout(() => {
+      gateScreen.hidden = true
+      gateScreen.classList.remove('fade-out')
+    }, 280)
     syncGwSend()
     // token 门锁定态跳过的数据加载，解锁后补拉（SSE 重连 + 会话列表/当前会话）
-    loadSessions()
+    // 2026-08-18 修复：loadSessions 只填 ALL 不渲染，门后首次拉取后侧栏一直空——
+    // 后续 SSE hello→refreshList 因 sig===listSig 短路跳过渲染；须在数据落地后显式渲染侧栏
+    //（renderRecent 保留展开文件夹+滚动位置，幂等）。
+    loadSessions().then(renderRecent)
     initLive()
-    refreshSession()
+    // 恢复当前界面（gToken 已就绪）：预览态重挂 iframe、管理视图补拉数据、会话态增量刷新
+    if (state.preview) route()
+    else if (state.mgr) { loadMgrData(true); if (state.mgr === 'models') loadModelsData(true) }
+    else refreshSession()
   }
   function gateSubmit() {
-    const t = inputEl.textContent.trim()
-    if (!t) { inputEl.focus(); return }
+    const t = gTokenInput.value.trim()
+    if (!t) {
+      gTokenInput.classList.remove('shake'); void gTokenInput.offsetWidth
+      gTokenInput.classList.add('shake')
+      gTokenInput.focus()
+      return
+    }
     gToken = t
     connect()
   }
+  // 白板内 token 表单：回车提交（无发送按钮）
+  gTokenInput.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { e.preventDefault(); gateSubmit() }
+  })
 
   function gwSend() {
     if (!GATEWAY) return false
@@ -2001,11 +2282,14 @@
     if (!gws || gws.readyState !== 1) { toast('未连接，无法发送'); return true }
     if (!inputWrap.classList.contains('docked')) {
       // 先入会话态（输入栏沉底、滚动区留底边距），再追加/钉顶消息，保证钉顶位置计算基于最终布局
+      mountInput('chat') // 输入栏从空态 stage 移回 #chat-area 沉底
       inputWrap.classList.add('docked')
       chatArea.classList.add('in-session')
     }
     addUser(text)
-    gws.send(JSON.stringify({ type: 'send', text }))
+    // 2026-08-17 网关独立化：带当前会话 hash，网关按 sessionId 精确路由给对应 CLI 进程
+    // （未在具体会话时 currentHash 为 null → 字段省略，网关广播兜底）
+    gws.send(JSON.stringify({ type: 'send', text, sessionId: state.currentHash || undefined }))
     inputEl.textContent = ''
     syncGwSend()
     return true
@@ -2036,6 +2320,8 @@
       if (!res.ok) return
       const d = await res.json()
       if (d.mode === 'gateway') GATEWAY = true
+      if (d.review) GATEWAY_REVIEW = true
+      if (d.hotReload) HOT_RELOAD = true
     } catch { /* 非网关环境（SubPj1 后端）忽略 */ }
   }
 
@@ -2050,5 +2336,10 @@
     route()
     if (GATEWAY) initGateway()
     else { inputEl.contentEditable = 'false'; inputEl.dataset.ph = '只读查看 · 无法发送' } // 只读查看器：输入不可编辑
+    if (HOT_RELOAD) {
+      // 开发审阅热重载：server.mjs HOT_RELOAD=1 时，public/ 文件变化经 SSE 通知 → 自动刷新
+      const hr = new EventSource('/api/hotreload')
+      hr.onmessage = (e) => { if (e.data === 'reload') location.reload() }
+    }
   })()
 })()

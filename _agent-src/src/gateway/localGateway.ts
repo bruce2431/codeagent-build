@@ -1,16 +1,22 @@
 /**
- * localGateway.ts —— 内置私有化网关（进程内，feature: PRIVATE_GATEWAY）
+ * localGateway.ts —— 内置私有化网关（feature: PRIVATE_GATEWAY）。
  *
- * 由 /server 命令开关。与旧形态（SubPj2-私有化网关/server/gateway.mjs 独立进程 + spawn
- * cli-dev.exe --print 子进程）不同：本模块直接跑在 CLI 进程内，遥测端消息经 WS 到达后
- * 通过 messageQueueManager.enqueue 注入本进程 REPL 队列——与打字完全同一条路径，
- * 无需子进程、无跨进程同步、无 AGENT_CWD。会话转录落盘由 REPL 现有机制天然完成，
- * 落在 CLI 当前项目根 .claude/projects/（目录隔离自动满足）。
+ * 2026-08-17 网关独立化：网关以「同一 exe 的 --gateway 模式」作为独立进程运行（/server on
+ * detached spawn 自身 exe），本模块即该网关进程的主体。CLI 进程（非网关宿主）启动后作为
+ * WS 客户端连 /clients 注册自己的 sessionId（见 src/utils/gatewayClient.ts）；遥测端（浏览器）
+ * 经 /ws 发消息，网关按 sessionId 跨进程路由转发给对应 CLI，由 CLI 侧 enqueue 注入其 REPL
+ * （与打字同路径）。token 落盘便携根 .claude/gateway-token，供各 CLI 进程读取后上报/连接。
+ *
+ * 生命周期（2026-08-17）：网关以独立进程长驻，不随任何 CLI 退出而消失；「无客户端空闲自动回收」
+ * ——CLI 注册(cliClients)/遥测 WS(sockets)/SSE(sseClients) 三集合全空持续 GATEWAY_IDLE_MINUTES
+ * （默认 10，可用环境变量调）分钟后自动 stopLocalGateway + 清盘 token + 退出，避免孤儿网关占端口。
+ * 停止途径：/server off（POST /api/shutdown）、空闲自动回收、SIGINT/SIGTERM、taskkill、系统关机。
  *
  * 复用已有实现：
  *  - 会话展示由 CLI 侧 conversationDisplay.ts 导出（POST /api/conversation），/api/session
  *    命中时优先返回 display；此处 jsonl 兜底读取仅用于 CLI 未导出的情况。
- *  - 注入路径与 useReplBridge.handleInboundMessage 相同：enqueue({mode:'prompt', bridgeOrigin:true})。
+ *  - 注入路径与 useReplBridge.handleInboundMessage 相同：enqueue({mode:'prompt', bridgeOrigin:true})
+ *    —— 现在在 CLI 进程（gatewayClient）内执行，而非本网关进程。
  *
  * HTTP/WS 用 node:http + ws（已验证可打包进 bun 编译产物），不依赖 Bun.serve。
  */
@@ -30,10 +36,8 @@ import {
 } from '../utils/sessionStoragePortable.js'
 import { parseSessionInfoFromLite } from '../utils/listSessionsImpl.js'
 import { filterConversationForDisplay } from '../utils/conversationDisplay.js'
-import { setGatewayToken } from '../utils/gatewayToken.js'
+import { setGatewayToken, saveGatewayTokenToDisk, clearGatewayTokenFromDisk } from '../utils/gatewayToken.js'
 import { webAssets } from './web-assets.generated.js'
-import { enqueue } from '../utils/messageQueueManager.js'
-import type { QueuedCommand } from '../types/textInputTypes.js'
 
 // ============================================================================
 // 状态
@@ -44,10 +48,19 @@ let currentToken = ''
 let currentHost = '0.0.0.0'
 let currentPort = 8124
 const sockets = new Set<WebSocket>()
+// 2026-08-17 网关独立化：CLI 进程（非网关宿主）作为 WS 客户端连 /clients 注册自己的
+// sessionId。遥测端发消息时网关按 sessionId 路由转发给对应 CLI，由 CLI 注入其 REPL。
+const cliClients = new Map<string, WebSocket>()
 const sseClients = new Set<{ res: import('node:http').ServerResponse }>()
 let sseTimer: NodeJS.Timeout | null = null
 let ssePrimed = false
 const sseSizes = new Map<string, { size: number; mtime: number }>()
+// 2026-08-17 空闲自动回收：三集合（cliClients/sockets/sseClients）全空持续 GATEWAY_IDLE_MINUTES
+// 分钟后自动关闭网关，避免「所有 CLI/遥测端都退出、网关空转占端口」的孤儿状态。仅 --gateway
+// 独立进程模式启用（进程内模式网关随 CLI 同生共死，无孤儿问题）。阈值可用 GATEWAY_IDLE_MINUTES 调。
+const GATEWAY_IDLE_MINUTES = Number(process.env.GATEWAY_IDLE_MINUTES || 10)
+const ENABLE_IDLE_RECLAIM = process.argv.includes('--gateway')
+let idleTimer: NodeJS.Timeout | null = null
 
 // CLI 侧 conversationDisplay.ts 上报的展示结果（内存，进程退出即消失）
 const conversationDisplays = new Map<string, { messages: unknown[]; updatedAt: number }>()
@@ -123,6 +136,19 @@ const MIME: Record<string, string> = {
   '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.json': 'application/json',
+  '.canvas': 'application/json; charset=utf-8',
+  '.md': 'text/plain; charset=utf-8',
+  '.txt': 'text/plain; charset=utf-8',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+  '.mp3': 'audio/mpeg',
+  '.wav': 'audio/wav',
+  '.ogg': 'audio/ogg',
+  '.m4a': 'audio/mp4',
+  '.mp4': 'video/mp4',
+  '.mov': 'video/quicktime',
+  '.webm': 'video/webm',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
   '.svg': 'image/svg+xml',
@@ -359,6 +385,113 @@ function mergeDisplayMessages(
 }
 
 // ============================================================================
+// 默认预览页数据（GET /api/project）：项目无 .claude/preview 时，前端 iframe 加载
+// web/default-preview/（GitHub 仓库风格），本函数提供文件树 / README / 会话元信息。
+//  - 文件树：递归扫项目根，跳过重型/隐藏目录（.git/node_modules/.claude/.trash/dist 等），
+//    目录在前、名称字典序；深度 ≤4、条目预算 ≤400（node_modules 等被跳过，正常项目足够）。
+//  - README：项目根 README*（.md/.markdown/.txt）优先，内容截断防超大 payload。
+//  - 描述：从 README 首行标题推断，兜底项目名。
+// ============================================================================
+const SKIP_TREE_DIRS = new Set(['.git', 'node_modules', '.claude', '.trash', '.cache', 'dist', 'cli-dist', '.idea', '.vscode'])
+type TreeNode = { name: string; type: 'file' | 'dir'; children?: TreeNode[] }
+
+/** 轻量列出一层直接子项（不递归），供预算耗尽时保证目录至少可展开一层。 */
+function listOneLevel(dir: string): TreeNode[] {
+  let entries
+  try {
+    entries = readdirSync(dir, { withFileTypes: true })
+  } catch {
+    return []
+  }
+  entries.sort((a, b) => {
+    if (a.isDirectory() !== b.isDirectory()) return a.isDirectory() ? -1 : 1
+    return a.name.localeCompare(b.name)
+  })
+  const out: TreeNode[] = []
+  for (const e of entries) {
+    if (out.length >= 50) break
+    if (e.name.startsWith('.')) continue
+    if (e.isDirectory() && SKIP_TREE_DIRS.has(e.name)) continue
+    out.push(e.isDirectory() ? { name: e.name, type: 'dir' } : { name: e.name, type: 'file' })
+  }
+  return out
+}
+
+function walkProjectTree(dir: string, depth: number, budget: { n: number }): TreeNode[] | null {
+  if (depth > 3) return null
+  let entries
+  try {
+    entries = readdirSync(dir, { withFileTypes: true })
+  } catch {
+    return []
+  }
+  entries.sort((a, b) => {
+    if (a.isDirectory() !== b.isDirectory()) return a.isDirectory() ? -1 : 1
+    return a.name.localeCompare(b.name)
+  })
+  // 每层 cap 50 防单层巨目录。预算按同级目录数平均分摊（同级互不挤占），
+  // 深度到顶用 listOneLevel 兜底，保证任意目录至少可展开看到下一级。
+  const out: TreeNode[] = []
+  for (const e of entries) {
+    if (out.length >= 50) break
+    if (budget.n <= 0) break
+    if (e.name.startsWith('.')) continue
+    if (e.isDirectory() && SKIP_TREE_DIRS.has(e.name)) continue
+    budget.n--
+    out.push(e.isDirectory() ? { name: e.name, type: 'dir' } : { name: e.name, type: 'file' })
+  }
+  const dirs = out.filter((it) => it.type === 'dir')
+  if (dirs.length) {
+    const per = Math.floor(budget.n / dirs.length)
+    for (const it of dirs) {
+      const sub = { n: Math.max(0, per) }
+      const children = walkProjectTree(join(dir, it.name), depth + 1, sub)
+      if (children && children.length) it.children = children
+      else {
+        const shallow = listOneLevel(join(dir, it.name))
+        if (shallow.length) it.children = shallow
+      }
+    }
+    budget.n = 0
+  }
+  return out
+}
+
+function findProjectReadme(dir: string): string | null {
+  const names = ['README.md', 'readme.md', 'README.markdown', 'readme.markdown', 'README.txt', 'readme.txt']
+  for (const n of names) {
+    const p = join(dir, n)
+    if (existsSync(p) && statSync(p).isFile()) {
+      const txt = readFileSync(p, 'utf8')
+      return txt.length > 200 * 1024 ? txt.slice(0, 200 * 1024) : txt
+    }
+  }
+  try {
+    const hit = readdirSync(dir).find((f) => /^readme/i.test(f) && !/^\./.test(f))
+    if (hit) {
+      const p = join(dir, hit)
+      if (existsSync(p) && statSync(p).isFile()) {
+        const txt = readFileSync(p, 'utf8')
+        return txt.length > 200 * 1024 ? txt.slice(0, 200 * 1024) : txt
+      }
+    }
+  } catch {
+    /* 忽略 */
+  }
+  return null
+}
+
+function deriveProjectDescription(readme: string | null, label: string): string {
+  if (readme) {
+    for (const line of readme.split('\n')) {
+      const m = /^#\s+(.+?)\s*$/.exec(line)
+      if (m) return m[1].trim().slice(0, 120)
+    }
+  }
+  return label
+}
+
+// ============================================================================
 // 插件/技能清单（便携根扫描；供 MGR 管理视图 GET /api/plugins）
 //  - 已安装插件：.claude/plugins/<name>/.claude-plugin/plugin.json
 //  - 已安装技能：.claude/skills/<name>/SKILL.md 的 frontmatter（name/description）
@@ -456,6 +589,83 @@ function listPlugins(root: string): Record<string, unknown> {
 }
 
 // ============================================================================
+// 模型配置（MGR 管理视图 GET /api/models，与 SubPj1 server.mjs 同逻辑）
+// 数据源 = 便携根 .claude/credentials.json 凭据池各 provider 的可用模型 +
+//          settings.json 的 model 字段 + env 中模型类环境变量 + 进程实际环境。
+// 只读展示，不改写任何配置。
+// ============================================================================
+const MODEL_ENV_KEYS = [
+  'ANTHROPIC_MODEL',
+  'ANTHROPIC_SMALL_FAST_MODEL',
+  'ANTHROPIC_DEFAULT_OPUS_MODEL',
+  'ANTHROPIC_DEFAULT_SONNET_MODEL',
+  'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+]
+const MODEL_PROVIDER_LABELS: Record<string, string> = {
+  deepseek: 'DeepSeek',
+  anthropic: 'Claude · Anthropic',
+  claude: 'Claude · Anthropic',
+  openai: 'OpenAI',
+  qwen: 'Qwen · 通义千问',
+  dashscope: 'Qwen · 通义千问',
+  gemini: 'Google Gemini',
+  glm: '智谱 GLM',
+  moonshot: 'Moonshot Kimi',
+  openrouter: 'OpenRouter',
+}
+function modelProviderLabel(name: string): string {
+  return MODEL_PROVIDER_LABELS[name.toLowerCase()] || name
+}
+function listModels(root: string): Record<string, unknown> {
+  const settingsPath = join(root, '.claude', 'settings.json')
+  const settings = readJsonObject(settingsPath) || {}
+  const items: Array<{ k: string; v: string; src: string }> = []
+  if (settings.model !== undefined) items.push({ k: 'model', v: String(settings.model), src: 'settings.json' })
+  const env0 = settings.env && typeof settings.env === 'object' ? (settings.env as Record<string, unknown>) : {}
+  const seen = new Set(items.map((i) => i.k))
+  for (const k of MODEL_ENV_KEYS) {
+    if (env0[k] !== undefined && !seen.has(k)) {
+      items.push({ k, v: String(env0[k]), src: 'settings.json → env' })
+      seen.add(k)
+    }
+  }
+  for (const k of MODEL_ENV_KEYS) {
+    if (process.env[k] !== undefined && !seen.has(k)) {
+      items.push({ k, v: String(process.env[k]), src: '进程环境变量' })
+      seen.add(k)
+    }
+  }
+  // 凭据池：credentials.json providers[].models[] = 各供应商实际可用的模型清单
+  const creds = readJsonObject(join(root, '.claude', 'credentials.json')) || {}
+  const providers =
+    creds.providers && typeof creds.providers === 'object'
+      ? (creds.providers as Record<string, unknown>)
+      : {}
+  const poolRows: Array<{ k: string; v: string; src: string; vision?: boolean }> = []
+  const poolSet = new Set<string>()
+  for (const [name, cfg0] of Object.entries(providers)) {
+    const cfg = (cfg0 && typeof cfg0 === 'object' ? cfg0 : {}) as Record<string, unknown>
+    const models = Array.isArray(cfg.models) ? (cfg.models as string[]) : []
+    const mv =
+      cfg.modelVision && typeof cfg.modelVision === 'object' ? (cfg.modelVision as Record<string, unknown>) : {}
+    const label = modelProviderLabel(name)
+    for (const m of models) {
+      if (poolSet.has(m)) continue
+      poolSet.add(m)
+      poolRows.push({ k: m, v: m, src: `凭据池·${label}`, vision: mv[m] === true })
+    }
+  }
+  // 已作为凭据池模型展示的 settings/env 条目不再重复（同一模型只出现一次）
+  const cfgItems = items.filter((it) => !poolSet.has(it.v))
+  return {
+    workspace: root,
+    model: settings.model !== undefined ? String(settings.model) : null,
+    source: settingsPath,
+    items: [...poolRows, ...cfgItems],
+  }
+}
+
+// ============================================================================
 // SSE 实时事件（jsonl 变化轮询）
 // ============================================================================
 function pollSse(root: string): void {
@@ -510,6 +720,9 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
   // 安全加固（2026-08-15）：HTTP 数据接口与 WS 升级一致要求 token。
   //  - /api/health 保持公开探活（/server status、前端 detectGateway 只读 mode），响应已精简不含路径泄露；
   //  - 其余 /api/*（会话/插件/SSE/上报写接口）与 /preview/* 一律校验 query token，失败 401。
+  //  - /default-preview/* 是网关内置静态页（index.html/default.css/default.js，无敏感数据），
+  //    不锁 token（页内相对资源请求不带 token，锁了会 401 致 JS/CSS 加载失败）；敏感数据在
+  //    /api/project（属于 /api/* 已受保护），由页面 JS 从自身 URL query 读 token 附加。
   // token 通过 URL query 传递：前端从 location.search 提取附加，CLI 侧上报从 gatewayToken.ts 读取附加。
   const isProtected =
     (url.pathname.startsWith('/api/') && url.pathname !== '/api/health') || url.pathname.startsWith('/preview/')
@@ -521,6 +734,17 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
   if (req.method === 'GET' && url.pathname === '/api/health') {
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-cache' })
     res.end(JSON.stringify({ ok: true, mode: 'gateway' }))
+    return
+  }
+  // 2026-08-17 独立网关优雅关闭端点（受上方 /api/* token 校验保护）：/server off 调用。
+  // 先回响应，再 stopLocalGateway + 退出进程（网关是独立 --gateway 进程，exit 即释放端口）。
+  if (req.method === 'POST' && url.pathname === '/api/shutdown') {
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
+    res.end(JSON.stringify({ ok: true, stopping: true }))
+    setTimeout(() => {
+      stopLocalGateway()
+      process.exit(0)
+    }, 50)
     return
   }
   if (req.method === 'GET' && url.pathname === '/api/sessions') {
@@ -542,6 +766,94 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
       res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' })
       res.end(JSON.stringify({ error: String((e && (e as Error).message) || e) }))
     }
+    return
+  }
+  if (req.method === 'GET' && url.pathname === '/api/models') {
+    try {
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-cache' })
+      res.end(JSON.stringify(listModels(root)))
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify({ error: String((e && (e as Error).message) || e) }))
+    }
+    return
+  }
+  // 默认预览页数据：/api/project?label=<项目> → 文件树 + README + 会话元信息（GitHub 仓库风格默认界面）
+  if (req.method === 'GET' && url.pathname === '/api/project') {
+    const pLabel = url.searchParams.get('label') || ''
+    const pProj = findProjects(root).find((g) => g.scope === 'project' && g.label === pLabel)
+    if (!pProj) {
+      res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify({ error: 'project not found' }))
+      return
+    }
+    try {
+      const pDir = resolve(pProj.dir, '..', '..') // pProj.dir = <root>/<label>/.claude/projects，上两级才是项目根（resolve '..' 只到 .claude）
+      const budget = { n: 2000 }
+      const files = walkProjectTree(pDir, 0, budget) ?? []
+      const readme = findProjectReadme(pDir)
+      const list = await listSessions(root)
+      const pSessions = (list.sessions as Array<Record<string, unknown>>)
+        .filter((s) => s.projectScope === 'project' && s.projectLabel === pLabel)
+        .map((s) => ({
+          hash: String(s.file).replace(/\.jsonl$/, ''),
+          id: s.id,
+          title: s.title,
+          messageCount: s.messageCount,
+          updatedAt: s.updatedAt,
+        }))
+        .slice(0, 100)
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-cache' })
+      res.end(
+        JSON.stringify({
+          label: pLabel,
+          scope: 'project',
+          hasPreview: pProj.hasPreview,
+          description: deriveProjectDescription(readme, pLabel),
+          files,
+          readme,
+          sessionCount: pSessions.length,
+          sessions: pSessions,
+          lastActive: pSessions.length ? (pSessions[0].updatedAt as number) : 0,
+        }),
+      )
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify({ error: String((e && (e as Error).message) || e) }))
+    }
+    return
+  }
+  // 项目内文件内容读取：/api/file?label=<项目>&path=<项目内相对路径> → 原始字节
+  // （供个性化预览页识图渲染 Obsidian canvas / 加载图片音频视频）。受上方 /api/* token 校验保护。
+  if (req.method === 'GET' && url.pathname === '/api/file') {
+    const fLabel = url.searchParams.get('label') || ''
+    const fPath = url.searchParams.get('path') || ''
+    const fProj = findProjects(root).find((g) => g.scope === 'project' && g.label === fLabel)
+    if (!fProj) {
+      res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify({ error: 'project not found' }))
+      return
+    }
+    const fDir = resolve(fProj.dir, '..', '..') // 项目根（fProj.dir = <root>/<label>/.claude/projects）
+    const fAbs = resolve(fDir, fPath)
+    if (fAbs !== fDir && !fAbs.startsWith(fDir + sep)) {
+      res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify({ error: 'forbidden' }))
+      return
+    }
+    if (!existsSync(fAbs) || !statSync(fAbs).isFile()) {
+      res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify({ error: 'not found' }))
+      return
+    }
+    if (statSync(fAbs).size > 4 * 1024 * 1024) {
+      res.writeHead(413, { 'Content-Type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify({ error: 'too large' }))
+      return
+    }
+    const fType = MIME[extname(fAbs)] ?? 'application/octet-stream'
+    res.writeHead(200, { 'Content-Type': fType, 'Cache-Control': 'no-cache' })
+    res.end(readFileSync(fAbs))
     return
   }
   // 项目预览页静态托管：/preview/<项目>/* → <root>/<项目>/.claude/preview/*（点击项目胶囊时前端 iframe 加载替换界面）
@@ -574,6 +886,31 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
       'Cache-Control': 'no-cache',
     })
     res.end(readFileSync(pvFile))
+    return
+  }
+  // 内置默认预览页（GitHub 仓库风格，项目无 .claude/preview 时的兜底界面）：
+  // /default-preview/<项目>/* → 内嵌 web 资源 default-preview/*（label 必须命中 findProjects 防任意路径）。
+  const dpMatch = /^\/default-preview\/([^/]+)((?:\/.*)?)$/.exec(url.pathname)
+  if (req.method === 'GET' && dpMatch) {
+    const dpLabel = decodeURIComponent(dpMatch[1])
+    const dpProj = findProjects(root).find((g) => g.scope === 'project' && g.label === dpLabel)
+    if (!dpProj) {
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' })
+      res.end('Not Found')
+      return
+    }
+    const dpRel = (dpMatch[2] || '').replace(/^\//, '') || 'index.html'
+    const dpBuf = readWebAsset(`default-preview/${dpRel}`)
+    if (!dpBuf) {
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' })
+      res.end('Not Found')
+      return
+    }
+    res.writeHead(200, {
+      'Content-Type': MIME[extname(dpRel)] ?? 'application/octet-stream',
+      'Cache-Control': 'no-cache',
+    })
+    res.end(dpBuf)
     return
   }
   if (req.method === 'GET' && url.pathname === '/api/session') {
@@ -664,8 +1001,12 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
     })
     const client = { res }
     sseClients.add(client)
+    scheduleIdleShutdown()
     res.write(`data: ${JSON.stringify({ type: 'hello', time: Date.now() })}\n\n`)
-    req.on('close', () => sseClients.delete(client))
+    req.on('close', () => {
+      sseClients.delete(client)
+      scheduleIdleShutdown()
+    })
     if (!sseTimer) sseTimer = setInterval(() => pollSse(root), 2000)
     return
   }
@@ -707,7 +1048,7 @@ function broadcast(msg: unknown): void {
 }
 
 function handleWsMessage(ws: WebSocket, raw: string): void {
-  let data: { type?: string; text?: string; requestId?: string; allowed?: boolean }
+  let data: { type?: string; text?: string; requestId?: string; allowed?: boolean; sessionId?: string }
   try {
     data = JSON.parse(raw)
   } catch {
@@ -717,14 +1058,24 @@ function handleWsMessage(ws: WebSocket, raw: string): void {
     case 'send': {
       const text = data.text ?? ''
       if (!text.trim()) break
-      // 与打字同路径注入 REPL 队列（复用 messageQueueManager.enqueue，同 useReplBridge）
-      enqueue({
-        value: text,
-        mode: 'prompt',
-        skipSlashCommands: true,
-        bridgeOrigin: true,
-      } as QueuedCommand)
-      broadcast({ type: 'status', state: `已注入: ${text.slice(0, 60)}` })
+      // 2026-08-17 跨进程路由：遥测端消息按 sessionId 转发给对应 CLI 进程（/clients 注册的 WS）。
+      // 命中目标 → 精确转发；无 sessionId/未命中 → 广播全部 CLI 客户端；无在线 CLI → status 提示。
+      const target = data.sessionId ? cliClients.get(data.sessionId) : undefined
+      if (target && target.readyState === WebSocket.OPEN) {
+        target.send(JSON.stringify({ type: 'send', text }))
+        ws.send(JSON.stringify({ type: 'status', state: `已转发给会话 ${data.sessionId}` }))
+      } else if (cliClients.size) {
+        for (const c of cliClients.values()) {
+          try {
+            c.send(JSON.stringify({ type: 'send', text }))
+          } catch {
+            /* 断开忽略 */
+          }
+        }
+        ws.send(JSON.stringify({ type: 'status', state: `已广播给 ${cliClients.size} 个在线 CLI 进程` }))
+      } else {
+        ws.send(JSON.stringify({ type: 'status', state: '当前无在线 CLI 进程，消息未注入' }))
+      }
       break
     }
     case 'approve': {
@@ -749,6 +1100,29 @@ export type LocalGatewayInfo = {
   localUrl: string
 }
 
+function hasClients(): boolean {
+  return cliClients.size > 0 || sockets.size > 0 || sseClients.size > 0
+}
+
+// 2026-08-17 空闲自动回收：无任何客户端连接（CLI 注册 / 遥测 WS / SSE 全空）时起计时，持续
+// GATEWAY_IDLE_MINUTES 分钟仍无连接 → 自动 stopLocalGateway（清空三集合 + 清盘 token）+ 退出进程。
+// 任一连接增删都会调用本函数重置计时（有动静即顺延）。仅 --gateway 独立进程模式启用。
+function scheduleIdleShutdown(): void {
+  if (idleTimer) {
+    clearTimeout(idleTimer)
+    idleTimer = null
+  }
+  if (!ENABLE_IDLE_RECLAIM || hasClients()) return
+  idleTimer = setTimeout(() => {
+    idleTimer = null
+    if (hasClients()) return // 计时期间已有连接，放弃回收
+    console.log(`[gateway] 无任何客户端连接，空闲超过 ${GATEWAY_IDLE_MINUTES} 分钟，自动关闭`)
+    stopLocalGateway()
+    process.exit(0)
+  }, GATEWAY_IDLE_MINUTES * 60 * 1000)
+  idleTimer.unref?.()
+}
+
 export function startLocalGateway(opts?: { host?: string; port?: number; token?: string }): LocalGatewayInfo {
   if (server) {
     const lan = lanAddress()
@@ -763,30 +1137,77 @@ export function startLocalGateway(opts?: { host?: string; port?: number; token?:
   currentHost = opts?.host || process.env.GATEWAY_HOST || '0.0.0.0'
   currentPort = Number(opts?.port || process.env.GATEWAY_PORT || 8124)
   currentToken = opts?.token || process.env.SERVER_TOKEN || randomBytes(16).toString('hex')
-  // 共享 token：CLI 侧上报（conversationDisplay.ts /api/conversation、/api/activity）据此附加校验参数
+  // 共享 token：CLI 侧上报（conversationDisplay.ts /api/conversation、/api/activity）据此附加校验参数。
+  // 2026-08-17 网关独立化：token 落盘（便携根 .claude/gateway-token），供其它 CLI 进程读取后
+  // 向本网关上报 / 连接 /clients（否则非网关宿主的 CLI 无 token，上报会被 401 拒绝）。
   setGatewayToken(currentToken)
+  saveGatewayTokenToDisk(currentToken)
   const root = getPortableRoot()
+  // 启动即挂上空闲回收计时：此时无任何连接，若后续一直无人使用，到点自动关闭
+  scheduleIdleShutdown()
 
   server = createServer((req, res) => handleRequest(req, res, root))
   wss = new WebSocketServer({ noServer: true })
   wss.on('connection', (ws) => {
     sockets.add(ws)
+    scheduleIdleShutdown()
     broadcast({ type: 'status', state: 'connected' })
     ws.on('message', (data) => {
       handleWsMessage(ws, data.toString())
     })
-    ws.on('close', () => sockets.delete(ws))
-    ws.on('error', () => sockets.delete(ws))
+    ws.on('close', () => {
+      sockets.delete(ws)
+      scheduleIdleShutdown()
+    })
+    ws.on('error', () => {
+      sockets.delete(ws)
+      scheduleIdleShutdown()
+    })
   })
   server.on('upgrade', (req, socket, head) => {
     const url = new URL(req.url ?? '/', `http://${req.headers.host || 'localhost'}`)
-    if (url.pathname !== '/ws' || url.searchParams.get('token') !== currentToken) {
+    if (url.searchParams.get('token') !== currentToken) {
       socket.destroy()
       return
     }
-    wss?.handleUpgrade(req, socket, head, (ws) => {
-      wss?.emit('connection', ws, req)
-    })
+    if (url.pathname === '/ws') {
+      // 遥测端（浏览器 floria）连接
+      wss?.handleUpgrade(req, socket, head, (ws) => {
+        wss?.emit('connection', ws, req)
+      })
+      return
+    }
+    if (url.pathname === '/clients') {
+      // 2026-08-17 CLI 进程客户端：query 带 session=<uuid>，注册进 cliClients，
+      // 遥测端消息经 send 分支转发过来，由 CLI 侧注入其 REPL。不 emit wss 'connection'
+      // （不进遥测 broadcast 集合，避免遥测状态误发给 CLI）。
+      const sid = url.searchParams.get('session') || ''
+      if (!sid) {
+        socket.destroy()
+        return
+      }
+      wss?.handleUpgrade(req, socket, head, (ws) => {
+        const prev = cliClients.get(sid)
+        if (prev && prev !== ws) {
+          try {
+            prev.close()
+          } catch {
+            /* 忽略 */
+          }
+        }
+        cliClients.set(sid, ws)
+        scheduleIdleShutdown()
+        const detach = () => {
+          if (cliClients.get(sid) === ws) cliClients.delete(sid)
+          scheduleIdleShutdown()
+        }
+        ws.on('close', detach)
+        ws.on('error', detach)
+        ws.send(JSON.stringify({ type: 'registered', session: sid }))
+      })
+      return
+    }
+    socket.destroy()
   })
   server.on('error', (err) => {
     // 端口被占等错误：关闭对象避免悬挂
@@ -811,6 +1232,10 @@ export function startLocalGateway(opts?: { host?: string; port?: number; token?:
 }
 
 export function stopLocalGateway(): boolean {
+  if (idleTimer) {
+    clearTimeout(idleTimer)
+    idleTimer = null
+  }
   if (sseTimer) {
     clearInterval(sseTimer)
     sseTimer = null
@@ -823,14 +1248,25 @@ export function stopLocalGateway(): boolean {
     }
   }
   sockets.clear()
+  // 2026-08-17 独立化：一并断开所有 CLI 客户端（它们会各自重连或静默等待）
+  for (const c of cliClients.values()) {
+    try {
+      c.close()
+    } catch {
+      /* 忽略 */
+    }
+  }
+  cliClients.clear()
   sseClients.clear()
   sseSizes.clear()
   ssePrimed = false
   // C1 修复：停网关时一并清空 CLI 上报的内存缓存（内存数据本就随网关重启失效）
   conversationDisplays.clear()
   sessionActivity.clear()
-  // 共享 token 一并清空：网关停止后 CLI 上报不再附加（保持静默失败，不报错）
+  // 共享 token 一并清空：网关停止后 CLI 上报不再附加（保持静默失败，不报错）。
+  // 2026-08-17 独立化：同时清盘 token 文件，避免遗留的 token 被误用（新一轮网关会重新生成写盘）。
   setGatewayToken('')
+  clearGatewayTokenFromDisk()
   try {
     wss?.close()
   } catch {

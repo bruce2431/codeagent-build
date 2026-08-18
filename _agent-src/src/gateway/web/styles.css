@@ -47,8 +47,8 @@ a { text-decoration: none; color: inherit; }
 #app { display: flex; height: 100%; border-radius: 22px; overflow: hidden; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08); }
 
 /* ================= 主聊天区 ================= */
-#chat-area { flex: 1; position: relative; background: var(--chat-bg); min-width: 0; display: flex; flex-direction: column; }
-#chat-scroll { flex: 1; overflow-y: auto; scroll-behavior: smooth; padding: 24px 20px 8px; transition: opacity 0.4s ease; }
+#chat-area { flex: 1; position: relative; background: var(--chat-bg); min-width: 0; display: flex; flex-direction: column; transition: padding-left 0.28s cubic-bezier(0.22, 0.61, 0.36, 1); }
+#chat-scroll { flex: 1; overflow-y: auto; scroll-behavior: smooth; padding: 24px 20px 8px; transition: opacity 0.25s ease; }
 #chat-area.in-session #chat-scroll { padding-bottom: 132px; }
 #chat-scroll::-webkit-scrollbar { width: 8px; }
 #chat-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
@@ -240,22 +240,41 @@ a { text-decoration: none; color: inherit; }
    2026-08-13：icon 与输入栏**绑定**为固定组合——两者 top 都以 `50%` 为锚点，
    桌面 icon 160px + 36px 间距 + 输入栏 52px，组合整体垂直居中（上下间隙对称均等），
    任意屏高下 icon 底 → 输入栏顶的间隙恒为 36px。 */
-#empty-hint { position: absolute; top: calc(50% - 124px); left: 50%; transform: translateX(-50%); text-align: center; transition: opacity 0.3s; }
-#empty-hint .empty-ico { width: 160px; height: 160px; border-radius: 36px; display: block; margin-left: auto; margin-right: auto; }
+/* 空态（2026-08-17 SubPj3 复刻；2026-08-18 输入栏改 stage 内真相对定位）：与 SubPj3 阶段3 一致——
+   居中正方形趴栏画面（.g-stage，尺寸同 token 门，垂直居中）；输入栏 DOM 挂 stage 内，
+   相对 stage 定位（top = 台面中心 76.75% − 半高 26px，见 #empty-hint #input-wrap 规则），
+   任意窗口大小都精确贴图，不再用视口百分比模拟。 */
+#empty-hint {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  text-align: center; transition: opacity 0.3s; pointer-events: none;
+}
+#empty-hint .g-stage { pointer-events: auto; }
 #chat-area.in-session #empty-hint { opacity: 0; pointer-events: none; }
 
 /* 输入栏（2026-08-13 按 ChatGPT 参考比例收小）：
    52px 高 · 白底微阴影 · 左右内边距 12px
-   左 28px 灰圈「+」/ 右「思考」胶囊(≈70px) + 24px 麦克风 + 32px 蓝发送 */
+   左 28px 灰圈「+」/ 右「思考」胶囊(≈70px) + 24px 麦克风 + 32px 蓝发送。
+   2026-08-18 定案（用户「按 SubPj3 实现」）：空态时输入栏 DOM 挂 #empty-hint .g-stage 内，
+   相对 stage 真定位（top=台面中心 76.75% − 半高 26px，任意窗口精确贴图，不再用视口百分比模拟）；
+   会话态由 app.js 移回 #chat-area 并 .docked 沉底。 */
 #input-wrap {
-  position: absolute; left: 50%; transform: translateX(-50%); width: min(680px, calc(100% - 40px));
-  top: calc(50% + 72px); z-index: 5;
-  /* 位置/宽度/位移都平滑过渡：token 门验证通过 → 输入栏从正中央「拉伸 + 平移」到正式空态位 */
+  position: absolute; left: 50%; transform: translateX(-50%);
+  z-index: 5;
+  /* 位置/宽度/位移都平滑过渡：token 门验证通过 → 输入栏从「拉伸 + 平移」到正式空态位 */
   transition: top 0.55s cubic-bezier(0.22, 0.61, 0.36, 1),
               width 0.45s cubic-bezier(0.22, 0.61, 0.36, 1),
               transform 0.55s cubic-bezier(0.22, 0.61, 0.36, 1);
 }
-#input-wrap.docked { top: calc(100% - 52px - 22px); }
+/* 空态：相对 stage 真定位（SubPj3 .inputbar 同款，锚在趴栏台面 76.75% 处） */
+#empty-hint #input-wrap {
+  top: calc(76.75% - 26px);
+  width: calc(100% - 32px);
+}
+/* 会话态：docked 沉底（DOM 在 #chat-area 内，相对 chat-area 定位） */
+#input-wrap.docked {
+  top: calc(100% - 52px - 22px);
+  width: min(680px, calc(100% - 40px));
+}
 #input-bar {
   display: flex; align-items: center; gap: 6px; background: #fff;
   border: 1px solid var(--border); border-radius: 26px; min-height: 52px; height: auto;
@@ -350,36 +369,101 @@ a { text-decoration: none; color: inherit; }
   white-space: nowrap; max-width: 100%;
 }
 
-/* ===== token 门（2026-08-15）：网关 token 未验证前 = 全空白锁定态，仅中间一个输入框 =====
-   验证通过（remove body.token-gate）后：侧栏滑入（flex-basis 0→64）、空态 icon / 消息区淡入、
-   输入栏从正中央「平滑拉伸 + 平移」到正式空态位。动画全部由各元素自身 transition 承接。 */
-body.token-gate #sidebar { flex-basis: 0; opacity: 0; visibility: hidden; overflow: hidden; }
+/* ===== token 门（2026-08-15；2026-08-17 对齐 SubPj3）：网关 token 未验证前 = 举白板图全屏 + 中央输入栏 =====
+   验证通过（remove body.token-gate）后：侧栏 transform 滑入（绝对覆盖层，不挤占主区，webp 无右移跳动）、
+   空态趴栏 / 消息区淡入；输入栏从正中央（覆盖白板 y44-70%）「平滑下移」到正式空态位（覆盖台面 y69-84%）。
+   动画全部由各元素自身 transition 承接。 */
+body.token-gate #sidebar { opacity: 0; visibility: hidden; transform: translateX(-100%); }
 body.token-gate #menu-btn { display: none; }
 body.token-gate #empty-hint,
 body.token-gate #chat-scroll,
 body.token-gate #char { opacity: 0; pointer-events: none; }
-body.token-gate #input-wrap {
-  top: 50%; transform: translate(-50%, -50%);
-  width: min(560px, calc(100% - 48px));
+/* token 门：聊天输入栏隐藏（token 输入改由白板内 #g-token-input 承担，SubPj3 阶段1 布局）；
+   验证通过（video ended）→ hideGate 后 #input-wrap 显示在空态台面位（SubPj3 阶段3 布局） */
+body.token-gate #input-wrap { display: none; }
+
+/* ===== token 门全屏背景层（2026-08-17 SubPj3 复刻）：全屏渐变背景 + 居中正方形角色画面 =====
+   .g-stage 与 SubPj3 demo 完全一致（min(88vw, 620px, 100vh-160px) 1:1，去卡片边框阴影融入背景），
+   图 cover 铺满 stage，UI 按 SubPj3 百分比定位。素材 gate/ 右下角水印已白覆盖。 */
+#gate-screen {
+  position: absolute; inset: 0; z-index: 1;
+  display: flex; align-items: center; justify-content: center;
+  overflow: hidden;
+  background: #fff; /* 背景 = 白色底子（2026-08-17 用户定案：不渐变、不用 webp 图做背景） */
+  /* 平滑浮现：showGate 淡入、hideGate 淡出（与空态同款白色背景交叉过渡，不做硬切） */
+  transition: opacity 0.25s ease;
 }
-/* 门态输入栏只留输入框 + 发送按钮，上传/思考/麦克风辅助按钮平滑收窄（opacity 淡出 + 收成 0 宽，
-   visibility 同步隐藏以免残留 0 尺寸可聚焦/出现在无障碍树） */
-body.token-gate #upload-btn,
-body.token-gate #think-btn,
-body.token-gate #mic-btn {
-  flex-basis: 0; width: 0; padding: 0; margin: 0; opacity: 0; border-width: 0; visibility: hidden;
+#gate-screen.fade-out { opacity: 0; }
+#gate-screen[hidden] { display: none; }
+
+/* 居中正方形角色画面（与 SubPj3 demo .stage 同几何）：白色背景上的角色图，隐藏式——
+   无边框/无阴影/无圆角，图 cover 铺满后与白色背景融为一体（图本身白底立绘，边界不可见），
+   不是浮窗卡片。背景白色底子，图只承载角色形象。 */
+.g-stage {
+  position: relative; flex: none;
+  width: min(88vw, 620px, calc(100vh - 160px));
+  aspect-ratio: 1 / 1;
+  background: #fff;
 }
+.g-media { position: absolute; inset: 0; }
+.g-media img, .g-media video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+#g-token { z-index: 1; }
+#g-video { z-index: 2; opacity: 0; }
+#g-new  { z-index: 3; opacity: 0; }
+.g-ph { transition: opacity 0.45s ease; }
+#g-token.fade-out { opacity: 0; }
+#g-video.show { opacity: 1; }
+#g-video.fade-out { opacity: 0; }
+#g-new.show { opacity: 1; }
+
+.g-ui { position: absolute; inset: 0; z-index: 5; pointer-events: none; }
+
+/* 阶段1：token 表单嵌角色白板内（白板实测 x25-58/y45-72，表单缩进板内稍留边） */
+#g-card {
+  position: absolute; left: 26%; top: 47%; width: 32%; height: 23%;
+  display: flex; align-items: center; pointer-events: auto;
+  transition: opacity 0.35s ease, transform 0.35s ease;
+}
+#g-card.hide { opacity: 0; transform: translateY(-10px) scale(0.95); pointer-events: none; }
+#g-card .g-bar {
+  flex: 1; width: 100%; display: flex; align-items: center; gap: 0;
+  background: transparent; border: none; border-radius: 999px; padding: 4px 5px 4px 7px;
+  box-shadow: none;
+}
+#g-card input {
+  flex: 1; min-width: 0; border: none; outline: none; background: transparent;
+  font-size: 13px; font-family: inherit; color: var(--text);
+}
+#g-card input::placeholder { color: var(--text-3); }
+#g-card.shake { animation: gShakeX 0.4s ease; }
+@keyframes gShakeX { 0%,100%{transform:translateX(0)} 20%{transform:translateX(-7px)} 40%{transform:translateX(7px)} 60%{transform:translateX(-5px)} 80%{transform:translateX(5px)} }
+
+/* 阶段2：过渡视频（验证提示已按用户要求移除 2026-08-18） */
+
+/* 阶段3：趴栏（欢迎胶囊已按用户要求移除 2026-08-18） */
 
 /* ================= 左侧侧栏 ================= */
 /* 折叠态 = ChatGPT 风格极简 rail（64px 白底无缝，顶部 logo / 中部 4 图标垂直居中 / 底部头像）；
    展开态 = 280px panel（#sidebar.open 时 rail display:none）。
-   z-index:10 保证 rail 图标始终盖在主区之上（含 panel 宽度过渡期间）。 */
+   z-index:10 保证 rail 图标始终盖在主区之上。
+   桌面端（≥721px，见下方 media）：侧栏 = 绝对定位覆盖层（不挤占主区 flex 布局，主区恒全宽恒居中），
+   用 transform 滑入/滑出渐进式浮出；token 门验证完成侧栏弹出不再因挤占宽度使 webp 右移跳动。 */
 #sidebar {
-  display: flex; height: 100%; position: relative; flex: 0 0 auto; z-index: 10;
-  /* token 门：flex-basis 0→auto（rail 滑入）+ opacity/visibility 淡入淡出 */
-  transition: flex-basis 0.55s cubic-bezier(0.22, 0.61, 0.36, 1), opacity 0.4s ease, visibility 0.4s;
+  display: flex; height: 100%; position: relative; z-index: 10;
+  width: var(--rail-w);
+  transition: transform 0.35s cubic-bezier(0.22, 0.61, 0.36, 1), opacity 0.3s ease, visibility 0.3s;
 }
+#sidebar.open { width: var(--panel-w); }
 #sidebar.open #rail { display: none; }
+
+/* 桌面（≥721px）：侧栏 = 覆盖层（absolute），默认 transform 移出屏幕左侧；非 token 门滑入显示 */
+@media (min-width: 721px) {
+  #sidebar { position: absolute; top: 0; left: 0; bottom: 0; transform: translateX(-100%); }
+  body:not(.token-gate) #sidebar { transform: none; }
+  /* 会话态主区内容避让侧栏（空态 / token 门保持全宽屏幕居中，不避让，webp 不偏移） */
+  #chat-area.in-session { padding-left: var(--rail-w); }
+  #sidebar.open ~ #chat-area.in-session { padding-left: var(--panel-w); }
+}
 #rail {
   flex: 0 0 var(--rail-w); background: #fff;
   display: flex; flex-direction: column; align-items: center; justify-content: space-between;
@@ -452,6 +536,8 @@ body.token-gate #mic-btn {
 
 /* ===== 管理视图：插件/技能预览（2026-08-15，Codex 风格） ===== */
 #chat-area.mgr-on #messages { max-width: 920px; }
+/* 项目预览 iframe 充满整个聊天区：预览时解除 920 宽帽并撑满可用高度（与 chat 界面同自适应逻辑） */
+#chat-area.mgr-on #messages:has(.preview-shell) { max-width: none; height: 100%; }
 /* scrollbar-gutter:stable 预留滚动条位，插件(高可滚)→技能(矮不滚)切换时不横向跳动（经典滚动条环境） */
 #chat-area.mgr-on #chat-scroll { scrollbar-gutter: stable; }
 .mgr-pane { width: 100%; }
@@ -493,19 +579,27 @@ body.token-gate #mic-btn {
 .mgr-proj:hover { border-color: var(--border-soft); background: var(--hover); }
 .mgr-proj .mgr-ic { width: 40px; height: 40px; }
 .mgr-proj .mgr-desc { margin-top: 2px; }
+.mgr-model-item .mgr-name { line-height: 20px; } /* 模型胶囊 name 行高锚定到与项目胶囊 badge 行一致（纯文本行被 body 1.6 行高撑到 24px，压回 20px 保等高） */
 .mgr-ic svg { width: 22px; height: 22px; }
+.mgr-ic svg.whale { width: 22px; height: 16.2px; } /* DeepSeek 鲸鱼按官方 23.16:17.04 比例（FishLogo），不压成方形 */
 .mgr-proj:hover .mgr-more, .mgr-proj .mgr-more:focus-visible { opacity: 1; }
 .mgr-empty { grid-column: 1 / -1; padding: 42px 0; text-align: center; color: var(--text-3); font-size: 13px; }
 .mgr-retry { display: inline-flex; align-items: center; gap: 4px; margin-top: 12px; padding: 7px 16px; border-radius: 999px; font-size: 13px; background: var(--btn-bg, #4d6bfe); color: #fff; border: none; cursor: pointer; }
 .mgr-retry:hover { opacity: 0.9; }
 .mgr-foot { margin-top: 26px; text-align: center; font-size: 12px; color: var(--text-3); }
+/* 管理视图：模型列表（按供应商分组；数据源 = 网关 /api/models + 凭据池，只读展示） */
+.mgr-model-list { display: flex; flex-direction: column; gap: 10px; } /* 与项目列表 .mgr-list 同宽同距 */
+.mgr-model-group { display: flex; flex-direction: column; gap: 8px; }
+.mgr-model-ghead { display: flex; align-items: center; gap: 8px; padding: 2px 2px 0; }
+.mgr-model-gname { font-size: 13px; font-weight: 700; color: var(--text-2); }
+.mgr-model-item { cursor: default; } /* 只读展示：胶囊外观完全复用 .mgr-proj，点击无动作 */
 /* 管理视图：项目预览（点项目胶囊 → iframe 加载 <项目>/.claude/preview/ 替换主界面；返回栏回到项目列表） */
 .pv-badge { font-size: 11px; font-weight: 500; color: #fff; background: #4d6bfe; border-radius: 999px; padding: 1px 8px; flex: none; }
-.preview-shell { display: flex; flex-direction: column; gap: 12px; height: calc(100vh - 140px); }
-.preview-bar { display: flex; align-items: center; gap: 12px; }
-.preview-back { display: inline-flex; align-items: center; gap: 6px; padding: 7px 14px; border-radius: 999px; font-size: 13px; background: var(--active); color: var(--text); cursor: pointer; transition: background 0.15s; }
-.preview-back:hover { background: var(--hover); }
-.preview-title { font-size: 13px; color: var(--text-2); }
+/* 预览返回按钮嵌入界面右上角（不再占顶部整条栏）：.preview-shell relative 承载绝对定位 */
+.preview-shell { position: relative; display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.preview-bar { position: absolute; top: 12px; right: 12px; z-index: 5; }
+.preview-back { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px; font-size: 12px; background: rgba(255,255,255,0.85); color: var(--text); border: 1px solid var(--border); cursor: pointer; transition: background 0.15s, box-shadow 0.15s; box-shadow: var(--shadow-sm); }
+.preview-back:hover { background: #fff; box-shadow: var(--shadow); }
 .preview-frame { flex: 1; width: 100%; border: 1px solid var(--border); border-radius: 12px; background: #fff; }
 /* 预览加载/兜底（2026-08-15）：先 fetch 探测入口，命中挂 iframe；失败显示占位 + 返回按钮 */
 .preview-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
@@ -519,7 +613,6 @@ body.token-gate #mic-btn {
   .mgr-grid { grid-template-columns: 1fr; }
   .mgr-title { font-size: 22px; }
   .mgr-acts { display: none; }
-  .preview-shell { height: calc(100vh - 100px); }
 }
 
 #recent-body { flex: 1; overflow-y: auto; padding: 4px 8px 12px; }
@@ -674,13 +767,13 @@ body.token-gate #mic-btn {
   #chat-area.in-session #chat-scroll { padding-top: 60px; padding-bottom: 120px; }
   #messages { max-width: 100%; }
   .msg .body { max-width: 88%; }
-  /* 手机 icon 110px + 24px 间距 + 输入栏，组合整体垂直居中 */
-  #input-wrap { width: calc(100% - 20px); top: calc(50% + 41px); }
-  #empty-hint { top: calc(50% - 93px); }
-  #empty-hint .empty-ico { width: 110px; height: 110px; border-radius: 24px; }
+  /* 手机（≤720px）：空态 stage = 88vw 主导；输入栏在 stage 内相对定位（#empty-hint #input-wrap）自动适配 */
+  #empty-hint .g-stage { width: min(88vw, calc(100vh - 160px)); }
 
   /* 弹层小屏兜底：不超出可视区 */
   #bubble-pop { max-width: 80vw; }
   #search-box { width: calc(100% - 24px); padding: 14px; }
   #recent-body { padding: 4px 6px 10px; }
 }
+
+/* 矮屏桌面（≤779px 高，非手机）：stage = 100vh-160px 主导，输入栏在 stage 内相对定位自动适配（无需覆盖） */

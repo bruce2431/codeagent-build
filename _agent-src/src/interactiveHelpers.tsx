@@ -98,6 +98,10 @@ export function showSetupDialog<T = void>(root: Root, renderer: (done: (result: 
 export async function renderAndRun(root: Root, element: React.ReactNode): Promise<void> {
   root.render(element);
   startDeferredPrefetches();
+  // 2026-08-17 网关独立化：REPL 渲染启动后 fire-and-forget 建立网关客户端
+  // （探测本机网关 + WS 注册 sessionId + 接收转发消息注入本进程 REPL）。
+  // 动态 import 避免顶层加载；失败静默不影响 CLI（幂等单例，多会话只连一次）。
+  void import('./utils/gatewayClient.js').then((m) => m.startGatewayProbeAndConnect());
   await root.waitUntilExit();
   await gracefulShutdown(0);
 }

@@ -53,6 +53,10 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></svg>
             <span>项目</span>
           </button>
+          <button class="mgr-tab" data-mgr="models" title="模型配置">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="6.5" y="6.5" width="11" height="11" rx="2"/><path d="M9.5 3.5v3M14.5 3.5v3M9.5 17.5v3M14.5 17.5v3M3.5 9.5h3M3.5 14.5h3M17.5 9.5h3M17.5 14.5h3"/></svg>
+            <span>模型</span>
+          </button>
         </div>
         <div id="recent">
           <div id="recent-head">
@@ -87,6 +91,33 @@
 
   <!-- 主聊天区 -->
   <main id="chat-area">
+    <!-- token 门背景层（2026-08-17 SubPj3 复刻版，严格照抄 SubPj3 demo 的相对位置）：
+         全屏渐变背景 + 居中正方形角色画面（.g-stage）——举白板图铺满 stage + token 表单嵌白板内
+         （#g-card left 26%/top 47%，白板实测 x25-58/y45-72）→ 视频过渡（白板拉伸成输入栏）→
+         趴栏 + 欢迎胶囊（顶部 3.2%）。验证通过（video ended）→ hideGate 进空态（同趴栏，无缝）。
+         仅 body.token-gate 显示；showGate() 去 hidden、hideGate() 恢复。 -->
+    <div id="gate-screen" hidden>
+      <div class="g-stage" id="g-stage">
+        <div class="g-media">
+          <img id="g-token" class="g-ph" src="gate/state-token.webp?v=2" alt="请求 Token"/>
+          <video id="g-video" class="g-ph" muted playsinline preload="auto">
+            <source src="gate/transition.webm?v=2" type="video/webm"/>
+            <source src="gate/transition.mp4?v=2" type="video/mp4"/>
+          </video>
+          <img id="g-new" class="g-ph" src="gate/state-newchat.webp?v=2" alt="新对话"/>
+        </div>
+        <div class="g-ui">
+          <!-- 阶段1：token 表单嵌角色白板内（无边界纯隐藏胶囊输入栏，回车提交） -->
+          <div id="g-card">
+            <div class="g-bar">
+              <input id="g-token-input" type="text" placeholder="请求 Token…" autocomplete="off"/>
+            </div>
+          </div>
+          <!-- 阶段2：过渡视频（验证提示已按用户要求移除 2026-08-18） -->
+          <!-- 阶段3：趴栏（欢迎胶囊已按用户要求移除 2026-08-18） -->
+        </div>
+      </div>
+    </div>
     <button id="menu-btn" title="打开侧栏" aria-label="打开侧栏">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
     </button>
@@ -96,21 +127,28 @@
          2026-08-15 临时隐藏中：styles.css #char display:none（代码保留空跑），删除该行即恢复 -->
     <img id="char" src="char/1.jpg" alt="AI 形象" draggable="false" />
     <div id="chat-scroll"><div id="messages"></div></div>
+    <!-- 空态（token 门验证后）：与 SubPj3 阶段3 一致——居中正方形趴栏图铺满；
+         输入栏（#input-wrap）在 stage 内真相对定位（SubPj3 同款：top=台面 76.75% − 半高 26px），
+         任意窗口大小都贴图走不偏移；app.js 按界面在 stage（空态）↔ chat-area（会话 docked）间移动挂载 -->
     <div id="empty-hint">
-      <img class="empty-ico" src="icon.ico" alt="" />
-    </div>
-    <div id="input-wrap">
-      <div id="input-bar">
-        <button id="upload-btn" title="上传文件（只读）" aria-label="上传文件"></button>
-        <div id="input" contenteditable="true" role="textbox" aria-multiline="true" data-ph="输入消息，Enter 发送"></div>
-        <button id="think-btn" title="思考（只读）" aria-label="思考">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2A2.5 2.5 0 0 0 7 4.5v.1A3.5 3.5 0 0 0 4.5 8v.1A3.5 3.5 0 0 0 3 14.5a3.5 3.5 0 0 0 3.5 3.5v.1A3.5 3.5 0 0 0 9.5 22a2.5 2.5 0 0 0 4.7-1.1A3.5 3.5 0 0 0 17 17.5v-.1a3.5 3.5 0 0 0 2.5-6.4 3.5 3.5 0 0 0-2.5-6.4 2.5 2.5 0 0 0-4.7-1A2.5 2.5 0 0 0 9.5 2z"/></svg><span>思考</span>
-        </button>
-        <button id="mic-btn" title="语音输入（只读）" aria-label="语音输入"></button>
-        <button id="send-btn" title="只读查看 · 无法发送" aria-label="发送"></button>
+      <div class="g-stage">
+        <div class="g-media">
+          <img class="g-ph empty-ico" src="gate/state-newchat.webp?v=2" alt="Floria" />
+        </div>
+        <div id="input-wrap">
+          <div id="input-bar">
+            <button id="upload-btn" title="上传文件（只读）" aria-label="上传文件"></button>
+            <div id="input" contenteditable="true" role="textbox" aria-multiline="true" data-ph="输入消息，Enter 发送"></div>
+            <button id="think-btn" title="思考（只读）" aria-label="思考">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2A2.5 2.5 0 0 0 7 4.5v.1A3.5 3.5 0 0 0 4.5 8v.1A3.5 3.5 0 0 0 3 14.5a3.5 3.5 0 0 0 3.5 3.5v.1A3.5 3.5 0 0 0 9.5 22a2.5 2.5 0 0 0 4.7-1.1A3.5 3.5 0 0 0 17 17.5v-.1a3.5 3.5 0 0 0 2.5-6.4 3.5 3.5 0 0 0-2.5-6.4 2.5 2.5 0 0 0-4.7-1A2.5 2.5 0 0 0 9.5 2z"/></svg><span>思考</span>
+            </button>
+            <button id="mic-btn" title="语音输入（只读）" aria-label="语音输入"></button>
+            <button id="send-btn" title="只读查看 · 无法发送" aria-label="发送"></button>
+          </div>
+          <!-- @ 提及浮窗：输入 @ 时在输入栏上方弹出（插件/技能 + 近48h 会话），宽度=输入栏 -->
+          <div id="mention-pop" hidden></div>
+        </div>
       </div>
-      <!-- @ 提及浮窗：输入 @ 时在输入栏上方弹出（插件/技能 + 近48h 会话），宽度=输入栏 -->
-      <div id="mention-pop" hidden></div>
     </div>
   </main>
 </div>

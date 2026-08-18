@@ -111,7 +111,7 @@ description: <何时用/怎么用，一句话，供 Skill 工具自动命中>
   "name": "my-plugin",
   "version": "1.0.0",
   "description": "一句话说明",
-  "author": { "name": "Ma2431" },
+  "author": { "name": "bruce2431" },
   "homepage": "https://…（可选）"
 }
 ```

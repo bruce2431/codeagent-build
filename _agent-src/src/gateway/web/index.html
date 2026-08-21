@@ -145,6 +145,9 @@
             <button id="mic-btn" title="语音输入（只读）" aria-label="语音输入"></button>
             <button id="send-btn" title="只读查看 · 无法发送" aria-label="发送"></button>
           </div>
+          <!-- 文件变更胶囊（2026-08-19）：回合运行中在输入栏中央上方悬浮小胶囊（约整卡 1/5 宽），
+               回合结束平滑变形进消息流末尾为折叠汇总卡片 -->
+          <div id="live-change" hidden></div>
           <!-- @ 提及浮窗：输入 @ 时在输入栏上方弹出（插件/技能 + 近48h 会话），宽度=输入栏 -->
           <div id="mention-pop" hidden></div>
         </div>

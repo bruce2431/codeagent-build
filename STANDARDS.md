@@ -232,3 +232,43 @@ description: <何时用/怎么用，一句话，供 Skill 工具自动命中>
 - **settings.json hooks 用 CWD 相对路径**（`.claude/...`）→ 在 `@WrokSpace\[项目]\` 等子目录会话里 `recall_hook.py`/`statusline.mjs` 静默跳过（RAG 自动触发失效），只在 `@WrokSpace` 根目录跑才命中。
 - **MCP/插件/hook 改动不热加载** → 必须重启会话。
 - **MCP 序列化** → 禁裸 `json.dump(indent=2)`，用管线序列化器，否则 float32 崩溃。
+
+## 13. 项目预览页 Web 容器（backend 容器）标准
+
+> 预览页不止静态 HTML——项目 `.claude/preview/preview.json` 声明 `backend` 字段 → Pj16 网关 `localGateway.ts` 懒加载 **spawn 后端进程**、前端 iframe **直连后端端口**（仿 Hugging Face Spaces）。首个案例：Pj14-AI动画制作 官方 ComfyUI 前端 + 真实 ComfyUI 后端（2026-08-19 落地）。
+
+### 13.1 preview.json 的 backend 字段
+
+```json
+{
+  "name": "pj14-animation-workbench",
+  "version": "3.0.0",
+  "backend": {
+    "cmd": [".venv/Scripts/python.exe", "main.py", "--port", "{port}", "--listen", "127.0.0.1", "--cpu"],
+    "cwd": "../../comfyui-backend",
+    "port": 0,
+    "idleMinutes": 10,
+    "readyPath": "/api/system_stats"
+  }
+}
+```
+
+- `cmd`：spawn 命令数组；可含 `{port}` 占位符（网关 spawn 时替换为实际分配端口）；`cmd[0]` 相对路径按 `cwd` resolve（node spawn 只按进程 cwd 解析，须手动 resolve）。
+- `cwd`：相对 preview.json 所在目录（`../../comfyui-backend` → 项目根下 comfyui-backend）。
+- `port`：`0` = 网关从 8130 起探测顺延（上限 8160）；显式端口则固定。
+- `idleMinutes`：后端无活跃持续该时长被空闲回收（默认继承 `GATEWAY_IDLE_MINUTES`=10 分钟）。
+- `readyPath`：就绪探测路径（默认 `/api/system_stats`）。
+
+### 13.2 网关机制（localGateway.ts，已实现）
+
+- `findProjects` 读 `<项目>/.claude/preview/preview.json`，有 `backend` → 项目附 `hasBackend` + `backendCfg`。
+- `GET /api/backend?label=`（受 token 保护）：ensureBackend（未起则 spawn）→ `{url, port, pid}`；无 backend → 404。
+- spawn：`{port}` 替换 → cmd[0] resolve 到 cwd → `spawn`（env 加 PORT，日志落盘 `便携根/.claude/backend-<safeLabel>.log`）；就绪探测窗口 120×200ms（容忍 ~22s 冷启动）。
+- **就绪探测用原生 net socket**（`backendReady`）：编译产物 node:http 的 request 对 aiohttp/Python 后端会挂起，net 直连写 HTTP 头读响应状态（200/404 即就绪）。
+- 生命周期：`stopLocalGateway` 遍历 killAllBackends（child.kill + taskkill /F /T /PID 兜底）+ 停回收 timer；空闲回收每 60s（仅 `--gateway` 模式）。
+- 前端三级加载：① `/api/backend` 命中 → iframe 直连 + 60s 心跳防误回收；② 静态 preview；③ 默认项目主页兜底。
+
+### 13.3 安全
+
+- 后端只监听 `127.0.0.1`（ComfyUI `--listen` 默认）；后端 URL 获取须过网关 token（`/api/backend` 属 `/api/*` 自动受保护）。
+- 后端文件写路径由后端自身约束（如 ComfyUI `--input-directory`/`--output-directory`），粘贴图片落到项目内目录。

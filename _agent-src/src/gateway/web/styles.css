@@ -53,7 +53,7 @@ a { text-decoration: none; color: inherit; }
 #chat-scroll::-webkit-scrollbar { width: 8px; }
 #chat-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
 
-#messages { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 18px; }
+#messages { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 18px; transition: padding-left 0.28s cubic-bezier(0.22, 0.61, 0.36, 1); }
 
 /* 角色形象（2026-08-14 实验，SubPj1 预览，未同步源码）：左侧空缺处垂直居中展示，
    随 AI 操作切换图片（读取/搜索=3、书写/编辑=2、执行/插件/命令=4、其余/思考/输出=1）。
@@ -153,10 +153,9 @@ a { text-decoration: none; color: inherit; }
 .done-fold summary .d-dur { color: var(--text-3); font-size: 12px; font-weight: 500; margin-left: 1px; }
 .done-fold .done-body {
   margin: 2px 0 4px 2px; padding: 4px 2px 6px 22px;
-  border-left: 1px solid var(--border);
   display: flex; flex-direction: column; gap: 4px;
 }
-.done-think { color: #9ca3af; font-size: 13px; line-height: 1.65; word-break: break-word; }
+.done-think { color: var(--text); font-size: 13px; line-height: 1.65; word-break: break-word; }
 .done-think p, .done-think .p { margin: 2px 0; }
 /* 压缩/自动摘要标记（吸进处理折叠内的浅灰注释，不打断当前处理段） */
 .done-fold-note { color: var(--text-3); font-size: 12px; line-height: 1.6; margin: 2px 0; padding: 1px 0 1px 12px; border-left: 1px solid var(--border); }
@@ -167,6 +166,26 @@ a { text-decoration: none; color: inherit; }
   color: var(--text-3); font-size: 12px; margin: 2px 0; padding: 0 2px;
 }
 .tool-line .t-ico { font-size: 11px; }
+/* 工具动作折叠：连续工具行合并的可展开折叠（默认收起省空间，点开看每条详情） */
+.tool-fold { margin: 2px 0; }
+.tool-fold summary {
+  cursor: pointer; list-style: none; display: inline-flex; align-items: center; gap: 5px;
+  color: var(--text-3); font-size: 12px; font-weight: 500; padding: 2px 2px;
+  user-select: none; border-radius: 6px;
+}
+.tool-fold summary:hover { background: rgba(0, 0, 0, 0.045); }
+.tool-fold summary::-webkit-details-marker { display: none; }
+.tool-fold[open] summary .d-chev { transform: rotate(90deg); }
+.tool-fold .d-chev {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 14px; height: 14px; border-radius: 5px;
+  color: var(--text-3); font-size: 11px; line-height: 1;
+  transition: transform 0.2s ease;
+}
+.tool-fold-body {
+  margin: 2px 0 4px 6px; padding: 2px 2px 2px 12px;
+  display: flex; flex-direction: column; gap: 2px;
+}
 .tool-result {
   margin: 4px 0; padding: 8px 12px; background: var(--rail-bg); border: 1px solid var(--border);
   border-radius: 8px; color: var(--text-2); font-family: var(--mono); font-size: 12px;
@@ -210,6 +229,26 @@ a { text-decoration: none; color: inherit; }
 .change-card .ch-add { color: #16a34a; font-weight: 600; font-variant-numeric: tabular-nums; }
 .change-card .ch-del { color: #dc2626; font-weight: 600; font-variant-numeric: tabular-nums; }
 
+/* 文件变更胶囊（2026-08-19）：回合运行中悬浮在输入栏中央上方（约整卡 1/5 宽的小胶囊），
+   回合结束 FLIP 平滑变形进消息流末尾，落地为默认折叠的汇总卡片。opacity 淡入由 JS 置 .has */
+#live-change {
+  position: absolute; left: 50%; bottom: calc(100% + 10px); transform: translateX(-50%);
+  z-index: 50;
+  display: flex; align-items: center; gap: 6px;
+  max-width: 22%; padding: 5px 13px; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+  background: #fff; border: 1px solid var(--border); border-radius: 999px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.10);
+  font-size: 12px; line-height: 1.4; color: var(--text-2);
+  opacity: 0; pointer-events: none;
+  transition: opacity 0.25s ease;
+}
+#live-change[hidden] { display: none; } /* display:flex 会覆盖 hidden 默认，须显式隐藏 */
+#live-change.has { opacity: 1; }
+#live-change .lc-n { color: var(--text-1); font-weight: 600; font-variant-numeric: tabular-nums; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+#live-change .ch-add { color: #16a34a; font-weight: 600; font-variant-numeric: tabular-nums; }
+#live-change .ch-del { color: #dc2626; font-weight: 600; font-variant-numeric: tabular-nums; }
+
 /* ── Markdown 渲染（对话文本，作用于 .body 内的 mdHtml 输出） ── */
 .msg .body .p { margin: 0; }
 .msg .body p { margin: 3px 0; }
@@ -250,6 +289,9 @@ a { text-decoration: none; color: inherit; }
 }
 #empty-hint .g-stage { pointer-events: auto; }
 #chat-area.in-session #empty-hint { opacity: 0; pointer-events: none; }
+/* 2026-08-19 修复：会话态 #empty-hint 虽 pointer-events:none，但 .g-stage 显式 auto 覆盖了继承，
+   中间那坨趴栏 webp（opacity:0 残留）拦截鼠标 → 会话内容点不动。会话态 stage 一并关闭。 */
+#chat-area.in-session #empty-hint .g-stage { pointer-events: none; }
 
 /* 输入栏（2026-08-13 按 ChatGPT 参考比例收小）：
    52px 高 · 白底微阴影 · 左右内边距 12px
@@ -262,6 +304,7 @@ a { text-decoration: none; color: inherit; }
   z-index: 5;
   /* 位置/宽度/位移都平滑过渡：token 门验证通过 → 输入栏从「拉伸 + 平移」到正式空态位 */
   transition: top 0.55s cubic-bezier(0.22, 0.61, 0.36, 1),
+              left 0.28s cubic-bezier(0.22, 0.61, 0.36, 1),
               width 0.45s cubic-bezier(0.22, 0.61, 0.36, 1),
               transform 0.55s cubic-bezier(0.22, 0.61, 0.36, 1);
 }
@@ -463,6 +506,11 @@ body.token-gate #input-wrap { display: none; }
   /* 会话态主区内容避让侧栏（空态 / token 门保持全宽屏幕居中，不避让，webp 不偏移） */
   #chat-area.in-session { padding-left: var(--rail-w); }
   #sidebar.open ~ #chat-area.in-session { padding-left: var(--panel-w); }
+  /* docked 输入栏相对 chat-area padding-box 定 left:50% 会偏左半个 padding-left，
+     补偿 half-padding 使输入栏与消息流中线对齐（2026-08-19 修复；仅桌面≥721px，
+     移动端无 padding-left 维持 left:50%） */
+  #input-wrap.docked { left: calc(50% + var(--rail-w) / 2); }
+  #sidebar.open ~ #chat-area #input-wrap.docked { left: calc(50% + var(--panel-w) / 2); }
 }
 #rail {
   flex: 0 0 var(--rail-w); background: #fff;
@@ -532,12 +580,18 @@ body.token-gate #input-wrap { display: none; }
 .mgr-tab.on { background: var(--active); color: var(--text); font-weight: 600; }
 /* 管理视图（主聊天区）：管理 tab 激活时隐藏空态 icon 与输入栏，显示插件/技能预览 */
 #chat-area.mgr-on #empty-hint { opacity: 0; pointer-events: none; }
+#chat-area.mgr-on #empty-hint .g-stage { pointer-events: none; } /* 2026-08-19 同会话态：趴栏图不挡管理视图点击 */
 #chat-area.mgr-on #input-wrap { display: none; }
 
 /* ===== 管理视图：插件/技能预览（2026-08-15，Codex 风格） ===== */
 #chat-area.mgr-on #messages { max-width: 920px; }
 /* 项目预览 iframe 充满整个聊天区：预览时解除 920 宽帽并撑满可用高度（与 chat 界面同自适应逻辑） */
 #chat-area.mgr-on #messages:has(.preview-shell) { max-width: none; height: 100%; }
+/* 预览态避让侧栏（2026-08-19 Web 容器）：桌面侧栏是 absolute 覆盖层不挤占主区，
+   会话态用 .in-session padding-left 避让；预览 iframe 满宽会被侧栏盖住（用户实测「侧栏遮挡了画面，
+   '正在加载'不在容器中央」）——镜像会话态规则，折叠 rail 64 / 展开 panel 280 均避让 */
+#chat-area.mgr-on #messages:has(.preview-shell) { padding-left: var(--rail-w); }
+#sidebar.open ~ #chat-area #messages:has(.preview-shell) { padding-left: var(--panel-w); }
 /* scrollbar-gutter:stable 预留滚动条位，插件(高可滚)→技能(矮不滚)切换时不横向跳动（经典滚动条环境） */
 #chat-area.mgr-on #chat-scroll { scrollbar-gutter: stable; }
 .mgr-pane { width: 100%; }
@@ -600,10 +654,23 @@ body.token-gate #input-wrap { display: none; }
 .preview-bar { position: absolute; top: 12px; right: 12px; z-index: 5; }
 .preview-back { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px; font-size: 12px; background: rgba(255,255,255,0.85); color: var(--text); border: 1px solid var(--border); cursor: pointer; transition: background 0.15s, box-shadow 0.15s; box-shadow: var(--shadow-sm); }
 .preview-back:hover { background: #fff; box-shadow: var(--shadow); }
-.preview-frame { flex: 1; width: 100%; border: 1px solid var(--border); border-radius: 12px; background: #fff; }
+.preview-frame { flex: 1; width: 100%; border: 1px solid var(--border); border-radius: 2px; background: #fff; }
 /* 预览加载/兜底（2026-08-15）：先 fetch 探测入口，命中挂 iframe；失败显示占位 + 返回按钮 */
-.preview-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.preview-body { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .preview-loading { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--text-2); font-size: 13px; }
+/* 预览 iframe 启动覆盖层（2026-08-20 两轮反馈后定稿）：纯遮罩无指令，只遮 ComfyUI 加载深色画面
+   + 居中 spinner + 一行「正在启动」；load 后 8s 自动淡出、点击提前关；
+   .preview-body relative 承载 absolute 定位（根因：缺 relative 时 overlay 飘到 .preview-shell 全区域） */
+.preview-overlay {
+  position: absolute; inset: 0; z-index: 3; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  background: rgba(255, 255, 255, 0.96); backdrop-filter: blur(2px);
+  border-radius: 2px; transition: opacity 0.4s ease; cursor: pointer;
+}
+.preview-overlay.done { opacity: 0; pointer-events: none; }
+.preview-overlay-spin { width: 26px; height: 26px; border: 3px solid rgba(77, 107, 254, 0.22); border-top-color: #4d6bfe; border-radius: 50%; animation: preview-spin 0.8s linear infinite; margin-bottom: 12px; }
+.preview-overlay-title { font-size: 13px; font-weight: 500; color: var(--text); }
+.preview-overlay-sub { font-size: 12px; color: var(--text-2); margin-top: 6px; }
+@keyframes preview-spin { to { transform: rotate(360deg); } }
 .preview-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: var(--text-2); }
 .preview-empty-title { font-size: 16px; font-weight: 600; color: var(--text); }
 .preview-empty-sub { font-size: 12px; max-width: 70%; text-align: center; word-break: break-all; }

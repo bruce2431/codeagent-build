@@ -9,7 +9,7 @@
  * 空闲回收：网关三集合全空持续 GATEWAY_IDLE_MINUTES(默认10) 分钟自动关闭（见 localGateway.ts）
  * 环境变量：GATEWAY_PORT(默认8124)、GATEWAY_HOST(默认0.0.0.0=局域网)、SERVER_TOKEN(指定 token，默认随机)、GATEWAY_IDLE_MINUTES(空闲回收阈值分钟)
  */
-import { execFileSync, spawn } from 'child_process'
+import { spawnSync, spawn } from 'child_process'
 import { randomBytes } from 'node:crypto'
 import { networkInterfaces } from 'node:os'
 import type { LocalCommandCall } from '../../types/command.js'
@@ -40,7 +40,10 @@ async function isGatewayUp(port: number = PORT): Promise<boolean> {
 
 function listeningPids(port: number = PORT): string[] {
   try {
-    const out = execFileSync('netstat', ['-ano'], { encoding: 'utf8' })
+    // 2026-08-20 黑框根治第2轮：execFileSync 的 windowsHide 在 bun 运行时无效（/server off 仍弹窗），
+    // 改 spawnSync（与已验证生效的 spawn 同一实现），netstat 读 stdout
+    const res = spawnSync('netstat', ['-ano'], { encoding: 'utf8', windowsHide: true })
+    const out = res.stdout ?? ''
     const pids: string[] = []
     for (const line of out.split('\n')) {
       const t = line.trim()
@@ -103,7 +106,7 @@ async function doOn(): Promise<string> {
     const failed: string[] = []
     for (const pid of pids) {
       try {
-        execFileSync('taskkill', ['/F', '/PID', pid], { stdio: 'pipe' })
+        spawnSync('taskkill', ['/F', '/PID', pid], { stdio: 'ignore', windowsHide: true })
         killed.push(pid)
       } catch {
         failed.push(pid)
@@ -125,6 +128,7 @@ async function doOn(): Promise<string> {
   const child = spawn(process.execPath, ['--gateway'], {
     detached: true,
     stdio: 'ignore',
+    windowsHide: true, // 2026-08-20 黑框根因修复：exe 是 console 子系统，不加会在 spawn 网关进程时弹命令行窗口
     env: {
       ...process.env,
       GATEWAY_PORT: String(target),
@@ -174,7 +178,7 @@ async function doOff(): Promise<string> {
     const killed: string[] = []
     for (const pid of pids) {
       try {
-        execFileSync('taskkill', ['/F', '/PID', pid], { stdio: 'pipe' })
+        spawnSync('taskkill', ['/F', '/PID', pid], { stdio: 'ignore', windowsHide: true })
         killed.push(pid)
       } catch {
         /* 忽略单个失败 */

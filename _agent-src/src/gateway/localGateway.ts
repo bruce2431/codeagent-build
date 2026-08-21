@@ -21,11 +21,13 @@
  * HTTP/WS 用 node:http + ws（已验证可打包进 bun 编译产物），不依赖 Bun.serve。
  */
 import { createServer, type Server } from 'node:http'
-import { readFileSync, existsSync, statSync, readdirSync } from 'node:fs'
+import { readFileSync, existsSync, statSync, readdirSync, openSync, closeSync, truncateSync, watch, type FSWatcher } from 'node:fs'
 import { open as fsOpen } from 'node:fs/promises'
-import { join, resolve, extname, basename, sep } from 'node:path'
+import { join, resolve, extname, basename, sep, isAbsolute } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { networkInterfaces } from 'node:os'
+import { createServer as netCreateServer, createConnection as netCreateConnection } from 'node:net'
+import { spawn, spawnSync } from 'node:child_process'
 import { WebSocketServer, WebSocket } from 'ws'
 import { getPortableRoot } from '../utils/envUtils.js'
 import { getProjectRoot } from '../bootstrap/state.js'
@@ -52,15 +54,48 @@ const sockets = new Set<WebSocket>()
 // sessionId。遥测端发消息时网关按 sessionId 路由转发给对应 CLI，由 CLI 注入其 REPL。
 const cliClients = new Map<string, WebSocket>()
 const sseClients = new Set<{ res: import('node:http').ServerResponse }>()
-let sseTimer: NodeJS.Timeout | null = null
 let ssePrimed = false
 const sseSizes = new Map<string, { size: number; mtime: number }>()
+// O4：SSE 事件驱动 —— 用 fs.watch 监听各项目会话目录，替代 2s 轮询。sseWatches 持所有 watcher，
+// sseDebounce 合并同一波文件写入的多个 change/rename 事件（250ms 去抖），避免频繁扫描。
+const sseWatches = new Set<FSWatcher>()
+let sseDebounce: NodeJS.Timeout | null = null
 // 2026-08-17 空闲自动回收：三集合（cliClients/sockets/sseClients）全空持续 GATEWAY_IDLE_MINUTES
 // 分钟后自动关闭网关，避免「所有 CLI/遥测端都退出、网关空转占端口」的孤儿状态。仅 --gateway
 // 独立进程模式启用（进程内模式网关随 CLI 同生共死，无孤儿问题）。阈值可用 GATEWAY_IDLE_MINUTES 调。
 const GATEWAY_IDLE_MINUTES = Number(process.env.GATEWAY_IDLE_MINUTES || 10)
 const ENABLE_IDLE_RECLAIM = process.argv.includes('--gateway')
 let idleTimer: NodeJS.Timeout | null = null
+
+// ============================================================================
+// Web 容器 backend 进程管理（2026-08-19）
+// preview.json 声明 backend 的项目 → 网关懒加载 spawn 后端进程 + 动态端口分配，
+// 前端 iframe 直连 http://127.0.0.1:<port>/。生命周期：网关 stop 时全部 kill、
+// 空闲回收（复用 GATEWAY_IDLE_MINUTES 阈值）、后端异常退出自动清理记录。
+// ============================================================================
+interface BackendCfg {
+  name?: string // 显示名（前端启动覆盖层提示用），缺省 = 项目 label；可插拔：任意后端在 preview.json 声明
+  cmd: string[] // 命令数组，{port} 占位符在 spawn 时替换为实际分配端口
+  cwd?: string // 工作目录，缺省 = 该项目 .claude/preview 目录
+  port: number // 0 = 动态分配（网关从 8130 起探测顺延）
+  idleMinutes?: number // 空闲回收阈值，缺省继承 GATEWAY_IDLE_MINUTES
+  readyPath?: string // 就绪探测路径，缺省 /api/system_stats
+}
+interface BackendProc {
+  pid: number
+  port: number
+  cfg: BackendCfg
+  startedAt: number
+  lastActive: number // 最近一次活跃（/api/backend 被调用/就绪探测），用于空闲回收
+  child: import('node:child_process').ChildProcess
+}
+const backendProcesses = new Map<string, BackendProc>()
+const BACKEND_PORT_BASE = 8130
+const BACKEND_PORT_MAX = 8160
+let backendReclaimTimer: NodeJS.Timeout | null = null
+// 网关正在停止标志（O1 修复）：/server off → stopLocalGateway 置位，doSpawnBackend 就绪探测
+// 循环据此提前退出并 kill 已 spawn 的子进程，避免「探测期网关停止 → 孤儿后端进程」竞态。
+let gatewayStopping = false
 
 // CLI 侧 conversationDisplay.ts 上报的展示结果（内存，进程退出即消失）
 const conversationDisplays = new Map<string, { messages: unknown[]; updatedAt: number }>()
@@ -69,6 +104,7 @@ const sessionActivity = new Map<string, { status: string; pid: number; cwd?: str
 // C1 修复：两个内存 Map 无上限（只增不删）→ 长跑泄漏。加 TTL + 死进程惰性清扫。
 const DISPLAY_TTL_MS = 10 * 60 * 1000 // conversationDisplays 10 分钟无刷新视为过期
 const ACTIVITY_TTL_MS = 10 * 60 * 1000 // sessionActivity 10 分钟无上报视为过期
+const MAX_REPORT_BODY_BYTES = 1024 * 1024
 
 // ============================================================================
 // 小工具
@@ -79,6 +115,28 @@ const isDir = (p: string): boolean => {
   } catch {
     return false
   }
+}
+
+function isPathInside(parent: string, candidate: string): boolean {
+  return candidate === parent || candidate.startsWith(parent + sep)
+}
+
+class ReportBodyTooLargeError extends Error {}
+
+async function readReportBody(req: import('node:http').IncomingMessage): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = []
+  let size = 0
+  for await (const chunk of req) {
+    const part = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    size += part.length
+    if (size > MAX_REPORT_BODY_BYTES) throw new ReportBodyTooLargeError()
+    chunks.push(part)
+  }
+  const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new TypeError('request body must be a JSON object')
+  }
+  return parsed as Record<string, unknown>
 }
 function lanAddress(): string | null {
   const addrs: string[] = []
@@ -160,8 +218,17 @@ const MIME: Record<string, string> = {
 // ============================================================================
 const SESSION_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$/i
 
-function findProjects(root: string): Array<{ label: string; dir: string; scope: string; hasPreview: boolean }> {
-  const groups: Array<{ label: string; dir: string; scope: string; hasPreview: boolean }> = []
+interface ProjectInfo {
+  label: string
+  dir: string
+  scope: string
+  hasPreview: boolean
+  hasBackend?: boolean
+  backendCfg?: BackendCfg
+}
+
+function findProjects(root: string): ProjectInfo[] {
+  const groups: ProjectInfo[] = []
   const global = join(root, '.claude', 'projects')
   if (isDir(global)) groups.push({ label: '全局根 · 散装对话', dir: global, scope: 'global', hasPreview: false })
   let entries: Array<{ name: string; isDirectory: () => boolean }> = []
@@ -177,10 +244,45 @@ function findProjects(root: string): Array<{ label: string; dir: string; scope: 
     const pd = join(root, e.name, '.claude', 'projects')
     if (isDir(pd)) {
       // hasPreview：项目自带 .claude/preview/（网页渲染，点击项目胶囊时前端 iframe 加载替换界面）
-      groups.push({ label: e.name, dir: pd, scope: 'project', hasPreview: isDir(join(root, e.name, '.claude', 'preview')) })
+      const previewDir = join(root, e.name, '.claude', 'preview')
+      const info: ProjectInfo = { label: e.name, dir: pd, scope: 'project', hasPreview: isDir(previewDir) }
+      // hasBackend：preview.json 声明 backend → 该项目预览以「Web 容器」方式运行（网关 spawn 后端进程，iframe 直连）
+      if (info.hasPreview) {
+        const cfg = readBackendCfg(previewDir)
+        if (cfg) {
+          info.hasBackend = true
+          info.backendCfg = cfg
+        }
+      }
+      groups.push(info)
     }
   }
   return groups
+}
+
+// 读 <previewDir>/preview.json 的 backend 声明；不存在或结构非法 → undefined
+function readBackendCfg(previewDir: string): BackendCfg | undefined {
+  const pj = join(previewDir, 'preview.json')
+  if (!existsSync(pj)) return undefined
+  try {
+    const raw = JSON.parse(readFileSync(pj, 'utf-8')) as {
+      backend?: { name?: unknown; cmd?: unknown; cwd?: string; port?: number; idleMinutes?: number; readyPath?: string }
+    }
+    const b = raw?.backend
+    if (!b || !Array.isArray(b.cmd) || !b.cmd.length) return undefined
+    return {
+      name: typeof b.name === 'string' && b.name ? b.name : undefined,
+      cmd: b.cmd.map(String),
+      // cwd 相对 preview.json 所在目录解析（如 "../../comfyui-backend" → 项目根下 comfyui-backend），
+      // 缺省 = preview 目录本身
+      cwd: typeof b.cwd === 'string' && b.cwd ? resolve(previewDir, b.cwd) : previewDir,
+      port: typeof b.port === 'number' ? b.port : 0,
+      idleMinutes: typeof b.idleMinutes === 'number' ? b.idleMinutes : GATEWAY_IDLE_MINUTES,
+      readyPath: typeof b.readyPath === 'string' && b.readyPath ? b.readyPath : '/api/system_stats',
+    }
+  } catch {
+    return undefined
+  }
 }
 
 function countUserAssistant(text: string): number {
@@ -666,16 +768,46 @@ function listModels(root: string): Record<string, unknown> {
 }
 
 // ============================================================================
-// SSE 实时事件（jsonl 变化轮询）
+// SSE 实时事件（jsonl 变化，事件驱动）
 // ============================================================================
-function pollSse(root: string): void {
-  if (sseClients.size === 0) {
-    if (sseTimer) {
-      clearInterval(sseTimer)
-      sseTimer = null
+// O4：watch 事件 → 去抖 → pollSse 扫描。watch 事件仅做「有变化」的提示，真正 diff 仍由 pollSse
+// 用 size/mtime 判定（与旧轮询同一逻辑），保证跨平台（尤其 Windows ReadDirectoryChangesW 只给
+// 文件名不给内容）也能准确识别具体哪个会话文件变了。
+function scheduleSseFlush(root: string): void {
+  if (sseClients.size === 0 || sseDebounce) return
+  sseDebounce = setTimeout(() => {
+    sseDebounce = null
+    pollSse(root)
+  }, 250)
+}
+function ensureSseWatches(root: string): void {
+  if (sseWatches.size > 0) return
+  for (const g of findProjects(root)) {
+    try {
+      const w = watch(g.dir, () => scheduleSseFlush(root))
+      sseWatches.add(w)
+    } catch {
+      /* 目录不存在/被移除，忽略 */
     }
-    return
   }
+}
+function stopSseWatches(): void {
+  for (const w of sseWatches) {
+    try {
+      w.close()
+    } catch {
+      /* 忽略 */
+    }
+  }
+  sseWatches.clear()
+  if (sseDebounce) {
+    clearTimeout(sseDebounce)
+    sseDebounce = null
+  }
+}
+
+function pollSse(root: string): void {
+  if (sseClients.size === 0) return
   sweepStaleMaps()
   const groups = findProjects(root)
   for (const g of groups) {
@@ -715,6 +847,16 @@ function pollSse(root: string): void {
 // ============================================================================
 // HTTP / WS
 // ============================================================================
+type ServerResponse = import('node:http').ServerResponse
+// O2：统一 JSON 响应帮助函数，消除 handleRequest 内每路由重复的 writeHead/end/JSON.stringify
+function sendJson(res: ServerResponse, status: number, obj: unknown): void {
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-cache' })
+  res.end(JSON.stringify(obj))
+}
+function sendError(res: ServerResponse, e: unknown): void {
+  sendJson(res, 500, { error: String((e && (e as Error).message) || e) })
+}
+
 async function handleRequest(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse, root: string): Promise<void> {
   const url = new URL(req.url ?? '/', `http://${req.headers.host || 'localhost'}`)
   // 安全加固（2026-08-15）：HTTP 数据接口与 WS 升级一致要求 token。
@@ -727,20 +869,17 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
   const isProtected =
     (url.pathname.startsWith('/api/') && url.pathname !== '/api/health') || url.pathname.startsWith('/preview/')
   if (isProtected && url.searchParams.get('token') !== currentToken) {
-    res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-cache' })
-    res.end(JSON.stringify({ error: 'unauthorized' }))
+    sendJson(res, 401, { error: 'unauthorized' })
     return
   }
   if (req.method === 'GET' && url.pathname === '/api/health') {
-    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-cache' })
-    res.end(JSON.stringify({ ok: true, mode: 'gateway' }))
+    sendJson(res, 200, { ok: true, mode: 'gateway' })
     return
   }
   // 2026-08-17 独立网关优雅关闭端点（受上方 /api/* token 校验保护）：/server off 调用。
   // 先回响应，再 stopLocalGateway + 退出进程（网关是独立 --gateway 进程，exit 即释放端口）。
   if (req.method === 'POST' && url.pathname === '/api/shutdown') {
-    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
-    res.end(JSON.stringify({ ok: true, stopping: true }))
+    sendJson(res, 200, { ok: true, stopping: true })
     setTimeout(() => {
       stopLocalGateway()
       process.exit(0)
@@ -749,42 +888,52 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
   }
   if (req.method === 'GET' && url.pathname === '/api/sessions') {
     try {
-      const data = await listSessions(root)
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-cache' })
-      res.end(JSON.stringify(data))
+      sendJson(res, 200, await listSessions(root))
     } catch (e) {
-      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' })
-      res.end(JSON.stringify({ error: String((e && (e as Error).message) || e) }))
+      sendError(res, e)
     }
     return
   }
   if (req.method === 'GET' && url.pathname === '/api/plugins') {
     try {
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-cache' })
-      res.end(JSON.stringify(listPlugins(root)))
+      sendJson(res, 200, listPlugins(root))
     } catch (e) {
-      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' })
-      res.end(JSON.stringify({ error: String((e && (e as Error).message) || e) }))
+      sendError(res, e)
     }
     return
   }
   if (req.method === 'GET' && url.pathname === '/api/models') {
     try {
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-cache' })
-      res.end(JSON.stringify(listModels(root)))
+      sendJson(res, 200, listModels(root))
     } catch (e) {
-      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' })
-      res.end(JSON.stringify({ error: String((e && (e as Error).message) || e) }))
+      sendError(res, e)
     }
     return
   }
   // 默认预览页数据：/api/project?label=<项目> → 文件树 + README + 会话元信息（GitHub 仓库风格默认界面）
+  // 2026-08-19 Web 容器：/api/backend?label=<项目> → 懒加载 spawn 该项目 preview.json 声明的后端进程，
+  // 返回 {url} 供前端 iframe 直连（受上方 /api/* token 校验保护；后端仅监听 127.0.0.1，访问面可控）。
+  if (req.method === 'GET' && url.pathname === '/api/backend') {
+    const bLabel = url.searchParams.get('label') || ''
+    const bProj = findProjects(root).find((g) => g.scope === 'project' && g.label === bLabel && g.hasBackend)
+    if (!bProj || !bProj.backendCfg) {
+      sendJson(res, 404, { error: 'no backend for project' })
+      return
+    }
+    try {
+      const proc = await ensureBackend(bLabel, bProj.backendCfg)
+      // name：overlay 提示用（preview.json backend.name 或项目 label），前端据此显示「正在启动 <name>…」，可插拔
+      sendJson(res, 200, { url: `http://127.0.0.1:${proc.port}/`, port: proc.port, pid: proc.pid, name: proc.cfg.name || bLabel })
+    } catch (e) {
+      sendError(res, e)
+    }
+    return
+  }
   if (req.method === 'GET' && url.pathname === '/api/project') {
     const pLabel = url.searchParams.get('label') || ''
     const pProj = findProjects(root).find((g) => g.scope === 'project' && g.label === pLabel)
     if (!pProj) {
-      res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' })
-      res.end(JSON.stringify({ error: 'project not found' }))
+      sendJson(res, 404, { error: 'project not found' })
       return
     }
     try {
@@ -803,23 +952,19 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
           updatedAt: s.updatedAt,
         }))
         .slice(0, 100)
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-cache' })
-      res.end(
-        JSON.stringify({
-          label: pLabel,
-          scope: 'project',
-          hasPreview: pProj.hasPreview,
-          description: deriveProjectDescription(readme, pLabel),
-          files,
-          readme,
-          sessionCount: pSessions.length,
-          sessions: pSessions,
-          lastActive: pSessions.length ? (pSessions[0].updatedAt as number) : 0,
-        }),
-      )
+      sendJson(res, 200, {
+        label: pLabel,
+        scope: 'project',
+        hasPreview: pProj.hasPreview,
+        description: deriveProjectDescription(readme, pLabel),
+        files,
+        readme,
+        sessionCount: pSessions.length,
+        sessions: pSessions,
+        lastActive: pSessions.length ? (pSessions[0].updatedAt as number) : 0,
+      })
     } catch (e) {
-      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' })
-      res.end(JSON.stringify({ error: String((e && (e as Error).message) || e) }))
+      sendError(res, e)
     }
     return
   }
@@ -830,25 +975,21 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
     const fPath = url.searchParams.get('path') || ''
     const fProj = findProjects(root).find((g) => g.scope === 'project' && g.label === fLabel)
     if (!fProj) {
-      res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' })
-      res.end(JSON.stringify({ error: 'project not found' }))
+      sendJson(res, 404, { error: 'project not found' })
       return
     }
     const fDir = resolve(fProj.dir, '..', '..') // 项目根（fProj.dir = <root>/<label>/.claude/projects）
     const fAbs = resolve(fDir, fPath)
     if (fAbs !== fDir && !fAbs.startsWith(fDir + sep)) {
-      res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' })
-      res.end(JSON.stringify({ error: 'forbidden' }))
+      sendJson(res, 403, { error: 'forbidden' })
       return
     }
     if (!existsSync(fAbs) || !statSync(fAbs).isFile()) {
-      res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' })
-      res.end(JSON.stringify({ error: 'not found' }))
+      sendJson(res, 404, { error: 'not found' })
       return
     }
     if (statSync(fAbs).size > 4 * 1024 * 1024) {
-      res.writeHead(413, { 'Content-Type': 'application/json; charset=utf-8' })
-      res.end(JSON.stringify({ error: 'too large' }))
+      sendJson(res, 413, { error: 'too large' })
       return
     }
     const fType = MIME[extname(fAbs)] ?? 'application/octet-stream'
@@ -916,8 +1057,7 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
   if (req.method === 'GET' && url.pathname === '/api/session') {
     const id = url.searchParams.get('id')
     if (!id) {
-      res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' })
-      res.end(JSON.stringify({ error: 'missing id' }))
+      sendJson(res, 400, { error: 'missing id' })
       return
     }
     try {
@@ -931,65 +1071,53 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
         data.messages = mergeDisplayMessages(data.messages as never, disp.messages as never)
         data.display = data.messages
       }
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-cache' })
-      res.end(JSON.stringify(data))
+      sendJson(res, 200, data)
     } catch (e) {
-      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' })
-      res.end(JSON.stringify({ error: String((e && (e as Error).message) || e) }))
+      sendError(res, e)
     }
     return
   }
   if (req.method === 'POST' && url.pathname === '/api/conversation') {
-    let body = ''
-    req.on('data', (c) => (body += c))
-    req.on('end', () => {
-      try {
-        const parsed = JSON.parse(body || '{}')
-        const sid = String(parsed?.sessionId || '')
-        const msgs = Array.isArray(parsed?.messages) ? parsed.messages : null
-        if (sid && msgs) {
-          conversationDisplays.set(sid, { messages: msgs, updatedAt: Date.now() })
-          sweepStaleMaps()
-          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
-          res.end(JSON.stringify({ ok: true }))
-        } else {
-          res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' })
-          res.end(JSON.stringify({ error: 'invalid body' }))
-        }
-      } catch (e) {
-        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' })
-        res.end(JSON.stringify({ error: String((e && (e as Error).message) || e) }))
+    try {
+      const parsed = await readReportBody(req)
+      const sid = typeof parsed.sessionId === 'string' ? parsed.sessionId : ''
+      const msgs = Array.isArray(parsed.messages) ? parsed.messages : null
+      if (!sid || !msgs) {
+        sendJson(res, 400, { error: 'invalid body' })
+        return
       }
-    })
+      conversationDisplays.set(sid, { messages: msgs, updatedAt: Date.now() })
+      sweepStaleMaps()
+      sendJson(res, 200, { ok: true })
+    } catch (error) {
+      const status = error instanceof ReportBodyTooLargeError ? 413 : 400
+      sendJson(res, status, { error: status === 413 ? 'payload too large' : 'invalid body' })
+    }
     return
   }
   if (req.method === 'POST' && url.pathname === '/api/activity') {
-    let body = ''
-    req.on('data', (c) => (body += c))
-    req.on('end', () => {
-      try {
-        const parsed = JSON.parse(body || '{}')
-        const sid = String(parsed?.sessionId || '')
-        const status = ['busy', 'idle', 'waiting'].includes(parsed?.status) ? parsed.status : null
-        if (sid && status) {
-          sessionActivity.set(sid, {
-            status,
-            pid: Number(parsed.pid) || 0,
-            cwd: parsed.cwd ? String(parsed.cwd) : undefined,
-            updatedAt: Date.now(),
-          })
-          sweepStaleMaps()
-          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
-          res.end(JSON.stringify({ ok: true }))
-        } else {
-          res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' })
-          res.end(JSON.stringify({ error: 'invalid body' }))
-        }
-      } catch (e) {
-        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' })
-        res.end(JSON.stringify({ error: String((e && (e as Error).message) || e) }))
+    try {
+      const parsed = await readReportBody(req)
+      const sid = typeof parsed.sessionId === 'string' ? parsed.sessionId : ''
+      const status = typeof parsed.status === 'string' && ['busy', 'idle', 'waiting'].includes(parsed.status)
+        ? parsed.status
+        : null
+      if (!sid || !status) {
+        sendJson(res, 400, { error: 'invalid body' })
+        return
       }
-    })
+      sessionActivity.set(sid, {
+        status,
+        pid: Number(parsed.pid) || 0,
+        cwd: typeof parsed.cwd === 'string' && parsed.cwd ? parsed.cwd : undefined,
+        updatedAt: Date.now(),
+      })
+      sweepStaleMaps()
+      sendJson(res, 200, { ok: true })
+    } catch (error) {
+      const status = error instanceof ReportBodyTooLargeError ? 413 : 400
+      sendJson(res, status, { error: status === 413 ? 'payload too large' : 'invalid body' })
+    }
     return
   }
   if (req.method === 'GET' && url.pathname === '/api/events') {
@@ -1007,7 +1135,9 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
       sseClients.delete(client)
       scheduleIdleShutdown()
     })
-    if (!sseTimer) sseTimer = setInterval(() => pollSse(root), 2000)
+    // O4：建立文件监听 + 立即 primed 一轮（填充 sseSizes 基线），后续变化由 watch 事件驱动
+    ensureSseWatches(root)
+    pollSse(root)
     return
   }
   // 静态资源：内嵌 web 资源优先（打包进 exe），磁盘 SubPj public 兜底（开发模式）
@@ -1023,7 +1153,7 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
   }
   const pub = publicDir(root)
   const file = resolve(pub, rel)
-  if (!file.startsWith(pub) || !existsSync(file) || !statSync(file).isFile()) {
+  if (!isPathInside(pub, file) || !existsSync(file) || !statSync(file).isFile()) {
     res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' })
     res.end('Not Found')
     return
@@ -1107,6 +1237,192 @@ function hasClients(): boolean {
 // 2026-08-17 空闲自动回收：无任何客户端连接（CLI 注册 / 遥测 WS / SSE 全空）时起计时，持续
 // GATEWAY_IDLE_MINUTES 分钟仍无连接 → 自动 stopLocalGateway（清空三集合 + 清盘 token）+ 退出进程。
 // 任一连接增删都会调用本函数重置计时（有动静即顺延）。仅 --gateway 独立进程模式启用。
+// ============================================================================
+// Web 容器 backend 进程管理实现
+// ============================================================================
+// 端口可用性探测：短暂监听 127.0.0.1:<port>，成功即释放 → 可用
+function portFree(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const srv = netCreateServer()
+    srv.once('error', () => resolve(false))
+    srv.once('listening', () => srv.close(() => resolve(true)))
+    srv.listen(port, '127.0.0.1')
+  })
+}
+
+// 后端就绪探测：原生 TCP 连 127.0.0.1:<port> → 发最小 HTTP GET，2xx/404 均视为服务已起来。
+// 用 node:net 而非 node:http：bun 编译产物里 httpRequest 对某些后端（aiohttp）可能 hang，
+// 原生 socket 最稳（2026-08-19 实测网关 spawn ComfyUI 探测）。
+function backendReady(port: number, path: string, timeoutMs = 2000): Promise<boolean> {
+  return new Promise((resolve) => {
+    let done = false
+    const finish = (ok: boolean) => {
+      if (done) return
+      done = true
+      try {
+        sock.destroy()
+      } catch {
+        /* 忽略 */
+      }
+      resolve(ok)
+    }
+    const sock = netCreateConnection({ host: '127.0.0.1', port })
+    let buf = ''
+    sock.on('connect', () => {
+      sock.write(`GET ${path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n`)
+    })
+    sock.on('data', (d) => {
+      buf += d.toString('latin1')
+      const m = /^HTTP\/1\.[01] (\d{3})/.exec(buf)
+      if (m) finish(m[1] === '200' || m[1] === '404')
+    })
+    sock.on('error', () => finish(false))
+    sock.on('close', () => finish(false))
+    sock.setTimeout(timeoutMs, () => finish(false))
+  })
+}
+
+async function allocBackendPort(): Promise<number> {
+  for (let p = BACKEND_PORT_BASE; p < BACKEND_PORT_MAX; p++) {
+    if (await portFree(p)) return p
+  }
+  return 0
+}
+
+// 进行中的 spawn（防并发重复拉起）：同一 label 探测期间，后续请求复用同一 Promise
+const backendPending = new Map<string, Promise<BackendProc>>()
+
+function backendLogPath(label: string): string {
+  const safe = label.replace(/[^a-zA-Z0-9_-]/g, '_')
+  return join(getPortableRoot(), '.claude', `backend-${safe}.log`)
+}
+
+// O3：backend 日志轮转 —— 超过上限截断重写，防长期运行无限增长（stdout/stderr 落盘只追加）
+const BACKEND_LOG_MAX_BYTES = 5 * 1024 * 1024
+function rotateBackendLogIfNeeded(p: string): void {
+  try {
+    if (existsSync(p) && statSync(p).size > BACKEND_LOG_MAX_BYTES) truncateSync(p, 0)
+  } catch {
+    /* 忽略 */
+  }
+}
+
+// 懒加载 spawn 后端进程（已运行则复用并刷新活跃时间）
+async function ensureBackend(label: string, cfg: BackendCfg): Promise<BackendProc> {
+  const existing = backendProcesses.get(label)
+  if (existing && existing.child.exitCode === null && !existing.child.killed) {
+    existing.lastActive = Date.now()
+    return existing
+  }
+  if (existing) backendProcesses.delete(label) // 进程已退出，清理后重起
+  const pending = backendPending.get(label)
+  if (pending) return pending // 探测进行中，等待同一 Promise 结果（不重复 spawn）
+  const p = doSpawnBackend(label, cfg)
+  backendPending.set(label, p)
+  try {
+    return await p
+  } finally {
+    backendPending.delete(label)
+  }
+}
+
+async function doSpawnBackend(label: string, cfg: BackendCfg): Promise<BackendProc> {
+  const port = cfg.port > 0 ? cfg.port : await allocBackendPort()
+  if (!port) throw new Error(`backend ${label}: 无可用端口（${BACKEND_PORT_BASE}-${BACKEND_PORT_MAX} 均被占用）`)
+  const cmd = cfg.cmd.map((a) => (a.includes('{port}') ? a.replaceAll('{port}', String(port)) : a))
+  // cmd[0] 若是相对路径（含 / 或 \），node spawn 按进程 cwd 而非选项 cwd 解析 → 手动 resolve 到 cfg.cwd
+  if (cmd[0] && !isAbsolute(cmd[0]) && /[\\/]/.test(cmd[0])) cmd[0] = resolve(cfg.cwd, cmd[0])
+  // 子进程 stdout/stderr 落盘到便携根 .claude/backend-<label>.log（stdio ignore 会丢启动报错，难诊断）
+  const logPath = backendLogPath(label)
+  rotateBackendLogIfNeeded(logPath)
+  const logFd = openSync(logPath, 'a')
+  const child = spawn(cmd[0], cmd.slice(1), {
+    cwd: cfg.cwd,
+    env: { ...process.env, PORT: String(port) },
+    stdio: ['ignore', logFd, logFd],
+    shell: false,
+    windowsHide: true, // 2026-08-20 黑框根因修复：python.exe 是 console 子系统，不设 windowsHide 每次 spawn 会弹出黑色命令行窗口（用户「黑框=单独弹出的指令框，类似 cmd」）
+  })
+  const proc: BackendProc = { pid: child.pid ?? 0, port, cfg, startedAt: Date.now(), lastActive: Date.now(), child }
+  child.on('exit', () => {
+    try {
+      closeSync(logFd)
+    } catch {
+      /* 忽略 */
+    }
+    if (backendProcesses.get(label) === proc) backendProcesses.delete(label)
+  })
+  // 就绪探测：最多 ~24s（冷启动慢的后端如 ComfyUI torch 初始化实测 ~22s）
+  let ready = false
+  for (let i = 0; i < 120; i++) {
+    if (gatewayStopping || child.exitCode !== null) break
+    if (await backendReady(port, cfg.readyPath)) {
+      ready = true
+      break
+    }
+    await new Promise((r) => setTimeout(r, 200))
+  }
+  if (!ready) {
+    try {
+      child.kill()
+    } catch {
+      /* 忽略 */
+    }
+    if (child.pid) {
+      try {
+        spawnSync('taskkill', ['/F', '/T', '/PID', String(child.pid)], { stdio: 'ignore', windowsHide: true })
+      } catch {
+        /* 忽略 */
+      }
+    }
+    throw new Error(`backend ${label}: 端口 ${port} 就绪探测失败（${cfg.readyPath}），详见日志 ${backendLogPath(label)}`)
+  }
+  backendProcesses.set(label, proc)
+  return proc
+}
+
+function killBackend(label: string): void {
+  const p = backendProcesses.get(label)
+  if (!p) return
+  backendProcesses.delete(label)
+  try {
+    p.child.kill()
+  } catch {
+    /* 忽略 */
+  }
+  // Windows 兜底：child.kill 不杀进程树，taskkill /T 连子进程一起清
+  if (p.pid) {
+    try {
+      spawnSync('taskkill', ['/F', '/T', '/PID', String(p.pid)], { stdio: 'ignore', windowsHide: true })
+    } catch {
+      /* 忽略 */
+    }
+  }
+}
+
+function killAllBackends(): void {
+  for (const label of [...backendProcesses.keys()]) killBackend(label)
+}
+
+// 空闲回收：backend 超过 idleMinutes 无活跃 → kill（独立于网关自身空闲回收，
+// 因为 iframe 直连后端不经网关，网关三集合可能为空但后端仍被使用中）
+function reclaimIdleBackends(): void {
+  const now = Date.now()
+  for (const [label, p] of [...backendProcesses]) {
+    const idleMs = (p.cfg.idleMinutes ?? GATEWAY_IDLE_MINUTES) * 60 * 1000
+    if (now - p.lastActive > idleMs) {
+      console.log(`[gateway] backend ${label} 空闲超过 ${p.cfg.idleMinutes ?? GATEWAY_IDLE_MINUTES} 分钟，回收`)
+      killBackend(label)
+    }
+  }
+}
+
+function scheduleBackendReclaim(): void {
+  if (!ENABLE_IDLE_RECLAIM || backendReclaimTimer) return
+  backendReclaimTimer = setInterval(reclaimIdleBackends, 60 * 1000)
+  backendReclaimTimer.unref?.()
+}
+
 function scheduleIdleShutdown(): void {
   if (idleTimer) {
     clearTimeout(idleTimer)
@@ -1124,6 +1440,7 @@ function scheduleIdleShutdown(): void {
 }
 
 export function startLocalGateway(opts?: { host?: string; port?: number; token?: string }): LocalGatewayInfo {
+  gatewayStopping = false
   if (server) {
     const lan = lanAddress()
     return {
@@ -1145,6 +1462,8 @@ export function startLocalGateway(opts?: { host?: string; port?: number; token?:
   const root = getPortableRoot()
   // 启动即挂上空闲回收计时：此时无任何连接，若后续一直无人使用，到点自动关闭
   scheduleIdleShutdown()
+  // 2026-08-19 Web 容器：backend 进程空闲回收（独立于网关自身，仅 --gateway 独立进程模式）
+  scheduleBackendReclaim()
 
   server = createServer((req, res) => handleRequest(req, res, root))
   wss = new WebSocketServer({ noServer: true })
@@ -1232,14 +1551,18 @@ export function startLocalGateway(opts?: { host?: string; port?: number; token?:
 }
 
 export function stopLocalGateway(): boolean {
+  gatewayStopping = true
   if (idleTimer) {
     clearTimeout(idleTimer)
     idleTimer = null
   }
-  if (sseTimer) {
-    clearInterval(sseTimer)
-    sseTimer = null
+  stopSseWatches()
+  // 2026-08-19 Web 容器：停网关时一并 kill 全部 backend 子进程 + 停回收 timer
+  if (backendReclaimTimer) {
+    clearInterval(backendReclaimTimer)
+    backendReclaimTimer = null
   }
+  killAllBackends()
   for (const c of sockets) {
     try {
       c.close()

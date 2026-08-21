@@ -89,6 +89,7 @@
   const chatArea = $('chat-area')
   const messagesEl = $('messages')
   const inputWrap = $('input-wrap')
+  const liveChangeEl = $('live-change')
   const inputEl = $('input')
   const sendBtn = $('send-btn')
   const bodyEl = $('recent-body')
@@ -439,6 +440,7 @@
 
   function route() {
     closeMentionPop()
+    liveChangeReset() // 2026-08-19：导航（首页/会话/管理/预览切换）收起变更胶囊
     const r = parseRoute()
     // 任何导航（route 被调用）→ 退出管理视图；管理视图只由 mgr-tab 点击直接 renderMgr 进入，不走 route
     state.mgr = null
@@ -548,12 +550,55 @@
     NotebookEdit: '编辑笔记', TaskCreate: '创建任务', TaskUpdate: '更新任务',
     TaskGet: '查询任务', Agent: '委派 Agent', Skill: '调用技能', TodoWrite: '更新待办',
   }
-  function toolLine(block) {
-    const zh = TOOL_NAMES[block.name] || block.name || '工具'
+  // 工具块元信息：英文名 + 中文动作 + 详情（命令/路径/搜索词等）
+  function toolMeta(block) {
+    const name = block.name || 'tool'
+    const zh = TOOL_NAMES[name] || name
     const inp = block.input && typeof block.input === 'object' ? block.input : null
     const detail = inp ? (inp.file_path || inp.filePath || inp.query || inp.pattern || inp.command || inp.toolName || inp.path || '') : ''
-    const d = typeof detail === 'string' && detail ? ' · ' + String(detail).slice(0, 70) : ''
-    return `<span class="tool-line"><span class="t-ico">⚙</span>${esc(zh)}${esc(d)}</span>`
+    return { name, zh, detail: typeof detail === 'string' && detail ? String(detail).slice(0, 70) : '' }
+  }
+  function toolLine(block) {
+    const t = toolMeta(block)
+    return `<span class="tool-line" data-name="${esc(t.name)}"><span class="t-ico">⚙</span>${esc(t.zh)}${t.detail ? ' · ' + esc(t.detail) : ''}</span>`
+  }
+  // 工具类型 → 概括短语（连续工具折叠的 summary 标签）
+  const TOOL_VERB = {
+    Read: '阅读了文件', Glob: '查找了文件', Grep: '搜索了代码',
+    Bash: '运行了命令', WebFetch: '查看了网页', WebSearch: '搜索了网页',
+    Edit: '编辑了文件', Write: '写入文件', NotebookEdit: '编辑了文件',
+    Agent: '委派了子代理', Skill: '调用了技能', TodoWrite: '更新了待办',
+    TaskCreate: '创建了任务', TaskUpdate: '更新了任务', TaskGet: '查询了任务',
+  }
+  // 一组工具的概括标签：去重保序 + 「、」/「并」连接，如「编辑了文件并运行了命令（3）」
+  function toolFoldLabel(tools) {
+    const verbs = []
+    for (const t of tools) {
+      const v = TOOL_VERB[t.name] || t.zh || '调用了工具'
+      if (!verbs.includes(v)) verbs.push(v)
+    }
+    const label = verbs.length <= 1 ? (verbs[0] || '调用了工具') : verbs.slice(0, -1).join('、') + '并' + verbs[verbs.length - 1]
+    return `${label}（${tools.length}）`
+  }
+  // 把段内 items（think/text/note/tool 对象）渲染为 done-body 内部 HTML：
+  // 连续 tool 合并成一个可展开折叠（默认收起省空间），思考/旁白原位穿插显示（与动作关联）
+  function groupTools(items) {
+    let html = ''
+    let group = []
+    const flush = () => {
+      if (!group.length) return
+      const rows = group.map((g) => g.html).join('')
+      html += `<details class="tool-fold"><summary><span class="d-chev">▸</span><span class="tf-label">${esc(toolFoldLabel(group))}</span></summary><div class="tool-fold-body">${rows}</div></details>`
+      group = []
+    }
+    for (const it of items) {
+      if (!it || !it.html) continue // 占位/置空的块（reply 占位、被过滤的思考）
+      if (it.kind === 'tool') { group.push(it); continue }
+      flush()
+      html += it.html
+    }
+    flush()
+    return html
   }
 
   // ---- 文件变更汇总卡片（Codex 风格：+N 绿 / -N 红）----
@@ -592,7 +637,64 @@
       totalDel += c.removed
       rows += `<div class="ch-row"><span class="ch-file">${esc(baseName(path))}</span><span class="ch-add">+${c.added}</span><span class="ch-del">-${c.removed}</span></div>`
     }
-    return `<div class="msg change-card"><div class="ch-title"><span class="ch-count">${changes.size}个文件已更改</span><span class="ch-add">+${totalAdd}</span><span class="ch-del">-${totalDel}</span><button class="ch-toggle" title="收起/展开文件列表">▾</button></div><div class="ch-list">${rows}</div></div>`
+    // 2026-08-19 默认折叠：卡片落地即为收起姿态（标题行 + ▸），点右上角展开文件列表
+    return `<div class="msg change-card collapsed"><div class="ch-title"><span class="ch-count">${changes.size}个文件已更改</span><span class="ch-add">+${totalAdd}</span><span class="ch-del">-${totalDel}</span><button class="ch-toggle" title="收起/展开文件列表">▸</button></div><div class="ch-list">${rows}</div></div>`
+  }
+
+  // ---- 文件变更胶囊（2026-08-19）：回合运行中在输入栏中央上方悬浮小胶囊，回合结束 FLIP 平滑变形进消息流 ----
+  function liveChangeReset() {
+    liveChanges = new Map()
+    if (liveChangeEl) {
+      liveChangeEl.hidden = true
+      liveChangeEl.classList.remove('has')
+      liveChangeEl.innerHTML = ''
+    }
+  }
+  // tool_result 有真实文件变更 → 更新/浮现胶囊（N个文件已更改 +N -M，约整卡 1/5 宽）
+  function updateLiveChangeCapsule() {
+    if (!liveChanges || !liveChanges.size) return
+    if (!liveChangeEl) return
+    let add = 0, del = 0
+    for (const c of liveChanges.values()) { add += c.added; del += c.removed }
+    liveChangeEl.innerHTML =
+      `<span class="lc-n">${liveChanges.size}个文件已更改</span><span class="ch-add">+${add}</span><span class="ch-del">-${del}</span>`
+    if (liveChangeEl.hidden) {
+      liveChangeEl.hidden = false
+      void liveChangeEl.offsetWidth // 强制 reflow → opacity 过渡生效（淡入）
+      liveChangeEl.classList.add('has')
+    }
+  }
+  // 回合结束：胶囊 FLIP 平滑变形进消息流末尾，落地为默认折叠的汇总卡片。
+  // 步骤：记录胶囊视口矩形 → 消息流内建卡片（先 visibility:hidden 占位）→ 吸底 → 测卡片矩形 →
+  // 反演变换（translate+scale 到胶囊位/大小，top-left 锚定）→ 过渡回自然位 = 从胶囊形态长成卡片。
+  function commitLiveChangeCard() {
+    if (!liveChanges || !liveChanges.size) return
+    const html = renderChangeCardHtml(liveChanges)
+    const wrap = document.createElement('div')
+    wrap.innerHTML = html
+    const card = wrap.firstElementChild
+    const capRect = liveChangeEl && !liveChangeEl.hidden ? liveChangeEl.getBoundingClientRect() : null
+    liveChangeReset() // 隐藏胶囊 + 清空本回合聚合
+    if (!card) return
+    card.style.transformOrigin = 'top left'
+    if (!capRect) {
+      msgAppend(card)
+      scrollBottom()
+      return
+    }
+    card.style.visibility = 'hidden'
+    msgAppend(card)
+    scrollBottom()
+    const cardRect = card.getBoundingClientRect()
+    const dx = capRect.left - cardRect.left
+    const dy = capRect.top - cardRect.top
+    const sx = cardRect.width ? capRect.width / cardRect.width : 1
+    const sy = cardRect.height ? capRect.height / cardRect.height : 1
+    card.style.transform = `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})`
+    card.style.visibility = 'visible'
+    void card.offsetWidth // 强制 reflow：让反演态成为过渡起点
+    card.style.transition = 'transform 0.45s cubic-bezier(0.22, 0.61, 0.36, 1)'
+    card.style.transform = 'none'
   }
   // 卡片右上角隐藏按钮：点击切换列表收起/展开（事件委托，innerHTML 重建不受影响）
   document.addEventListener('click', (e) => {
@@ -689,10 +791,13 @@
       const reply = s.texts.length ? s.texts[s.texts.length - 1] : null
       // 末段仍在处理中（未出正式回复）且段内最近有工具调用 → 按该工具选形象；否则（回复已发布/空闲）默认 1
       if (isFinal) charNote = (!s.finished && s.lastTool) ? toolToChar(s.lastTool) : 1
-      for (let k = 0; k < s.texts.length - 1; k++) s.items.push(processTextHtml(s.texts[k].text))
-      // 对齐 CLI hidePastThinking：只保留本回合最后一个思考块，其余（"The user says…" 等中间思考）为无效对话剔除
-      if (s.thinks.length > 1) {
-        for (let k = 0; k < s.thinks.length - 1; k++) s.items[s.thinks[k]] = ''
+      const processing = isFinal && !s.finished // 最后一段且末尾还没收到纯文本回复 = 处理中
+      // 旁白 text 原位回填（与其后的动作交错，不再统一沉到段尾）；reply 占位置空（回复主内容在折叠外单独渲染）
+      for (const t of s.texts) s.items[t.idx].html = (t === reply) ? '' : processTextHtml(t.text)
+      // 思考过滤：处理中段保留全部思考块（对齐 CLI 实时可见思考）；已处理段只留最后一个
+      // （对齐 CLI hidePastThinking——中间思考为无效对话剔除）
+      if (s.thinks.length > 1 && !processing) {
+        for (let k = 0; k < s.thinks.length - 1; k++) s.items[s.thinks[k]].html = ''
       }
 
       if (s.user) {
@@ -707,14 +812,16 @@
       // 时长 = 回复时间 − 用户消息时间（t2 − t1，即整段 AI 处理过程）
       let foldHtml = ''
       if (s.items.length) {
-        const endTs = reply ? reply.ts : s.lastTs
-        const processing = isFinal && !s.finished // 最后一段且末尾还没收到纯文本回复 = 处理中
-        // 处理中：label「正在处理」+ 实时计时（bindLiveFoldTimer 每秒跳字）；回复落地后「已处理 X」
-        const t1 = (s.user && s.user.timestamp) || (isFinal ? lastUserTs : 0)
-        const dur = !processing && t1 && endTs ? fmtDur(Math.round((endTs - t1) / 1000)) : ''
-        const openAttr = processing ? ' open' : ''
-        const liveCls = processing ? ' done-live' : ''
-        foldHtml = `<details class="done-fold${liveCls}" data-m="${s.key}" data-t="f"${openAttr}><summary><span class="d-chev">▸</span>${processing ? '正在处理' : '已处理'}${dur ? `<span class="d-dur"> ${dur}</span>` : ''}</summary><div class="done-body">${s.items.join('')}</div></details>`
+        const bodyHtml = groupTools(s.items) // 连续工具合并折叠 + 思考/旁白原位穿插
+        if (bodyHtml) {
+          const endTs = reply ? reply.ts : s.lastTs
+          // 处理中：label「正在处理」+ 实时计时（bindLiveFoldTimer 每秒跳字）；回复落地后「已处理 X」
+          const t1 = (s.user && s.user.timestamp) || (isFinal ? lastUserTs : 0)
+          const dur = !processing && t1 && endTs ? fmtDur(Math.round((endTs - t1) / 1000)) : ''
+          const openAttr = processing ? ' open' : ''
+          const liveCls = processing ? ' done-live' : ''
+          foldHtml = `<details class="done-fold${liveCls}" data-m="${s.key}" data-t="f"${openAttr}><summary><span class="d-chev">▸</span>${processing ? '正在处理' : '已处理'}${dur ? `<span class="d-dur"> ${dur}</span>` : ''}</summary><div class="done-body">${bodyHtml}</div></details>`
+        }
       }
 
       if (reply) {
@@ -736,7 +843,7 @@
         // 否则（段间）照旧居中展示为无发布者系统提示。
         const txt = m.blocks.filter((b) => b.kind === 'text').map((b) => b.text).join('\n').trim()
         if (seg && !seg.finished) {
-          seg.items.push(`<div class="done-fold-note">${esc(txt || '会话续接')}</div>`)
+          seg.items.push({ kind: 'note', html: `<div class="done-fold-note">${esc(txt || '会话续接')}</div>` })
         } else {
           closeSeg(false)
           html += `<div class="msg system" data-m="s${i}" data-t="s">${esc(txt || '会话续接')}</div>`
@@ -758,13 +865,16 @@
       if (!seg) seg = { user: null, items: [], texts: [], lastTs: null, key: i, thinks: [], lastTool: null, changes: new Map() }
       const hasText = m.blocks.some((b) => b.kind === 'text' && b.text && b.text.trim())
       for (const b of m.blocks) {
-        // 思考块先进 items 占位并记下索引，closeSeg 时只保留本回合最后一个（对齐 CLI hidePastThinking）
-        if (b.kind === 'thinking') { seg.thinks.push(seg.items.length); seg.items.push(processTextHtml(b.text)) }
-        else if (b.kind === 'tool_use') { seg.items.push(toolLine(b)); seg.lastTool = b.name } // 记录段内最近工具 → 供形象切换
+        // 思考块先进 items 占位并记下索引：处理中段保留全部思考；已处理段只留最后一个（对齐 CLI hidePastThinking）
+        if (b.kind === 'thinking') { seg.thinks.push(seg.items.length); seg.items.push({ kind: 'think', html: processTextHtml(b.text) }) }
+        else if (b.kind === 'tool_use') { const t = toolMeta(b); seg.items.push({ kind: 'tool', html: toolLine(b), name: t.name, zh: t.zh }); seg.lastTool = b.name } // 记录段内最近工具 → 供形象切换
         else if (b.kind === 'tool_result') { const fc = parseFileChange(b.text); if (fc) mergeChanges(seg.changes, fc) } // 聚合文件变更 → 段末汇总卡片
       }
       if (hasText) {
-        seg.texts.push({ text: m.blocks.filter((b) => b.kind === 'text').map((b) => b.text).join(''), ts: m.timestamp })
+        // text 块占位进 items（记索引）：closeSeg 时旁白原位填充、reply 置空（回复主内容在折叠外单独渲染）
+        const text = m.blocks.filter((b) => b.kind === 'text').map((b) => b.text).join('')
+        seg.items.push({ kind: 'text', html: '' })
+        seg.texts.push({ text, ts: m.timestamp, idx: seg.items.length - 1 })
       }
       // finished = 该消息是「纯文本回复」（无 tool_use）= 段已收尾；
       // 末尾仍在调工具/思考（含旁白文本后再跟 tool_use）= 处理中
@@ -1119,9 +1229,11 @@
     )
   }
   // 项目预览：主聊天区渲染返回栏 + iframe，替换管理/会话界面。
-  // hasPreview=true → 加载 <项目>/.claude/preview/index.html；404/失败 → 兜底默认项目主页。
-  // hasPreview=false（项目无预览页）→ 直接加载默认项目主页（GitHub 仓库风格，web/default-preview/，
-  // 由网关 /api/project 拉取该项目的文件树 / README / 会话）。
+  // 预览页加载三级策略（2026-08-19 Web 容器）：
+  //  ① preview.json 声明 backend → 网关 /api/backend 懒加载 spawn 后端进程，iframe 直连 http://127.0.0.1:<port>/
+  //     （并 60s 心跳刷新网关侧 lastActive，防空闲回收误杀）；
+  //  ② 有 .claude/preview/ 静态页（hasPreview=true）→ 加载 <项目>/.claude/preview/index.html；
+  //  ③ 兜底默认项目主页（GitHub 仓库风格，web/default-preview/，/api/project 拉取文件树/README/会话）。
   function openProjectPreview(label, hasPreview) {
     state.currentHash = null
     stopLiveFoldTimer()
@@ -1130,9 +1242,6 @@
     inputWrap.classList.remove('docked')
     chatArea.classList.remove('in-session')
     chatArea.classList.add('mgr-on')
-    // iframe 加载带 token（/preview/* 与 /default-preview/* 与 /api/* 一致要求校验，见 localGateway.handleRequest）
-    const previewSrc = `/preview/${encodeURIComponent(label)}/index.html${gToken ? '?token=' + encodeURIComponent(gToken) : ''}`
-    const defaultSrc = `/default-preview/${encodeURIComponent(label)}/${gToken ? '?token=' + encodeURIComponent(gToken) : ''}`
     messagesEl.innerHTML =
       '<div class="preview-shell">' +
       '<div class="preview-bar">' +
@@ -1142,24 +1251,72 @@
       '</div>'
     const back = $('preview-back')
     if (back) back.addEventListener('click', () => closeProjectPreview())
-    const mount = (src) => {
+    const mount = (src, name) => {
       const body = document.querySelector('.preview-body')
-      if (body) body.innerHTML = `<iframe class="preview-frame" title="${esc(label)} 项目主页" src="${src}"></iframe>`
+      if (!body) return
+      // 覆盖层遮住后端前端加载时的深色初始化画面（2026-08-20 三轮反馈后定稿 v81）：
+      // ① 纯遮罩无指令/按钮（用户「弹出的指令框」= 带指令文字的提示层，已去指令）；
+      // ② 文案由 backend name 驱动（可插拔：preview.json backend.name，缺省「项目服务」）；
+      // ③ backend 容器 load 后缓冲自动淡出 —— 用户「不点击界面就永远卡转圈，但其实早就启动好了」：
+      //    后端已就绪（/api/backend 命中）才挂 iframe，load 后 object_info（如 ComfyUI 855 节点）拉取渲染
+      //    还需数秒，缓冲 8s 自动淡出（不再永远卡转圈），点击仍可提前关闭（focus iframe 移交内部焦点）。
+      body.innerHTML =
+        `<iframe class="preview-frame" title="${esc(label)} 项目主页" src="${src}"></iframe>` +
+        `<div class="preview-overlay"><div class="preview-overlay-spin"></div>` +
+        `<div class="preview-overlay-title">正在启动 ${esc(name || '项目服务')}…</div>` +
+        `<div class="preview-overlay-sub">首次启动需等待后端就绪，加载完成后将自动进入</div></div>`
+      const frame = body.querySelector('.preview-frame')
+      const overlay = body.querySelector('.preview-overlay')
+      if (!frame) return
+      let autoDismiss = null
+      const dismiss = () => {
+        if (autoDismiss) { clearTimeout(autoDismiss); autoDismiss = null }
+        if (overlay) { overlay.classList.add('done'); setTimeout(() => overlay.remove(), 400) }
+      }
+      frame.addEventListener('load', () => {
+        try { frame.focus() } catch {}
+        if (!overlay) return
+        // backend 容器（传了 name）：object_info 拉取渲染需数秒，缓冲后自动淡出；
+        // 静态 preview / 默认主页（无 name）：无后端 loading，立即淡出不挡内容
+        if (name) autoDismiss = setTimeout(dismiss, 8000)
+        else dismiss()
+      })
+      // 点击关闭（可提前进入）：focus iframe + 移除覆盖层；首次点击把键盘焦点交给 iframe 内部
+      if (overlay) overlay.addEventListener('click', () => { try { frame.focus() } catch {}; dismiss() })
     }
-    if (hasPreview) {
-      // 真预览：先 fetch 探测入口，命中才挂 iframe；缺失/被删/无权限 → 兜底默认项目主页
-      fetch(previewSrc, { method: 'GET' })
-        .then((r) => {
-          if (!r.ok) throw new Error('HTTP ' + r.status)
-          mount(previewSrc)
-        })
-        .catch(() => mount(defaultSrc))
-    } else {
-      mount(defaultSrc)
-    }
+    // ① Web 容器：backend 优先（/api/* 受网关 token 校验）
+    fetch(`/api/backend?label=${encodeURIComponent(label)}${gToken ? '&token=' + encodeURIComponent(gToken) : ''}`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
+      .then((d) => {
+        if (!(d && d.url)) throw new Error('no-backend')
+        mount(d.url, d.name)
+        if (window.__backendHeartbeat) clearInterval(window.__backendHeartbeat)
+        window.__backendHeartbeat = setInterval(() => {
+          fetch(`/api/backend?label=${encodeURIComponent(label)}&token=${encodeURIComponent(gToken || '')}`).catch(() => {})
+        }, 60000)
+      })
+      .catch(() => {
+        // ② ③ 静态 preview / 默认项目主页兜底
+        const previewSrc = `/preview/${encodeURIComponent(label)}/index.html${gToken ? '?token=' + encodeURIComponent(gToken) : ''}`
+        const defaultSrc = `/default-preview/${encodeURIComponent(label)}/${gToken ? '?token=' + encodeURIComponent(gToken) : ''}`
+        if (hasPreview) {
+          fetch(previewSrc, { method: 'GET' })
+            .then((r) => {
+              if (!r.ok) throw new Error('HTTP ' + r.status)
+              mount(previewSrc)
+            })
+            .catch(() => mount(defaultSrc))
+        } else {
+          mount(defaultSrc)
+        }
+      })
   }
   function closeProjectPreview() {
     state.preview = null
+    if (window.__backendHeartbeat) {
+      clearInterval(window.__backendHeartbeat)
+      window.__backendHeartbeat = null
+    }
     navigate('#mgr/projects') // 回到项目管理视图（hash 路由；预览只从项目胶囊进入）
   }
 
@@ -1393,18 +1550,23 @@
   // 钉顶回合窗口尺寸变化（旋转/缩放）时，预留空间跟随新容器高度自适应
   window.addEventListener('resize', () => { if (pin.active && pin.reserve) pinReserveApply() })
 
-  // 钉顶滚动监听：滑到底部恢复跟随；离开跟随区（上滑查看回复/历史）只暂停跟随，
-  // **不解除钉顶、不撤占位**——占位生命周期 = 本回合用户消息 → 下一个用户消息（重新钉顶）
-  // 或回复增长填满视口（pinReserveApply 检测 baseH≥target 且本回合已出回复 → 平滑解除），
-  // 中途撤占位会造成布局位移/跳动。消息被 sticky 吸附时由 CSS 自动贴顶；用户上滑越过其
-  // 自然位即自然脱吸，回到底部再吸附（follow 重挂 → 触发解除判定），全程无占位增删 → 无跳动。
+  // 钉顶滚动监听：用户主动上滑（离开底部）即解除钉顶——sticky 让位、消息回自然流位置，
+  // 正文不再从钉顶消息下穿过（2026-08-20 反馈：向下展开处理过程后向上滚动，钉顶不解除、
+  // 正文在钉顶消息下滑行）。上滑时位于历史/内容区，撤占位只减底部空白、scrollTop 不受
+  // clamp → 平滑无跳动；回到底部且钉顶仍激活则重挂跟随（触发解除判定）。
   $('chat-scroll').addEventListener('scroll', () => {
     if (!pin.active || !pin.el || !pin.el.isConnected || pin.animT) return
     const sc = $('chat-scroll')
     const atBottom = sc.scrollTop >= sc.scrollHeight - sc.clientHeight - 40
-    if (atBottom && !pin.follow) { pin.follow = true; pinScrollFollow() } // 回底重挂跟随 → 解除判定
-    else if (!atBottom) pin.follow = false
+    if (atBottom) {
+      if (!pin.follow) { pin.follow = true; pinScrollFollow() } // 回底重挂跟随 → 解除判定
+    } else {
+      pinRelease() // 用户主动上滑离开底部：钉顶让位，正文不再从消息下穿过
+    }
   })
+  // 展开/收起处理折叠（details toggle）→ 内容高度变化，重算钉顶占位：展开的处理折叠内容
+  // 撑满视口即平滑解除（roundFoldOpen 判正文），收起后短内容重新补回占位。
+  messagesEl.addEventListener('toggle', () => { if (pin.active) pinReserveApply() }, true)
 
   // ---------- 网关模式（SubPj2 私有化网关）----------
   // 检测 /api/health 返回 mode==='gateway' 即启用：composer 可发、WS 双向、工具审批。
@@ -1759,8 +1921,10 @@
     sc.style.scrollBehavior = ''
   }
 
-  // 本回合处理折叠是否仍展开（done-live + open）：AI 还在思考/调工具 = 回复尚未发布。
-  // 实时（WS proc 折叠）与只读（SSE 渲染的 done-live 折叠）两条路径都适用。
+  // 本回合处理折叠是否仍展开（done-live + open）：AI 还在思考/调工具。展开的处理/思考折叠
+  // 内容本身即「正文」——2026-08-20 起 roundFoldOpen() 直接参与钉顶解除判定，处理过程撑满
+  // 视口即解除，让消息上滑、思考/工具过程可滚动阅读。实时（WS proc 折叠）与只读（SSE 渲染的
+  // done-live 折叠）两条路径都适用。
   function roundFoldOpen() {
     return !!messagesEl.querySelector('details.done-live[open]')
   }
@@ -1784,15 +1948,15 @@
     // 即 baseH（去占位后的滚动内容高）。
     const msH = messagesEl.offsetHeight - spH - (sp ? mGap : 0)
     const baseH = (parseFloat(scs.paddingTop) || 0) + msH + (parseFloat(scs.paddingBottom) || 0)
-    // 内容已 ≥ 目标：占位无法为负，撤掉。但处理折叠仍展开（AI 还在工作、回复未发布）时
-    // **保持钉顶、只撤占位**——占位本就是给「回复未满一屏」补足用的，内容已撑满视口则占位
-    // 无意义；回合结束回复落地后，短回复会重新补回占位、长回复再由下方分支平滑解除。
-    // 折叠已收起且本回合已出回复（pin.replied）才是「回复把视口撑满」→ 此刻 scrollTop 恰等于
-    // pin.top（消息自然位 = 视口顶）→ 平滑解除钉顶，回复继续增长时消息随内容自然上滑出视口
-    // （ChatGPT 式过渡）；还没出回复（钉顶瞬间长会话背景）只撤占位、保持钉顶，等回复出现。
+    // 内容已 ≥ 目标：占位无法为负，撤掉。本回合已有「正文」（正式回复 pin.replied，或展开的
+    // 处理/思考折叠 roundFoldOpen——思考、工具调用如编辑文件本身就是正文）即平滑解除钉顶，
+    // 此刻 scrollTop 恰等于 pin.top（消息自然位 = 视口顶）→ 消息随内容自然上滑出视口
+    // （ChatGPT 式过渡），处理/思考过程可全屏滚动阅读；否则（钉顶初始、内容全为历史时 baseH
+    // 已大）只撤占位、保持钉顶，等正文出现。2026-08-20：放开 roundFoldOpen——此前展开的处理
+    // 折叠不被识别为正文，钉顶消息 sticky 悬浮遮挡可滚动阅读的思考/工具过程。
     if (baseH >= target) {
       if (sp) sp.remove()
-      if (pin.replied && !roundFoldOpen()) {
+      if (pin.replied || roundFoldOpen()) {
         const sc = $('chat-scroll')
         const wasFollow = pin.follow
         pinRelease()
@@ -1827,8 +1991,10 @@
     const spH = sp ? sp.getBoundingClientRect().height : 0
     const mGap = parseFloat(getComputedStyle(messagesEl).gap) || 0
     const baseH = sc.scrollHeight - spH - (sp ? mGap : 0)
-    // 处理折叠仍展开（回复未发布）不解除：短回复回合占位由 pinReserveApply 在折叠收起后重新补回
-    if (!roundFoldOpen() && baseH >= pin.top + sc.clientHeight) pinRelease() // 回合结束且回复填满视口才解除
+    // 本回合已有正文（正式回复 pin.replied 或展开的处理/思考折叠 roundFoldOpen）且内容填满视口
+    // 才解除：短回复回合占位由 pinReserveApply 补回。2026-08-20 放开 roundFoldOpen（处理折叠
+    // 展开也是正文，撑满视口即解除，与 pinReserveApply 一致）
+    if ((pin.replied || roundFoldOpen()) && baseH >= pin.top + sc.clientHeight) pinRelease() // 回合结束且内容填满视口才解除
   }
 
   function pinApply(el, smooth) {
@@ -1918,6 +2084,7 @@
     procStopTimer()
     cur = null
     proc = null
+    liveChangeReset() // 2026-08-19：新回合开始收起上一回合残留的变更胶囊
     const div = document.createElement('div')
     div.className = 'msg user msg-in'
     div.innerHTML = `<div class="body">${renderUserText(text)}</div>`
@@ -1934,6 +2101,7 @@
   // ---- 实时处理折叠：处理中展开流式展示思考/工具 + 「正在处理」实时计时，
   //      正式回复文本发布时收起为「已处理 X」（计时定格），下面跟上回复正文 ----
   let proc = null // 当前实时 .done-fold 元素
+  let procToolGroup = null // 当前实时工具折叠 <details>（连续工具行合并；思考/回复出现即封口另起一组）
   let procStart = 0 // 本次处理开始时间（ms）
   let procTimer = null // 计时器 id
   let liveChanges = new Map() // 当前回合文件变更聚合（tool_result 解析 → result 时渲染卡片）
@@ -1955,10 +2123,10 @@
   }
   function procOpen() {
     if (proc && proc.isConnected) return proc
-    // 注意：思考/工具折叠展开期间**不**置 pin.replied——思考过程不是回复，不构成解除依据。
-    // 折叠展开时思考内容可几屏高、baseH 可能撑满视口，若此处置位会在折叠收起后（roundFoldOpen
-    // 已 false）误触发 baseH≥target 解除。replied 只由 streamText / syncPinAfterRender 在回复
-    // 文本真正出现时置位，思考折叠只靠 roundFoldOpen 门控挡住展开期的解除。
+    // 注意：思考/工具折叠展开期间**不**置 pin.replied——思考过程不是回复，不构成回复语义。
+    // 处理折叠展开本身即「正文」：pinReserveApply 以 roundFoldOpen() 判定，展开的处理/思考
+    // 折叠撑满视口时直接解除钉顶（消息上滑让内容可滚动阅读，2026-08-20）。replied 只由
+    // streamText / syncPinAfterRender 在回复文本真正出现时置位，标识「正式回复已发布」。
     procStart = Date.now()
     proc = document.createElement('details')
     proc.className = 'done-fold done-live msg-in'
@@ -1971,6 +2139,7 @@
   }
   function procClose() {
     procStopTimer()
+    procToolGroup = null // 处理结束：封口当前工具折叠组
     if (!proc || !proc.isConnected) { proc = null; return }
     const dur = fmtDur(Math.round((Date.now() - procStart) / 1000))
     const sum = proc.querySelector('summary')
@@ -1984,6 +2153,7 @@
   }
   function procThink(text, start) {
     setChar(1) // 思考过程 → 默认形象
+    procToolGroup = null // 思考出现 → 封口当前工具折叠组，后续工具另起一组（思考与动作关联）
     const d = procOpen()
     const body = d.querySelector('.done-body')
     // start=true = 新一轮思考块开始：清掉折叠区内旧思考块，只保留当前块（对齐 CLI 实时只显示正在思考的块）
@@ -1997,13 +2167,28 @@
     th.appendChild(document.createTextNode(text))
     scrollBottom()
   }
-  function procTool(name) {
+  function procTool(block) {
     const d = procOpen()
     const body = d.querySelector('.done-body')
-    const t = document.createElement('span')
-    t.className = 'tool-line'
-    t.innerHTML = `<span class="t-ico">⚙</span>${esc(name)}`
-    body.appendChild(t)
+    const t = toolMeta(block)
+    // 上个元素仍是我们未封口的工具折叠组 → 追加进去；否则（新回合/思考/其它元素之后）另起一组
+    let g = procToolGroup
+    if (!g || !g.isConnected || body.lastElementChild !== g) {
+      g = document.createElement('details')
+      g.className = 'tool-fold'
+      g.innerHTML = `<summary><span class="d-chev">▸</span><span class="tf-label"></span></summary><div class="tool-fold-body"></div>`
+      body.appendChild(g)
+      procToolGroup = g
+    }
+    const row = document.createElement('span')
+    row.className = 'tool-line'
+    row.dataset.name = t.name
+    row.innerHTML = `<span class="t-ico">⚙</span>${esc(t.zh)}${t.detail ? ' · ' + esc(t.detail) : ''}`
+    g.querySelector('.tool-fold-body').appendChild(row)
+    // 重算概括标签（组内工具名集合 → 「运行了命令（3）」风格）
+    const names = [...g.querySelectorAll('.tool-line')].map((el) => el.dataset.name)
+    const tools = [...new Set(names)].map((n) => ({ name: n, zh: TOOL_NAMES[n] || n }))
+    g.querySelector('.tf-label').textContent = toolFoldLabel(tools)
     scrollBottom()
   }
   function procResult(text) {
@@ -2049,9 +2234,10 @@
     const last = proc && proc.isConnected ? proc.querySelector('.done-body')?.lastElementChild : null
     procThink(text, !(last && last.classList && last.classList.contains('done-think')))
   }
-  function toolChip(name) {
+  function toolChip(block) {
+    const name = (block && block.name) || 'tool'
     setChar(toolToChar(name)) // 工具调用 → 对应形象（读/搜=3、写/编=2、执行/插件/命令=4）
-    procTool(name)
+    procTool(block)
   }
   function addToolResult(text) {
     procResult(text)
@@ -2095,7 +2281,7 @@
         if (!c || typeof c !== 'object') continue
         if (c.type === 'text') addAssistant(c.text)
         else if (c.type === 'thinking') addThinking(c.thinking || c.text || '')
-        else if (c.type === 'tool_use') toolChip(c.name || 'tool')
+        else if (c.type === 'tool_use') toolChip(c)
       }
     } else if (t === 'user') {
       const content = (m.message && m.message.content) || []
@@ -2105,7 +2291,10 @@
         if (!text) continue
         addToolResult(text)
         const fc = parseFileChange(text)
-        if (fc) mergeChanges(liveChanges, fc) // 聚合文件变更 → 回合结束渲染汇总卡片
+        if (fc) {
+          mergeChanges(liveChanges, fc) // 聚合文件变更 → 回合结束渲染汇总卡片
+          updateLiveChangeCapsule() // 2026-08-19：回合中在输入栏上方悬浮变更胶囊
+        }
       }
     } else if (t === 'stream_event') {
       const se = m.event || {}
@@ -2115,15 +2304,15 @@
         else if (d.type === 'thinking_delta' && d.thinking) streamThinking(d.thinking)
       } else if (se.type === 'message_start') {
         const content = (((se.message || {}).content) || []).filter((c) => c && c.type === 'tool_use')
-        if (content.length) toolChip(content[0].name || 'tool')
+        if (content.length) toolChip(content[0])
       }
     } else if (t === 'result') {
       addSystem(m.is_error ? '（回合出错）' : '（回合结束）')
       procClose()
       cur = null
       pinMaybeRelease() // 回合结束且回复填满视口 → 平滑解除钉顶；短回复保持占位
-      // 回合结束：渲染本回合文件变更汇总卡片（Codex 风格 +N 绿 / -N 红）
-      if (liveChanges && liveChanges.size) { appendMsg(renderChangeCardHtml(liveChanges)); liveChanges = new Map() }
+      // 回合结束：输入栏上方胶囊 FLIP 平滑变形进消息流末尾，落地为默认折叠的汇总卡片
+      commitLiveChangeCard()
     }
   }
 
@@ -2149,6 +2338,7 @@
     }
     gws.onclose = () => {
       setConn(false, '未连接')
+      liveChangeReset() // 2026-08-19：断连收起变更胶囊
       // 2026-08-18 修复：token 未验证成功即断开（URL token 过期——网关重启/换新 token、或门内输入错误）
       // 一律回 token 门重输，避免静默卡在空态、后续数据请求带着无效 token 全 401。
       if (!gateVerified) {
@@ -2183,6 +2373,7 @@
 
   function showGate() {
     closeMentionPop()
+    liveChangeReset() // 2026-08-19：回 token 门收起变更胶囊
     gateAwait = true
     gateVerified = false
     document.body.classList.add('token-gate')

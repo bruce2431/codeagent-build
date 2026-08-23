@@ -21,7 +21,7 @@
  * HTTP/WS 用 node:http + ws（已验证可打包进 bun 编译产物），不依赖 Bun.serve。
  */
 import { createServer, type Server } from 'node:http'
-import { readFileSync, existsSync, statSync, readdirSync, openSync, closeSync, truncateSync, watch, type FSWatcher } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync, readdirSync, openSync, closeSync, truncateSync, watch, type FSWatcher } from 'node:fs'
 import { open as fsOpen } from 'node:fs/promises'
 import { join, resolve, extname, basename, sep, isAbsolute } from 'node:path'
 import { randomBytes } from 'node:crypto'
@@ -39,6 +39,12 @@ import {
 import { parseSessionInfoFromLite } from '../utils/listSessionsImpl.js'
 import { filterConversationForDisplay } from '../utils/conversationDisplay.js'
 import { setGatewayToken, saveGatewayTokenToDisk, clearGatewayTokenFromDisk } from '../utils/gatewayToken.js'
+// 复用官方凭据池：模型校验与 CLI 同一来源（credentials.json activeProvider.models），
+// 每会话切换不写全局凭据池（不 switchModel）；getActiveModel 与 CLI getUserSpecifiedModelSetting 同源。
+// 设为默认模型 = switchModel 写凭据池 activeModel（全局默认，2026-08-23）。
+import { getActiveModel, getActiveProviderConfig, switchModel } from '../utils/credentials/pool.js'
+// 上下文占用（dsh ContextMeter 数据源）：复用 auto-compact 同源的模型上下文窗口解析，不本地复刻。
+import { getContextWindowForModel } from '../utils/context.js'
 import { webAssets } from './web-assets.generated.js'
 
 // ============================================================================
@@ -425,6 +431,30 @@ function decodeSessionPath(id: string, root: string): { path: string; uuid: stri
   return { path: p, uuid: basename(p).replace(/\.jsonl$/, '') }
 }
 
+// 上下文占用（2026-08-23 dsh ContextMeter 移植数据源）：取转录最后一条 assistant 的 message.usage，
+// usedTokens = input_tokens + cache_creation_input_tokens + cache_read_input_tokens（该轮发送的完整
+// 上下文 token 数），除以 getContextWindowForModel(model)（auto-compact 同源窗口）。无 usage 返回 null。
+function extractContextUsage(records: Record<string, unknown>[]): Record<string, unknown> | null {
+  for (let i = records.length - 1; i >= 0; i--) {
+    const r = records[i]
+    if (!r || r.type !== 'assistant') continue
+    const msg = r.message as Record<string, unknown> | undefined
+    const usage = msg?.usage as Record<string, unknown> | undefined
+    if (!usage) continue
+    const input = Number(usage.input_tokens) || 0
+    const cacheCreate = Number(usage.cache_creation_input_tokens) || 0
+    const cacheRead = Number(usage.cache_read_input_tokens) || 0
+    if (!(input || cacheCreate || cacheRead)) continue
+    const model = typeof msg?.model === 'string' && msg.model ? msg.model : ''
+    const contextWindow = model ? getContextWindowForModel(model) : 0
+    if (!contextWindow) continue
+    const usedTokens = input + cacheCreate + cacheRead
+    const percent = Math.min(100, Math.round((usedTokens / contextWindow) * 100))
+    return { usedTokens, contextWindow, percent, model }
+  }
+  return null
+}
+
 function readSession(id: string, root: string) {
   const { path: p } = decodeSessionPath(id, root)
   const raw = readFileSync(p, 'utf8')
@@ -455,7 +485,8 @@ function readSession(id: string, root: string) {
   // mode 用 'prompt'（对齐 CLI 默认 REPL 显示）：thinking 全隐藏。原 'transcript' 会保留
   // 全局最后一个 thinking，遥测端历史会话因此显示出不该出现的思考过程（无效思考过滤失效）。
   const messages = filterConversationForDisplay(records as never, 'prompt')
-  return { file: basename(p), path: p, messages }
+  const context = extractContextUsage(records)
+  return { file: basename(p), path: p, messages, context }
 }
 
 // 统一时间戳为毫秒（CLI 导出与 /api/session 均用数字；字符串 ISO 兜底解析）。
@@ -759,12 +790,68 @@ function listModels(root: string): Record<string, unknown> {
   }
   // 已作为凭据池模型展示的 settings/env 条目不再重复（同一模型只出现一次）
   const cfgItems = items.filter((it) => !poolSet.has(it.v))
+  // 当前真实启用模型 = 凭据池 activeModel（与 CLI getUserSpecifiedModelSetting 同源，优先级高于 settings.model）；
+  // 无凭据池配置时回落到 settings.model，保证显示值与 CLI 实际使用一致。
+  const activeModel = getActiveModel()
+  const activeCfg = getActiveProviderConfig()
   return {
     workspace: root,
-    model: settings.model !== undefined ? String(settings.model) : null,
+    model: activeModel ?? (settings.model !== undefined ? String(settings.model) : null),
+    activeProvider: creds.activeProvider || null,
+    activeModel,
+    // 当前供应商可切换的模型清单（每会话模型切换的校验集；前端模型浮窗据此渲染）
+    providerModels: activeCfg && Array.isArray(activeCfg.models) ? (activeCfg.models as string[]) : [],
+    effortLevel: settings.effortLevel !== undefined ? String(settings.effortLevel) : null,
     source: settingsPath,
     items: [...poolRows, ...cfgItems],
   }
+}
+
+/**
+ * 写便携根 .claude/settings.json 的 effortLevel 字段（全局持久化，供 CLI 下次启动读取；实时切换由下方
+ * 广播 {type:'effort'} 控制消息到在线 CLI 完成）。模型为每会话切换（不写盘，见 /api/model 处理器），
+ * 不写 settings.model，避免与 CLI 同源显示错位。保留其它字段不破坏。
+ */
+function writeSettingsModel(root: string, patch: { effortLevel?: string | null }): void {
+  const settingsPath = join(root, '.claude', 'settings.json')
+  const settings = readJsonObject(settingsPath) || {}
+  if ('effortLevel' in patch) {
+    if (patch.effortLevel == null) delete settings.effortLevel
+    else settings.effortLevel = patch.effortLevel
+  }
+  try {
+    mkdirSync(join(settingsPath, '..'), { recursive: true })
+    writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n', { encoding: 'utf8' })
+  } catch {
+    /* 写失败静默：持久化非关键路径，实时广播仍生效 */
+  }
+}
+
+/** 广播控制消息给所有在线 CLI 进程（/clients 注册的 WS）。 */
+function broadcastToClients(msg: unknown): void {
+  const s = JSON.stringify(msg)
+  for (const c of cliClients.values()) {
+    try {
+      c.send(s)
+    } catch {
+      /* 断开忽略 */
+    }
+  }
+}
+
+/** 精确路由控制消息到指定会话（/clients 注册的 WS）；无 sessionId/未命中 → 返回 false（不广播兜底，2026-08-23 用户定案）。 */
+function routeToClient(sessionId: string | undefined, msg: unknown): boolean {
+  if (!sessionId) return false
+  const target = cliClients.get(sessionId)
+  if (target && target.readyState === WebSocket.OPEN) {
+    try {
+      target.send(JSON.stringify(msg))
+      return true
+    } catch {
+      /* 断开忽略，返回 false（不广播兜底） */
+    }
+  }
+  return false
 }
 
 // ============================================================================
@@ -907,6 +994,59 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
       sendJson(res, 200, listModels(root))
     } catch (e) {
       sendError(res, e)
+    }
+    return
+  }
+  // 2026-08-22 模型/思考等级切换（受上方 /api/* token 校验保护）：
+  //   POST /api/model {model?, effortLevel?, sessionId?}
+  //   - model → 每会话切换：不写全局凭据池，校验在 activeProvider.models 内，按 sessionId 精确路由
+  //     到对应 CLI 进程（{type:'model'} 实时生效，该进程 STATE 覆盖仅本会话；无 sessionId/未命中广播兜底）。
+  //   - effortLevel → 写 settings.json effortLevel（全局持久化）+ 广播 {type:'effort'} 实时生效。
+  if (req.method === 'POST' && url.pathname === '/api/model') {
+    try {
+      const parsed = await readReportBody(req)
+      const model = typeof parsed.model === 'string' && parsed.model.trim() ? parsed.model.trim() : undefined
+      const sessionId =
+        typeof parsed.sessionId === 'string' && parsed.sessionId.trim() ? parsed.sessionId.trim() : undefined
+      const rawEffort =
+        typeof parsed.effortLevel === 'string' && parsed.effortLevel.trim() ? parsed.effortLevel.trim() : undefined
+      const defaultModel =
+        typeof parsed.defaultModel === 'string' && parsed.defaultModel.trim() ? parsed.defaultModel.trim() : undefined
+      // 'off'/'auto'/'default' = 清除思考等级（delete settings.effortLevel + 广播 null → CLI effortValue=undefined）
+      const effortLevel =
+        rawEffort === 'off' || rawEffort === 'auto' || rawEffort === 'default' ? null : rawEffort
+      if (model === undefined && effortLevel === undefined && defaultModel === undefined) {
+        sendJson(res, 400, { error: 'invalid body' })
+        return
+      }
+      if (model !== undefined) {
+        const cfg = getActiveProviderConfig()
+        if (!cfg || !Array.isArray(cfg.models) || !cfg.models.includes(model)) {
+          sendJson(res, 400, { error: `model "${model}" 不在当前供应商模型清单中` })
+          return
+        }
+      }
+      if (defaultModel !== undefined) {
+        // 设为全局默认模型：switchModel 写 credentials.json activeModel（校验在 activeProvider.models 内）；
+        // 仅全局默认、不广播不路由，当前会话不受影响（2026-08-23 用户定案）
+        if (!switchModel(defaultModel)) {
+          sendJson(res, 400, { error: `model "${defaultModel}" 不在当前供应商模型清单中` })
+          return
+        }
+      }
+      if (effortLevel !== undefined) writeSettingsModel(root, { effortLevel })
+      if (model !== undefined) {
+        // model 每会话覆盖，精确路由到目标会话；未在线/未连接则拒绝而非广播兜底（2026-08-23 用户定案）
+        if (!routeToClient(sessionId, { type: 'model', value: model })) {
+          sendJson(res, 400, { error: '目标会话未在线，无法切换模型' })
+          return
+        }
+      }
+      if (effortLevel !== undefined) broadcastToClients({ type: 'effort', value: effortLevel })
+      sendJson(res, 200, { ok: true, model: model ?? null, effortLevel: effortLevel ?? null, defaultModel: defaultModel ?? null })
+    } catch (error) {
+      const status = error instanceof ReportBodyTooLargeError ? 413 : 400
+      sendJson(res, status, { error: status === 413 ? 'payload too large' : 'invalid body' })
     }
     return
   }

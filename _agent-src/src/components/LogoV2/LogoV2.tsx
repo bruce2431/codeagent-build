@@ -40,7 +40,7 @@ import { useShowGuestPassesUpsell, incrementGuestPassesSeenCount } from './Guest
 import { useShowOverageCreditUpsell, incrementOverageCreditUpsellSeenCount, createOverageCreditFeed } from './OverageCreditUpsell.js';
 import { plural } from '../../utils/stringUtils.js';
 import { useAppState } from '../../state/AppState.js';
-import { getEffortSuffix } from '../../utils/effort.js';
+import { getDisplayedEffortLevel } from '../../utils/effort.js';
 import { useMainLoopModel } from '../../hooks/useMainLoopModel.js';
 import { renderModelSetting } from '../../utils/model/model.js';
 const LEFT_PANEL_MAX_WIDTH = 50;
@@ -165,8 +165,10 @@ export function LogoV2() {
     agentName: agentNameFromSettings
   } = getLogoDisplayData();
   const agentName = agent ?? agentNameFromSettings;
-  const effortSuffix = getEffortSuffix(model, effortValue);
-  const t9 = fullModelDisplayName + effortSuffix;
+  // 思考等级始终显示（getDisplayedEffortLevel 未显式设置时回落 'high'，与 API 实际发送一致），
+  // 以 <模型名>·<思考等级> 形式呈现。
+  const effortLevel = getDisplayedEffortLevel(model, effortValue);
+  const t9 = fullModelDisplayName + '·' + effortLevel;
   let t10;
   if ($[13] !== t9) {
     t10 = truncate(t9, LEFT_PANEL_MAX_WIDTH - 20);

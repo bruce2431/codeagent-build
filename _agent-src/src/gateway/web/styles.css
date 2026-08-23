@@ -49,7 +49,7 @@ a { text-decoration: none; color: inherit; }
 /* ================= 主聊天区 ================= */
 #chat-area { flex: 1; position: relative; background: var(--chat-bg); min-width: 0; display: flex; flex-direction: column; transition: padding-left 0.28s cubic-bezier(0.22, 0.61, 0.36, 1); }
 #chat-scroll { flex: 1; overflow-y: auto; scroll-behavior: smooth; padding: 24px 20px 8px; transition: opacity 0.25s ease; }
-#chat-area.in-session #chat-scroll { padding-bottom: 132px; }
+#chat-area.in-session #chat-scroll { padding-bottom: 142px; } /* 2026-08-21 dsh 高胶囊：docked bar ≈116px + 底边距 22px = 138px，留 4px 余量 */
 #chat-scroll::-webkit-scrollbar { width: 8px; }
 #chat-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
 
@@ -114,6 +114,19 @@ a { text-decoration: none; color: inherit; }
 }
 .msg-assistant .content { min-width: 0; flex: 1; }
 .msg-assistant .blocks { max-width: 720px; }
+
+/* 消息复制按钮（2026-08-21 移植 DSH MessageIconActions：28px 圆钮、tertiary 色、hover 浅灰、
+   成功 check 变蓝 1s；用户消息行右对齐） */
+.msg .msg-actions { display: flex; align-items: center; gap: 10px; height: 28px; margin-top: 2px; }
+.msg.user .msg-actions { align-self: flex-end; }
+.msg-copy {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; padding: 6px; border: none; border-radius: 28px;
+  background: transparent; color: var(--text-3); cursor: pointer;
+}
+.msg-copy:hover { background: var(--hover); color: var(--text-2); }
+.msg-copy svg { width: 16px; height: 16px; display: block; }
+.msg-copy.copied { color: var(--blue); }
 .msg-assistant .p { white-space: pre-wrap; word-break: break-word; margin-bottom: 4px; }
 .msg-header { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; font-size: 11px; color: var(--text-3); }
 .msg-header .role { color: var(--text-2); font-weight: 600; }
@@ -157,6 +170,54 @@ a { text-decoration: none; color: inherit; }
 }
 .done-think { color: var(--text); font-size: 13px; line-height: 1.65; word-break: break-word; }
 .done-think p, .done-think .p { margin: 2px 0; }
+
+/* 思考折叠行（2026-08-22 移植 deepseek-harness ReasoningRow / DisclosureRow：
+   24px 行 = 16px leading（思考图标 ↔ hover/展开 chevron）+ 标题 14/24 + 2×2 圆点 + 摘要截断；
+   展开正文 14/24 弱化色、左缩进 22px 与标题对齐；运行中扫光动画 + 末行摘要实时跟随。 */
+.think-row { display: flex; flex-direction: column; }
+.think-row summary {
+  position: relative; overflow: hidden;
+  display: flex; align-items: center; height: 24px; min-width: 0;
+  cursor: pointer; list-style: none; user-select: none;
+}
+.think-row summary::-webkit-details-marker { display: none; }
+/* 运行中扫光（DSH ReasoningRow sweep：2.6s ease-out 无限循环，主题底色 60% 光带滑过） */
+.think-row[data-state='running'] summary::after {
+  content: '';
+  position: absolute; inset-block: 0; left: 0; width: 300px;
+  background: linear-gradient(90deg, transparent 0%, color-mix(in srgb, var(--chat-bg) 60%, transparent) 55%, transparent 100%);
+  animation: think-row-sweep 2.6s ease-out infinite;
+  pointer-events: none;
+}
+@keyframes think-row-sweep { 0% { left: -300px; } 90%, 100% { left: 100%; } }
+@media (prefers-reduced-motion: reduce) { .think-row[data-state='running'] summary::after { animation: none; } }
+/* 16px leading：折叠显示思考图标，hover/展开态换 chevron（DSH DisclosureRow previewChevron 语义） */
+.tr-leading {
+  position: relative; flex: none; width: 16px; height: 16px;
+  display: inline-flex; align-items: center; justify-content: center; margin-right: 6px;
+  color: var(--text-3);
+}
+.tr-leading svg { width: 14px; height: 14px; }
+.tr-ico { display: inline-flex; opacity: 1; transition: opacity 100ms ease; }
+.tr-chev { position: absolute; inset: 0; margin: auto; display: inline-flex; align-items: center; justify-content: center; opacity: 0; transition: opacity 100ms ease; }
+.think-row summary:hover .tr-ico { opacity: 0; }
+.think-row summary:hover .tr-chev { opacity: 1; }
+.think-row[open] .tr-ico { opacity: 0; }
+.think-row[open] .tr-chev { opacity: 1; }
+.tr-title { flex: none; font-size: 14px; line-height: 24px; font-weight: 400; color: var(--text-2); }
+.tr-sep { flex: none; width: 2px; height: 2px; margin: 0 8px; border-radius: 1px; background: var(--text-3); }
+.tr-summary {
+  min-width: 0; overflow: hidden; flex: 1 1 auto;
+  color: var(--text-3); font-size: 14px; line-height: 24px;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.tr-summary[data-follow-end] { text-overflow: clip; }
+.tr-body {
+  padding: 4px 0 4px 22px;
+  color: var(--text-3); font-size: 14px; line-height: 24px;
+  white-space: pre-wrap; word-break: break-word;
+}
+.tr-body p { margin: 0; }
 /* 压缩/自动摘要标记（吸进处理折叠内的浅灰注释，不打断当前处理段） */
 .done-fold-note { color: var(--text-3); font-size: 12px; line-height: 1.6; margin: 2px 0; padding: 1px 0 1px 12px; border-left: 1px solid var(--border); }
 
@@ -165,7 +226,9 @@ a { text-decoration: none; color: inherit; }
   display: inline-flex; align-items: center; gap: 5px;
   color: var(--text-3); font-size: 12px; margin: 2px 0; padding: 0 2px;
 }
-.tool-line .t-ico { font-size: 11px; }
+/* 2026-08-21：工具步骤图标改 DSH 风格 SVG（16px leading 槽放 14px 图标，替代旧 ⚙ 齿轮） */
+.tool-line .t-ico { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; flex: none; }
+.tool-line .t-ico svg { width: 14px; height: 14px; display: block; }
 /* 工具动作折叠：连续工具行合并的可展开折叠（默认收起省空间，点开看每条详情） */
 .tool-fold { margin: 2px 0; }
 .tool-fold summary {
@@ -186,6 +249,62 @@ a { text-decoration: none; color: inherit; }
   margin: 2px 0 4px 6px; padding: 2px 2px 2px 12px;
   display: flex; flex-direction: column; gap: 2px;
 }
+/* 2026-08-21 折叠 chevron 统一 DSH IconChevronRightOutline14（「>」箭头，替代旧 ▸ 小三角）；
+   展开旋转 90° 指向下。done-fold/tool-fold/think-row 三处共用 */
+.d-chev svg { width: 14px; height: 14px; display: block; }
+/* 工具折叠运行态（2026-08-21 移植 DSH ToolRow sweep）：扫光 + 蓝色脉冲点，只有流式尾组在跑 */
+.tool-fold[data-state='running'] summary { position: relative; overflow: hidden; }
+.tool-fold[data-state='running'] summary::after {
+  content: '';
+  position: absolute; inset-block: 0; left: 0; width: 300px;
+  background: linear-gradient(90deg, transparent 0%, color-mix(in srgb, var(--chat-bg) 60%, transparent) 55%, transparent 100%);
+  animation: think-row-sweep 2.6s ease-out infinite;
+  pointer-events: none;
+}
+@media (prefers-reduced-motion: reduce) { .tool-fold[data-state='running'] summary::after { animation: none; } }
+.tf-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--blue); animation: floria-dot-pulse 1.2s ease-in-out infinite; }
+/* 「正在处理」折叠标题的脉冲点 */
+.df-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--blue); animation: floria-dot-pulse 1.2s ease-in-out infinite; }
+@keyframes floria-dot-pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
+
+/* ===== AskUserQuestion 提问卡（2026-08-21 移植 DSH QuestionComposer 视觉，只读展示）=====
+   eyebrow + 标题（15/22 500）+ 编号选项行（20px 编号块 / label 14/24 500 / 推荐徽标 / 描述）+ 答案注脚 */
+.question-card {
+  margin: 4px 0; max-width: 480px; overflow: hidden;
+  border: 1px solid var(--border); border-radius: 16px; background: #fff;
+  box-shadow: 0 4px 12px 0 rgba(0, 0, 0, 0.02), 0 2px 8px 0 rgba(0, 0, 0, 0.04);
+}
+.q-head { padding: 14px 16px 0; color: var(--text-3); font-size: 11px; line-height: 16px; }
+.q-title { padding: 5px 16px 0; font-size: 15px; line-height: 22px; font-weight: 500; color: var(--text); }
+.q-options { display: flex; flex-direction: column; gap: 1px; margin: 10px 0 0; padding: 0 12px 4px; }
+.q-option {
+  display: flex; align-items: flex-start; gap: 8px; min-height: 40px;
+  padding: 8px 12px 8px 8px; border: 1px solid transparent; border-radius: 12px;
+}
+.q-option.sel { background: var(--hover); border-color: var(--border); }
+.q-num {
+  display: grid; place-items: center; flex: 0 0 20px; width: 20px; height: 20px;
+  margin-top: 2px; border-radius: 6px; background: #f5f6f7;
+  color: var(--text-2); font-size: 12px; font-weight: 500; line-height: 18px;
+}
+.q-copy { min-width: 0; flex: 1; }
+.q-line { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 6px; }
+.q-label { font-size: 14px; line-height: 24px; font-weight: 500; color: var(--text); }
+.q-badge { padding: 0 4px; border-radius: 6px; background: #eef2ff; color: #4176e6; font-size: 11px; line-height: 18px; font-weight: 600; }
+.q-desc { color: var(--text-2); font-size: 13px; line-height: 22px; }
+.q-check { flex: none; display: grid; place-items: center; width: 20px; height: 20px; margin-top: 2px; color: #4176e6; }
+.q-check svg { width: 16px; height: 16px; }
+.q-ans { margin: 0 12px 12px; padding: 8px 10px; border-radius: 10px; background: #f7f8fa; color: var(--text-2); font-size: 12px; line-height: 18px; word-break: break-word; }
+.q-ans.pending { color: var(--text-3); }
+
+/* ===== composer takeover（2026-08-22 修复：DSH 提问/审批占输入栏，而非渲染在 chat 内）=====
+   待答提问 / 待审批时隐藏 #input-bar、在 #input-wrap 内显示 #composer-takeover（同输入栏卡片足迹）；
+   解决后 #input-bar 回归（content swap 不跳版，对齐 dsh ApprovalPanel .root / QuestionComposer .frame）。 */
+#composer-takeover { display: block; width: 100%; max-width: 780px; }
+#composer-takeover[hidden] { display: none; }
+/* takeover 内的提问卡 / 审批卡铺满输入栏宽度（去掉 chat 内的 480px 上限），圆角对齐 dsh 卡片 20px */
+#composer-takeover .question-card,
+#composer-takeover .appr-card { width: 100%; max-width: none; margin: 0; border-radius: 20px; }
 .tool-result {
   margin: 4px 0; padding: 8px 12px; background: var(--rail-bg); border: 1px solid var(--border);
   border-radius: 8px; color: var(--text-2); font-family: var(--mono); font-size: 12px;
@@ -214,6 +333,9 @@ a { text-decoration: none; color: inherit; }
 .change-card:hover .ch-toggle,
 .change-card .ch-toggle:hover { opacity: 1; }
 .change-card .ch-toggle:hover { background: rgba(0, 0, 0, 0.06); }
+/* 2026-08-21：切换箭头改 DSH chevron SVG，展开态旋转 90° 指向下 */
+.change-card .ch-toggle svg { width: 12px; height: 12px; display: block; transition: transform 0.2s ease; }
+.change-card .ch-toggle.open svg { transform: rotate(90deg); }
 @media (hover: none) { .change-card .ch-toggle { opacity: 1; } }
 .change-card .ch-list { border-top: 1px solid #eee; }
 .change-card .ch-row {
@@ -293,12 +415,17 @@ a { text-decoration: none; color: inherit; }
    中间那坨趴栏 webp（opacity:0 残留）拦截鼠标 → 会话内容点不动。会话态 stage 一并关闭。 */
 #chat-area.in-session #empty-hint .g-stage { pointer-events: none; }
 
-/* 输入栏（2026-08-13 按 ChatGPT 参考比例收小）：
-   52px 高 · 白底微阴影 · 左右内边距 12px
-   左 28px 灰圈「+」/ 右「思考」胶囊(≈70px) + 24px 麦克风 + 32px 蓝发送。
+/* 输入栏（2026-08-21 dsh InputBar 完全移植，逐字对齐 deepseek-harness：
+   InputBar.module.css(.card/.row/.tools/.trailing/.add/.primary) +
+   ModelSelect.module.css(.root/.trigger/.triggerLabel/.triggerEffort/.chevron) +
+   design-platform.css 浅色主题 token 展开值。布局：
+   .card = flex column · gap 12px · padding-top 10px · 22px 圆角 · 16px/24px 字；
+   textarea(#input) 顶部（hero 2 行下限 min-height 52px，按内容增高至 14 行 336px 封顶），
+   底部 .row 工具行（padding 2px 8px 6px）：左 .tools（.add 28px 圆 + 空 .modes）+
+   右 .trailing（margin-left auto，gap 12px：.trigger 模型·推理 chip + .primary 34px 主发送）。
    2026-08-18 定案（用户「按 SubPj3 实现」）：空态时输入栏 DOM 挂 #empty-hint .g-stage 内，
-   相对 stage 真定位（top=台面中心 76.75% − 半高 26px，任意窗口精确贴图，不再用视口百分比模拟）；
-   会话态由 app.js 移回 #chat-area 并 .docked 沉底。 */
+   相对 stage 真定位（bar 中心锚在趴栏台面中心 76.75%，translate(-50%,-50%) 适配任意高度）；
+   会话态移回 #chat-area 沉底（top:100%−22px + translateY(-100%)，底边距 22px）。 */
 #input-wrap {
   position: absolute; left: 50%; transform: translateX(-50%);
   z-index: 5;
@@ -308,58 +435,131 @@ a { text-decoration: none; color: inherit; }
               width 0.45s cubic-bezier(0.22, 0.61, 0.36, 1),
               transform 0.55s cubic-bezier(0.22, 0.61, 0.36, 1);
 }
-/* 空态：相对 stage 真定位（SubPj3 .inputbar 同款，锚在趴栏台面 76.75% 处） */
+/* 空态：相对 stage 真定位（SubPj3 .inputbar 同款——bar 中心锚在趴栏台面中心 76.75%，
+   translate(-50%,-50%) 让任意高度的高胶囊都精确居中于台面，任意窗口精确贴图） */
 #empty-hint #input-wrap {
-  top: calc(76.75% - 26px);
+  top: 76.75%;
+  transform: translate(-50%, -50%);
   width: calc(100% - 32px);
 }
-/* 会话态：docked 沉底（DOM 在 #chat-area 内，相对 chat-area 定位） */
+/* 会话态：docked 沉底（DOM 在 #chat-area 内，相对 chat-area 定位，bar 底边距 22px；
+   宽度=dsh 卡片上限 780px = 聊天内容 748 + 32px） */
 #input-wrap.docked {
-  top: calc(100% - 52px - 22px);
-  width: min(680px, calc(100% - 40px));
+  top: calc(100% - 22px);
+  transform: translate(-50%, -100%);
+  width: min(780px, calc(100% - 40px));
 }
+/* dsh .card：白输入表面 + 22px 圆角 + 0.10 输入描边 + shadow-lv2 + 16/24 基础字 */
 #input-bar {
-  display: flex; align-items: center; gap: 6px; background: #fff;
-  border: 1px solid var(--border); border-radius: 26px; min-height: 52px; height: auto;
-  padding: 0 12px; box-shadow: var(--shadow-sm);
+  display: flex; flex-direction: column; gap: 12px;
+  width: 100%; max-width: 780px; padding-top: 10px;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 22px;
+  background: #fff;
+  box-shadow: 0 4px 12px 0 rgba(0, 0, 0, 0.02), 0 2px 8px 0 rgba(0, 0, 0, 0.04);
+  font-size: 16px; line-height: 24px;
 }
-#upload-btn {
-  flex: 0 0 28px; height: 28px; border-radius: 50%;
-  border: 1px solid var(--border); background: #fff;
-  display: flex; align-items: center; justify-content: center; color: var(--text-3);
-  transition: flex-basis 0.3s ease, width 0.3s ease, opacity 0.3s ease, margin 0.3s ease, border-width 0.3s ease;
-}
-#upload-btn:hover { background: var(--hover); color: var(--text-2); }
-#upload-btn svg { width: 13px; height: 13px; }
+/* 文本区（contenteditable 承载 @chip；样式同 dsh .input/.mirror 共享的 34:10434：
+   pl16/pr12/pt4、pre-wrap、break-word、anywhere；最小 2 行 52px，14 行 336px 封顶滚动） */
 #input {
-  flex: 1; min-width: 0; border: none; outline: none; resize: none; height: auto;
-  font: 16px/1.5 inherit; color: var(--text); background: transparent; padding: 8px 4px;
-  white-space: pre-wrap; word-break: break-word; max-height: 130px; overflow-y: auto;
+  box-sizing: border-box;
+  border: none; outline: none; resize: none; background: transparent;
+  padding: 4px 12px 0 16px;
+  font: inherit; line-height: inherit; color: #0f1115;
+  white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere;
+  min-height: 52px; max-height: 336px; overflow-y: auto;
 }
-/* contenteditable 占位符（:empty + data-ph），只读态由 JS 换 data-ph */
-#input:empty:before { content: attr(data-ph); color: var(--text-3); pointer-events: none; }
-#think-btn {
-  flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px;
-  height: 30px; padding: 0 12px; border-radius: 999px;
-  background: var(--rail-bg); border: 1px solid var(--border-soft);
-  color: var(--text-2); font-size: 13px;
-  transition: flex-basis 0.3s ease, width 0.3s ease, opacity 0.3s ease, padding 0.3s ease, margin 0.3s ease;
+/* contenteditable 占位符（:empty + data-ph），只读态由 JS 换 data-ph（dsh caption 色 #ADB2B8） */
+#input:empty:before { content: attr(data-ph); color: #adb2b8; pointer-events: none; }
+/* 2026-08-21 高度对齐 dsh：docked composer 折叠到内容高度（单行 28px = 4px 顶垫 + 24px 行高），
+   hero 空态保留 52px 两行地板（dsh InputBar .hero .mirror min-h 52 仅 hero 生效） */
+#input-wrap.docked #input { min-height: 28px; }
+/* 底部工具行（dsh .row）：textarea 与工具行 gap 12px；左 .tools / 右 .trailing */
+#input-bar .row {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 2px 8px 6px; min-width: 0;
 }
-#think-btn:hover { background: var(--hover); color: var(--text); }
-#think-btn svg { width: 15px; height: 15px; }
-#mic-btn {
-  flex: 0 0 28px; height: 28px; border-radius: 50%;
-  display: flex; align-items: center; justify-content: center; color: var(--text-2);
-  transition: flex-basis 0.3s ease, width 0.3s ease, opacity 0.3s ease, margin 0.3s ease;
+#input-bar .tools,
+#input-bar .trailing {
+  display: flex; align-items: center; min-width: 0;
 }
-#mic-btn:hover { background: var(--hover); color: var(--text); }
-#mic-btn svg { width: 18px; height: 18px; }
-#send-btn {
-  flex: 0 0 32px; height: 32px; border-radius: 50%; background: var(--blue); color: #fff;
-  display: flex; align-items: center; justify-content: center; opacity: 0.55; cursor: default;
+#input-bar .tools { gap: 16px; }
+#input-bar .modes { display: flex; align-items: center; gap: 12px; min-width: 0; }
+#input-bar .trailing { flex: none; margin-left: auto; gap: 12px; }
+/* dsh .add —— 28px 圆、selector 底(#F5F6F7)、primary 字形；IconPlusOutline16(14) */
+#cmd-btn.add {
+  display: grid; place-items: center; flex: none;
+  width: 28px; height: 28px;
+  border: none; border-radius: 999px;
+  background: #f5f6f7; color: #0f1115; cursor: pointer;
 }
-#send-btn svg { width: 16px; height: 16px; }
-#send-btn:active { transform: none; }
+#cmd-btn.add:hover:not(:disabled) { background: #f1f3f5; }
+#cmd-btn.add:disabled { opacity: 0.5; cursor: default; }
+#cmd-btn.add svg { width: 14px; height: 14px; display: block; }
+/* dsh ModelSelect .trigger —— 28px chip、透明无边框、24px 圆角、13/20/500 secondary 字、
+   4px gap、caption 色 14px chevron；max-width 跟随容器 45cqw */
+#model-seat.trigger {
+  display: flex; align-items: center; gap: 4px; min-width: 0;
+  max-width: min(360px, 45cqw);
+  height: 28px; padding: 0 4px 0 8px;
+  border: none; border-radius: 24px; outline: none; background: transparent;
+  color: #61666b; font-size: 13px; line-height: 20px; font-weight: 500;
+  white-space: nowrap; cursor: pointer;
+}
+#model-seat.trigger:hover:not(:disabled) { background: rgba(38, 49, 72, 0.06); }
+#model-seat.trigger .triggerLabel { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#model-seat.trigger .triggerEffort { flex: 0 0 auto; color: #adb2b8; }
+#model-seat.trigger .chevron { flex: 0 0 auto; color: #adb2b8; display: flex; transition: transform 120ms ease; }
+#model-seat.trigger .chevron.open { transform: rotate(180deg); }
+#model-seat.trigger .chevron svg { width: 14px; height: 14px; display: block; }
+/* dsh ModelSelect .root —— menu 的定位上下文 */
+#model-root.model-root { position: relative; min-width: 0; }
+/* dsh .primary —— 34px 圆、button-info-fill = deepseek-500 #4176E6、静态白字形、
+   hover button-info-hover = deepseek-400 #679EFE、translateY(-2px) 抵消 row 顶部 2px 下沉 */
+#send-btn.primary {
+  display: grid; place-items: center; flex: none;
+  width: 34px; height: 34px;
+  border: none; border-radius: 999px;
+  background: #4176e6; color: #fff; cursor: pointer;
+  transition: background-color 100ms ease;
+  transform: translateY(-2px);
+}
+#send-btn.primary:hover:not(:disabled) { background: #679efe; }
+#send-btn.primary:disabled { opacity: 0.4; cursor: default; }
+#send-btn.primary svg { width: 16px; height: 16px; display: block; }
+
+/* ===== 上下文占用指示（dsh ContextMeter 完全移植：ContextMeter.module.css）=====
+   发送钮左边环形小圆（28px 圆触发钮 + 14px/2px 圆环），点击展开 breakdown 面板
+   （264px、r12、透明 hairline + 阴影，表面同 #model-pop 菜单）。token 映射：
+   label-secondary=#61666b / label-tertiary=#adb2b8 / label-primary=#0f1115 /
+   border-l3=rgba(0,0,0,0.12) / interactive-bg-hover=rgba(38,49,72,0.06) */
+#ctx-meter { position: relative; display: inline-flex; }
+#ctx-meter[hidden] { display: none; }
+#ctx-btn.ctx-trigger {
+  display: grid; place-items: center; flex: none;
+  width: 28px; height: 28px;
+  border: none; border-radius: 999px;
+  background: transparent; color: #61666b; cursor: pointer;
+}
+#ctx-btn.ctx-trigger:hover { background: rgba(38, 49, 72, 0.06); }
+#ctx-btn.ctx-trigger svg { width: 14px; height: 14px; display: block; }
+#ctx-btn .ctx-track { fill: none; stroke: rgba(0, 0, 0, 0.12); stroke-width: 2; }
+#ctx-btn .ctx-fill { fill: none; stroke: #adb2b8; stroke-width: 2; stroke-linecap: round; }
+#ctx-panel {
+  position: absolute; right: 0; bottom: calc(100% + 8px); z-index: 20;
+  box-sizing: border-box; width: 264px; padding: 12px;
+  border: 1px solid rgba(0, 0, 0, 0); border-radius: 12px; background: #fff;
+  box-shadow: 0 0 1px 0 rgba(0, 0, 0, 0.2), 0 0 4px 0 rgba(0, 0, 0, 0.02), 0 12px 32px 0 rgba(0, 0, 0, 0.08);
+  font-size: 12px; line-height: 20px; color: #61666b; cursor: default;
+}
+#ctx-panel[hidden] { display: none; }
+#ctx-panel .ctx-header { display: flex; align-items: center; gap: 6px; }
+#ctx-panel .ctx-headline { color: #adb2b8; }
+#ctx-panel .ctx-headline:empty { display: none; }
+#ctx-panel .ctx-percent { font-weight: 500; color: #0f1115; }
+#ctx-panel .ctx-figures { margin-left: auto; font-weight: 500; font-variant-numeric: tabular-nums; color: #0f1115; }
+#ctx-panel .ctx-bar { display: flex; gap: 1px; margin: 10px 0 12px; height: 4px; border-radius: 999px; background: rgba(38, 49, 72, 0.06); overflow: hidden; }
+#ctx-panel .ctx-segment { flex: none; min-width: 2px; height: 100%; border-radius: 1px; background: #adb2b8; }
 
 /* ===== @ 提及浮窗（2026-08-15）：输入 @ 时在输入栏上方弹出，宽度=输入栏 =====
    大圆角 + 弥散阴影 + 无硬边框，内部「插件/技能」「会话」分区 + 可滚动 */
@@ -411,6 +611,161 @@ a { text-decoration: none; color: inherit; }
   padding: 0 9px; font-size: 12.5px; line-height: 1.7; color: var(--text);
   white-space: nowrap; max-width: 100%;
 }
+
+/* ===== 命令菜单 #cmd-pop（dsh PopupSelectView shell 完全移植：PopupSelectView.module.css）=====
+   定位 = dsh .card（absolute、bottom:calc(100%+4px)、left:0、z100、padding 4px）；
+   表面 = r12 + 透明 hairline + shadow-lv3 菜单表面。内部 .search 输入 + .status/.error + .viewport 行列表 */
+#cmd-pop {
+  position: absolute; left: 0; bottom: calc(100% + 4px);
+  z-index: 100; padding: 4px;
+  display: flex; flex-direction: column;
+  min-width: min(220px, 100%); max-width: 100%;
+  max-height: 320px; overflow: hidden;
+  border: 1px solid rgba(0, 0, 0, 0);
+  border-radius: 12px; background: #fff;
+  box-shadow: 0 0 1px 0 rgba(0, 0, 0, 0.2), 0 0 4px 0 rgba(0, 0, 0, 0.02), 0 12px 32px 0 rgba(0, 0, 0, 0.08);
+  outline: none;
+}
+#cmd-pop[hidden] { display: none; }
+/* dsh PopupSelectView 内部类名（PopupSelectView.module.css）：.search 输入 + .status/.error[.errorText+.retry] + .viewport[.row[.label+.detail+.check]] */
+#cmd-pop .search {
+  margin: 2px 2px 4px; padding: 6px 8px;
+  border: 1px solid rgba(0, 0, 0, 0); border-radius: 8px;
+  background: transparent; font-size: 13px; color: #0f1115; outline: none;
+}
+#cmd-pop .search::placeholder { color: #adb2b8; }
+#cmd-pop .status { padding: 8px 10px; font-size: 13px; color: #81858c; }
+#cmd-pop .error { display: flex; align-items: center; gap: 8px; padding: 6px 8px; font-size: 12px; color: #ec1313; }
+#cmd-pop .error .errorText { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+#cmd-pop .retry {
+  padding: 2px 8px; border: 1px solid rgba(0, 0, 0, 0); border-radius: 6px;
+  background: transparent; font-size: 12px; color: #0f1115; cursor: pointer;
+}
+#cmd-pop .viewport { display: flex; flex-direction: column; min-height: 0; overflow-y: auto; }
+#cmd-pop .row {
+  display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px;
+  cursor: pointer; font-size: 13px; color: #0f1115;
+  border: none; background: transparent; text-align: left; width: 100%;
+}
+#cmd-pop .row:hover, #cmd-pop .row.rowActive { background: rgba(38, 49, 72, 0.06); }
+#cmd-pop .label { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#cmd-pop .detail { font-size: 12px; color: #81858c; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#cmd-pop .check { display: inline-flex; flex: none; color: #0f1115; }
+#cmd-pop .check svg { width: 16px; height: 16px; }
+
+/* 风险确认门（dsh RiskConfirmation + Modal 完全移植：全屏遮罩 + 居中 r24 对话框，
+   warning 行 + checkbox 认可 + footer[outline 取消 / primary 确认]） */
+#risk-modal {
+  position: fixed; inset: 0; z-index: 1000;
+  display: flex; align-items: center; justify-content: center; padding: 24px;
+}
+#risk-modal[hidden] { display: none; }
+/* dsh Modal（Modal.module.css）：.root > .mask + .dialog > .content > .header[.title+.close] + .body + .footer */
+#risk-modal .mask { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.24); backdrop-filter: blur(2px); }
+#risk-modal .dialog {
+  position: relative; z-index: 1;
+  display: flex; flex-direction: column; gap: 20px;
+  width: min(440px, 100%); max-width: 100%;
+  max-height: calc(100vh - 48px);
+  padding: 0 0 24px; overflow: hidden;
+  border: 1px solid rgba(0, 0, 0, 0); border-radius: 24px;
+  background: #fff;
+  box-shadow: 0 0 1px 0 rgba(0, 0, 0, 0.2), 0 0 4px 0 rgba(0, 0, 0, 0.02), 0 12px 32px 0 rgba(0, 0, 0, 0.08);
+}
+#risk-modal .header {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 22px 14px 12px 24px;
+}
+#risk-modal .title { margin: 0; font-size: 16px; line-height: 24px; font-weight: 500; color: #0f1115; }
+#risk-modal .close {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; border: none; border-radius: 8px; background: transparent;
+  cursor: pointer; color: #61666b;
+}
+#risk-modal .close:hover { background: rgba(38, 49, 72, 0.06); }
+#risk-modal .close svg { width: 14px; height: 14px; }
+#risk-modal .body { display: flex; flex-direction: column; min-width: 0; margin-top: 20px; padding: 0 24px; }
+/* dsh RiskConfirmation（RiskConfirmation.module.css）：.warning = IconWarning(18) + p */
+#risk-modal .warning {
+  display: flex; align-items: flex-start; gap: 10px;
+  color: #61666b; font-size: 14px; line-height: 22px;
+}
+#risk-modal .warning p { margin: 0; white-space: pre-wrap; word-break: break-word; }
+#risk-modal .warning svg { flex: none; margin-top: 2px; color: #ec1313; width: 18px; height: 18px; }
+#risk-modal .acknowledgement {
+  display: flex; align-items: flex-start; gap: 10px; margin-top: 20px;
+  color: #0f1115; font-size: 14px; line-height: 22px; cursor: pointer;
+}
+#risk-modal .acknowledgement input { flex: none; width: 16px; height: 16px; margin: 3px 0 0; accent-color: #0f1115; cursor: pointer; }
+#risk-modal .footer {
+  display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 0 24px;
+}
+/* dsh Button（Button.module.css）：base 36px 高 + 18px 圆角；variant=outline（hairline+透明） /
+   variant=primary = button-primary-fill = brand-primary ink #0f1115（黑，非蓝——蓝仅发送钮 button-info-fill） */
+#risk-modal .button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 4px;
+  border: none; border-radius: 18px; cursor: pointer; font-size: 14px; line-height: 22px;
+  padding: 0 14px; height: 36px;
+}
+#risk-modal .button:disabled { cursor: not-allowed; opacity: 0.4; }
+#risk-modal .button.outline { border: 1px solid rgba(0, 0, 0, 0.1); background: transparent; color: #0f1115; min-width: 72px; }
+#risk-modal .button.outline:hover:not(:disabled) { background: rgba(38, 49, 72, 0.06); }
+#risk-modal .button.primary { background: #0f1115; color: #fff; min-width: 136px; }
+#risk-modal .button.primary:hover:not(:disabled) { background: #43454a; }
+
+/* ===== 模型·推理等级弹窗 #model-pop（dsh ModelSelect .menu 完全移植：ModelSelect.module.css）=====
+   定位 = dsh .menu（absolute、right:0、bottom:calc(100%+8px)、z20、锚定 #model-root）；
+   两级 drill（root→Model/Effort）无返回按钮（dsh 用 Escape 退回 root 级）；行 = .cell/.option/.groupTitle */
+#model-pop {
+  position: absolute; right: 0; bottom: calc(100% + 8px);
+  z-index: 20;
+  display: flex; flex-direction: column;
+  width: max-content;
+  min-width: min(240px, calc(100vw - 32px));
+  max-width: min(420px, calc(100vw - 32px));
+  max-height: min(360px, calc(100vh - 96px));
+  overflow: hidden; padding: 4px;
+  border: 1px solid rgba(0, 0, 0, 0); border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 0 1px 0 rgba(0, 0, 0, 0.2), 0 0 4px 0 rgba(0, 0, 0, 0.02), 0 12px 32px 0 rgba(0, 0, 0, 0.08);
+  color: #0f1115;
+}
+#model-pop[hidden] { display: none; }
+#model-pop .status, #model-pop .empty { padding: 10px; color: #81858c; font-size: 13px; line-height: 20px; }
+#model-pop .groups { min-height: 0; overflow-y: auto; }
+#model-pop .group + .group { margin-top: 4px; }
+#model-pop .groupTitle {
+  position: sticky; top: 0; z-index: 1;
+  padding: 5px 8px 3px; background: #fff;
+  color: #81858c; font-size: 12px; line-height: 18px; font-weight: 500;
+}
+/* root 两行 cell（dsh .cell：40px 高、10px 圆角、label+value+右 chevron） */
+#model-pop .cell {
+  box-sizing: border-box; display: flex; align-items: center; gap: 8px;
+  width: auto; min-width: 100%; height: 40px; padding: 0 10px;
+  border: none; border-radius: 10px; background: transparent;
+  color: #0f1115; font-size: 14px; line-height: 22px;
+  cursor: pointer; text-align: left;
+}
+#model-pop .cell:hover { background: rgba(38, 49, 72, 0.06); }
+#model-pop .cellLabel { flex: 0 0 auto; white-space: nowrap; }
+#model-pop .cellValue { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; color: #81858c; }
+#model-pop .cellChevron { flex: 0 0 auto; color: #81858c; display: flex; }
+#model-pop .cellChevron svg { width: 14px; height: 14px; }
+/* model/effort 面板选项（dsh .option：min-height 38px、10px 圆角、optionCopy[modelName+description]+check 尾勾；
+   .on = 键盘高亮行，dsh 方向键高亮同源实现） */
+#model-pop .option {
+  box-sizing: border-box; display: flex; align-items: center; gap: 8px;
+  width: auto; min-width: 100%; min-height: 38px; padding: 6px 8px;
+  border: none; border-radius: 10px; outline: none; background: transparent;
+  color: inherit; text-align: left; cursor: pointer; font: inherit;
+}
+#model-pop .option:hover, #model-pop .option.on { background: rgba(38, 49, 72, 0.06); }
+#model-pop .optionCopy { display: flex; flex: 1; flex-direction: column; min-width: 0; }
+#model-pop .modelName { overflow: hidden; color: inherit; font-size: 14px; line-height: 20px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+#model-pop .description { overflow: hidden; color: #81858c; font-size: 12px; line-height: 18px; text-overflow: ellipsis; white-space: nowrap; }
+#model-pop .check { display: grid; place-items: center; flex: 0 0 18px; color: #0f1115; }
+#model-pop .check svg { width: 16px; height: 16px; }
 
 /* ===== token 门（2026-08-15；2026-08-17 对齐 SubPj3）：网关 token 未验证前 = 举白板图全屏 + 中央输入栏 =====
    验证通过（remove body.token-gate）后：侧栏 transform 滑入（绝对覆盖层，不挤占主区，webp 无右移跳动）、
@@ -647,6 +1002,12 @@ body.token-gate #input-wrap { display: none; }
 .mgr-model-ghead { display: flex; align-items: center; gap: 8px; padding: 2px 2px 0; }
 .mgr-model-gname { font-size: 13px; font-weight: 700; color: var(--text-2); }
 .mgr-model-item { cursor: default; } /* 只读展示：胶囊外观完全复用 .mgr-proj，点击无动作 */
+/* 2026-08-23 设为默认：凭据池可切换模型整行可点（cursor:pointer，无独立按钮、无右侧箭头）；
+   默认模型整行绿色高亮（is-default） */
+.mgr-model-item.settable { cursor: pointer; }
+.mgr-model-item.settable:hover { border-color: #4176e6; }
+.mgr-model-item.is-default { border-color: #22c55e; background: #f0fdf4; }
+.mgr-model-item.is-default:hover { border-color: #16a34a; }
 /* 管理视图：项目预览（点项目胶囊 → iframe 加载 <项目>/.claude/preview/ 替换主界面；返回栏回到项目列表） */
 .pv-badge { font-size: 11px; font-weight: 500; color: #fff; background: #4d6bfe; border-radius: 999px; padding: 1px 8px; flex: none; }
 /* 预览返回按钮嵌入界面右上角（不再占顶部整条栏）：.preview-shell relative 承载绝对定位 */
@@ -831,7 +1192,7 @@ body.token-gate #input-wrap { display: none; }
 
   /* 主区留白收窄，首条消息避开汉堡按钮 */
   #chat-scroll { padding: 16px 12px 8px; }
-  #chat-area.in-session #chat-scroll { padding-top: 60px; padding-bottom: 120px; }
+  #chat-area.in-session #chat-scroll { padding-top: 60px; padding-bottom: 140px; } /* 2026-08-21 dsh 高胶囊：docked bar 高度增加，同步留足底边距 */
   #messages { max-width: 100%; }
   .msg .body { max-width: 88%; }
   /* 手机（≤720px）：空态 stage = 88vw 主导；输入栏在 stage 内相对定位（#empty-hint #input-wrap）自动适配 */
@@ -841,6 +1202,13 @@ body.token-gate #input-wrap { display: none; }
   #bubble-pop { max-width: 80vw; }
   #search-box { width: calc(100% - 24px); padding: 14px; }
   #recent-body { padding: 4px 6px 10px; }
+}
+
+/* 手机窄屏：模型 trigger 收窄（仅模型名，隐藏 effort/chevron），输入栏弹窗限高 */
+@media (max-width: 720px) {
+  #model-seat.trigger { max-width: 128px; padding: 0 8px; }
+  #model-seat.trigger .triggerEffort, #model-seat.trigger .chevron { display: none; }
+  #cmd-pop, #model-pop { max-height: 300px; }
 }
 
 /* 矮屏桌面（≤779px 高，非手机）：stage = 100vh-160px 主导，输入栏在 stage 内相对定位自动适配（无需覆盖） */

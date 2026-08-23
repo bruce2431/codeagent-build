@@ -16,11 +16,23 @@ import { join } from 'node:path'
 import { getPortableRoot } from './envUtils.js'
 
 let currentToken = ''
+let currentTokenTime = 0
 let diskTokenCache = ''
 let diskLoaded = false
+let diskLoadTime = 0
+
+// 2026-08-22 修复「web 消息无法注入 + 会话状态恒 None」：磁盘/内存 token 一次性缓存改 TTL 刷新。
+// 根因=网关常比 CLI 晚起（/server on detached spawn）或 /server off→on 换新 token，而 CLI 在
+// 网关未起时首次读盘会把「空串」永久缓存（diskLoaded=true），之后 loadGatewayTokenFromDisk 永远
+// 返回空 → gatewayClient 用空 token 连 /clients 被 401 拒绝（cliClients 空 → web 消息无法注入）、
+// conversationDisplay 上报 /api/activity 同样 401（会话状态恒 None）。加 TTL 后周期性重读，
+// 网关后起 / 重启换 token 都能拿到新值。
+const DISK_TOKEN_TTL_MS = 3000
+const MEMORY_TOKEN_TTL_MS = 5000
 
 export function setGatewayToken(token: string): void {
   currentToken = token
+  currentTokenTime = token ? Date.now() : 0
 }
 
 /** 便携根 .claude/gateway-token 的绝对路径（相对便携根，符合全相对路径红线）。 */
@@ -38,6 +50,7 @@ export function saveGatewayTokenToDisk(token: string): void {
     writeFileSync(p, token, { encoding: 'utf8' })
     diskTokenCache = token
     diskLoaded = true
+    diskLoadTime = Date.now()
   } catch {
     /* 忽略 */
   }
@@ -45,10 +58,13 @@ export function saveGatewayTokenToDisk(token: string): void {
 
 /**
  * 读盘 token（其它 CLI 进程探测到网关后调用）。未落盘返回空串。
- * 结果按文件内容缓存一次；clearGatewayTokenFromDisk 会重置缓存。
+ * 结果带 TTL 缓存：过期后重读文件。文件缺失也算一次探测（TTL 后重试），
+ * 避免「网关未起时读到空串被永久缓存」，也覆盖网关重启换新 token 的场景。
  */
 export function loadGatewayTokenFromDisk(): string {
-  if (diskLoaded) return diskTokenCache
+  const now = Date.now()
+  if (diskLoaded && now - diskLoadTime < DISK_TOKEN_TTL_MS) return diskTokenCache
+  diskLoadTime = now
   try {
     const p = tokenFilePath()
     if (existsSync(p)) {
@@ -73,13 +89,20 @@ export function clearGatewayTokenFromDisk(): void {
   }
   diskTokenCache = ''
   diskLoaded = false
+  diskLoadTime = 0
 }
 
 /**
  * 当前 token：内存优先（本进程管理网关时由 startLocalGateway 设置），否则读盘兜底。
+ * 内存 token 同样可能过期（本进程曾成功连上旧网关、网关随后重启换新 token），TTL 后回落读盘刷新。
  * 未启动网关 / 未落盘时返回空串 → 上报方不带 token（保持旧静默失败行为）。
  */
 export function getGatewayToken(): string {
-  if (currentToken) return currentToken
-  return loadGatewayTokenFromDisk()
+  if (currentToken && Date.now() - currentTokenTime < MEMORY_TOKEN_TTL_MS) return currentToken
+  const disk = loadGatewayTokenFromDisk()
+  if (disk) {
+    setGatewayToken(disk)
+    return disk
+  }
+  return currentToken
 }

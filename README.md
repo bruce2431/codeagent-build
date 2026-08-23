@@ -13,7 +13,7 @@
 
 - 构建命令（在 `_agent-src/` 内执行）：`bun install` / `bun run dev`（源码直跑）/ `bun run build:dev`（dev 构建 `cli-dev-<ts>.exe`）/ `bun run build:dev:gateway`（内置私有化网关版 `cli-dev-<ts>-PRIVATE_GATEWAY.exe`，当前主要部署形态）/ `bun run compile`（正式编译 `dist/cli-<ts>.exe`）。
 - 构建产物：`_agent-src/cli-dev-<YYYYMMDDHHMMSS>[-<flag>].exe`（dev 构建）、`_agent-src/dist/cli-<YYYYMMDDHHMMSS>.exe`（正式编译）；带时间戳命名，独立保留。
-- 部署/运行：直接用带时间戳的产物 exe 启动（如 `cli-dev-<YYYYMMDDHHMMSS>-PRIVATE_GATEWAY.exe`，放项目根）。**产物带时间戳是强制规范，不允许覆盖**（不设固定名部署副本）。当前最新部署：`cli-dev-20260820192634-PRIVATE_GATEWAY.exe`（钉顶解除逻辑修复 sw v83；此前：Web 容器 backend 能力 + 黑框根治 + 预览启动体验 sw v74-v82，已发布 GitHub Release v5）。
+- 部署/运行：直接用带时间戳的产物 exe 启动（如 `cli-dev-<YYYYMMDDHHMMSS>-PRIVATE_GATEWAY.exe`，放项目根）。**产物带时间戳是强制规范，不允许覆盖**（不设固定名部署副本）。当前最新部署：`cli-dev-20260823120742-PRIVATE_GATEWAY.exe`（钉顶修复2 sw v97：展开「已处理」折叠恒走临时让位、回复正文真撑满才永久解除；此前：模型 tab 设为默认模型 sw v96 + 钉顶「已处理」折叠展开算正文 sw v95 + statusline 显示思考等级 + 模型切换去广播兜底改精确路由 sw v94 + dsh ContextMeter 上下文小圆圈 sw v93 + 钉顶生命周期回归修复 sw v92 + 模型切换改每会话 + CLI 渲染思考等级 sw v91 + 模型 seat 同步 + 思考等级 Off/Low/High/Max sw v91 + 模型切换改凭据池源 sw v90 + 模型切换/思考等级切换接通网关 sw v89 + web 消息注入根治 sw v88 + 提问渲染链路修复 sw v88 + dsh 前端同步 sw v86-v88 + 钉顶解除逻辑修复 sw v83 + Web 容器 backend 能力 + 黑框根治 + 预览启动体验 sw v74-v82，已发布 GitHub Release v6）。
 - codegraph 索引：`_agent-src/src/.codegraph/`（相对路径存储，随 `_agent-src` 迁移有效），MCP 查询带 `projectPath=Pj16-CodeAgent构建/_agent-src/src`。
 
 ## 版本控制（git）

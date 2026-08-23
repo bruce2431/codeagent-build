@@ -4,6 +4,7 @@ import type { Root } from './ink.js';
 import type { Props as REPLProps } from './screens/REPL.js';
 import type { AppState } from './state/AppStateStore.js';
 import type { FpsMetrics } from './utils/fpsTracker.js';
+import { GatewayControlBridge } from './components/GatewayControlBridge.js';
 type AppWrapperProps = {
   getFpsMetrics: () => FpsMetrics | undefined;
   stats?: StatsStore;
@@ -17,6 +18,7 @@ export async function launchRepl(root: Root, appProps: AppWrapperProps, replProp
     REPL
   } = await import('./screens/REPL.js');
   await renderAndRun(root, <App {...appProps}>
+      <GatewayControlBridge />
       <REPL {...replProps} />
     </App>);
 }

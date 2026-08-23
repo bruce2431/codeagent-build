@@ -15,6 +15,7 @@
  */
 import WebSocket from 'ws'
 import { getSessionId } from '../bootstrap/state.js'
+import { invokeControlOverride } from '../bridge/controlOverrideHandle.js'
 import { enqueue } from './messageQueueManager.js'
 import { loadGatewayTokenFromDisk, setGatewayToken } from './gatewayToken.js'
 import type { QueuedCommand } from '../types/textInputTypes.js'
@@ -89,7 +90,13 @@ function openSocket(token: string): void {
   })
   sock.on('message', (data) => {
     try {
-      const msg = JSON.parse(data.toString()) as { type?: string; text?: string }
+      const msg = JSON.parse(data.toString()) as { type?: string; text?: string; value?: unknown }
+      // 2026-08-22 模型/思考等级控制消息：网关 POST /api/model 后广播给在线 CLI，
+      // 走 controlOverrideHandle → REPL 侧 setAppState（与官方 useReplBridge.onSetModel 同语义）。
+      if (msg.type === 'model' || msg.type === 'effort') {
+        invokeControlOverride(msg.type, msg.value)
+        return
+      }
       if (msg.type === 'send' && typeof msg.text === 'string' && msg.text.trim()) {
         enqueue({ value: msg.text, mode: 'prompt', skipSlashCommands: true, bridgeOrigin: true } as QueuedCommand)
       }

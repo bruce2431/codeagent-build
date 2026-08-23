@@ -40,7 +40,8 @@ How to use the statusLine command:
      "cwd": "string",         // Current working directory
      "model": {
        "id": "string",           // Model ID (e.g., "claude-3-5-sonnet-20241022")
-       "display_name": "string"  // Display name (e.g., "Claude 3.5 Sonnet")
+       "display_name": "string", // Display name (e.g., "Claude 3.5 Sonnet")
+       "effort_level": "string"  // Current effort level (e.g., "low" | "medium" | "high" | "max")
      },
      "workspace": {
        "current_dir": "string",  // Current working directory path

@@ -136,15 +136,43 @@
           <img class="g-ph empty-ico" src="gate/state-newchat.webp?v=2" alt="Floria" />
         </div>
         <div id="input-wrap">
+          <!-- 输入栏（2026-08-21 dsh InputBar 完全移植：照抄 deepseek-harness InputBar.module.css .card 布局——
+               textarea(#input) 顶部 + 底部 .row 工具行[左 .tools = .add(+命令) + .modes（只读无权限数据→空） +
+               右 .trailing = .trigger 模型·推理座 + .primary 发送]。
+               2026-08-21 用户纠正：完全移植源码，不再自作主张加 upload/think/mic 胶囊） -->
           <div id="input-bar">
-            <button id="upload-btn" title="上传文件（只读）" aria-label="上传文件"></button>
             <div id="input" contenteditable="true" role="textbox" aria-multiline="true" data-ph="输入消息，Enter 发送"></div>
-            <button id="think-btn" title="思考（只读）" aria-label="思考">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2A2.5 2.5 0 0 0 7 4.5v.1A3.5 3.5 0 0 0 4.5 8v.1A3.5 3.5 0 0 0 3 14.5a3.5 3.5 0 0 0 3.5 3.5v.1A3.5 3.5 0 0 0 9.5 22a2.5 2.5 0 0 0 4.7-1.1A3.5 3.5 0 0 0 17 17.5v-.1a3.5 3.5 0 0 0 2.5-6.4 3.5 3.5 0 0 0-2.5-6.4 2.5 2.5 0 0 0-4.7-1A2.5 2.5 0 0 0 9.5 2z"/></svg><span>思考</span>
-            </button>
-            <button id="mic-btn" title="语音输入（只读）" aria-label="语音输入"></button>
-            <button id="send-btn" title="只读查看 · 无法发送" aria-label="发送"></button>
+            <div class="row">
+              <div class="tools">
+                <button id="cmd-btn" class="add" title="命令" aria-label="命令" aria-haspopup="listbox"></button>
+                <div class="modes"></div>
+              </div>
+              <div class="trailing">
+                <!-- 模型·推理座（dsh ModelSelect .root：.trigger chip + .menu 定位上下文） -->
+                <div id="model-root" class="model-root">
+                  <button id="model-seat" class="trigger" title="模型与推理等级" aria-label="模型与推理等级" aria-haspopup="menu">
+                    <span class="triggerLabel"></span>
+                    <span class="triggerEffort"></span>
+                    <span class="chevron"></span>
+                  </button>
+                  <!-- 模型·推理等级弹窗（dsh ModelSelect .menu）：root→Model/Effort 两级 drill -->
+                  <div id="model-pop" hidden></div>
+                </div>
+                <!-- 上下文占用（dsh ContextMeter）：发送钮左边的环形小圆，展示上下文已用百分比，
+                     点击展开 breakdown 面板。数据来自 /api/session 的 context 字段（网关提取）。
+                     无数据（无 usage / 无模型窗口）时 hidden。 -->
+                <div id="ctx-meter" class="ctx-meter" hidden>
+                  <button id="ctx-btn" class="ctx-trigger" type="button" title="上下文已用" aria-label="上下文已用" aria-haspopup="dialog" aria-expanded="false"></button>
+                  <div id="ctx-panel" class="ctx-panel" role="dialog" aria-label="上下文已用" hidden></div>
+                </div>
+                <button id="send-btn" class="primary" title="只读查看 · 无法发送" aria-label="发送"></button>
+              </div>
+            </div>
           </div>
+          <!-- composer takeover（2026-08-22）：DSH 提问/审批占输入栏（替换 #input-bar），而非渲染在 chat 内 -->
+          <div id="composer-takeover" hidden></div>
+          <!-- 命令菜单（dsh PopupSelectView shell：.search + .status + .viewport[.row .label/.detail/.check]） -->
+          <div id="cmd-pop" hidden></div>
           <!-- 文件变更胶囊（2026-08-19）：回合运行中在输入栏中央上方悬浮小胶囊（约整卡 1/5 宽），
                回合结束平滑变形进消息流末尾为折叠汇总卡片 -->
           <div id="live-change" hidden></div>
@@ -171,6 +199,8 @@
   </div>
 </div>
 
+<!-- 风险确认门（dsh RiskConfirmation + Modal：全屏遮罩 + 居中对话框） -->
+<div id="risk-modal" hidden></div>
 <div id="toast" class="toast" hidden></div>
 <script src="app.js"></script>
 </body>

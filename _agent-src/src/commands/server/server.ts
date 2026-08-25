@@ -3,9 +3,10 @@
  * 2026-08-17 网关独立化：网关以「同一 exe 的 --gateway 模式」作为独立进程运行（/server on
  * detached spawn 自身 exe），父 CLI 退出不影响网关；任何 CLI 进程均可连接共用（token 落盘
  * 便携根 .claude/gateway-token，各进程读盘共享）。
- *  on    → spawn 独立网关进程（--gateway，detached + unref），绑定 HOST，等待端口就绪并回显 URL
- *  off   → POST /api/shutdown 优雅关闭独立网关；兜底 netstat + taskkill 清理端口残留
- *  status→ 端口探测网关状态
+ *  on      → spawn 独立网关进程（--gateway，detached + unref），绑定 HOST，等待端口就绪并回显 URL
+ *  off     → POST /api/shutdown 优雅关闭独立网关；兜底 netstat + taskkill 清理端口残留
+ *  status  → 端口探测网关状态
+ *  restart → 先 off 等端口释放再 on（网关未运行则直接 on）
  * 空闲回收：网关三集合全空持续 GATEWAY_IDLE_MINUTES(默认10) 分钟自动关闭（见 localGateway.ts）
  * 环境变量：GATEWAY_PORT(默认8124)、GATEWAY_HOST(默认0.0.0.0=局域网)、SERVER_TOKEN(指定 token，默认随机)、GATEWAY_IDLE_MINUTES(空闲回收阈值分钟)
  */
@@ -87,7 +88,7 @@ async function doStatus(): Promise<string> {
   return `内置网关未运行（端口 ${PORT} 空闲）`
 }
 
-async function doOn(): Promise<string> {
+async function doOn(tokenOverride?: string): Promise<string> {
   if (await isGatewayUp()) {
     const token = loadGatewayTokenFromDisk()
     return `内置网关已在运行（独立进程）\n${describeUrl(token, PORT)}\n停止: /server off`
@@ -123,8 +124,8 @@ async function doOn(): Promise<string> {
     target++
   }
   // 2026-08-17 独立化：detached spawn 自身 exe（--gateway 模式），父 CLI 退出不影响网关。
-  // token 显式传入子进程（用户设了 SERVER_TOKEN 则沿用，否则随机），网关启动时写盘共享。
-  const token = process.env.SERVER_TOKEN || randomBytes(16).toString('hex')
+  // token 显式传入子进程（restart 继承旧 token，否则用户设了 SERVER_TOKEN 则沿用，最后随机），网关启动时写盘共享。
+  const token = tokenOverride || process.env.SERVER_TOKEN || randomBytes(16).toString('hex')
   const child = spawn(process.execPath, ['--gateway'], {
     detached: true,
     stdio: 'ignore',
@@ -190,12 +191,33 @@ async function doOff(): Promise<string> {
   return (await isGatewayUp(gwPort ?? PORT)) ? '网关未停止（关闭失败，可再试 /server off）' : '网关未运行'
 }
 
+async function doRestart(): Promise<string> {
+  const wasUp = (await findGatewayPort()) !== null
+  // 先读盘继承旧 token（网关停止时会清盘，必须关前捕获），restart 后访问 URL 不变
+  const prevToken = loadGatewayTokenFromDisk()
+  const parts: string[] = []
+  if (wasUp) {
+    const offMsg = await doOff()
+    // doOff 有真实动作才记入，否则说明网关已不在运行
+    if (!offMsg.includes('网关未运行')) parts.push(offMsg)
+    // 等端口释放（最多 ~3s），避免立刻重起时端口仍被占用触发自动换端口
+    for (let i = 0; i < 15; i++) {
+      if ((await findGatewayPort()) === null) break
+      await sleep(200)
+    }
+  }
+  const onMsg = await doOn(prevToken || undefined)
+  parts.push(onMsg)
+  return parts.join('\n')
+}
+
 export const call: LocalCommandCall = async (args) => {
   const cmd = args.trim().split(/\s+/)[0]?.toLowerCase() || 'status'
   let value: string
   if (cmd === 'on') value = await doOn()
   else if (cmd === 'off') value = await doOff()
   else if (cmd === 'status') value = await doStatus()
-  else value = `未知参数 "${cmd}"。用法: /server on | off | status`
+  else if (cmd === 'restart') value = await doRestart()
+  else value = `未知参数 "${cmd}"。用法: /server on | off | status | restart`
   return { type: 'text', value }
 }

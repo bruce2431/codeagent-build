@@ -7,10 +7,12 @@
  * useSetAppState + setMainLoopModelOverride，与官方 useReplBridge.onSetModel 同一套语义：
  *  - model  → 清除 override（模型源=凭据池，网关已写盘）+ setAppState({ mainLoopModel, mainLoopModelForSession: null })
  *  - effort → setAppState({ effortValue })
+ *  - rename → 网关 /api/session/rename 后按会话路由给在线 CLI，更新内存标题缓存 + 输入栏徽标
+ *    （2026-08-25 web 重命名 → CLI 实时同步，见 GatewayControlBridge）
  * 仿 replBridgeHandle.ts 的「模块级全局 + set/get」模式，供 React 树外代码调用。
  */
 
-export type ControlOverrideKind = 'model' | 'effort'
+export type ControlOverrideKind = 'model' | 'effort' | 'rename'
 
 type ControlOverrideHandler = (kind: ControlOverrideKind, value: unknown) => void
 

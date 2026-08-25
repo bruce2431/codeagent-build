@@ -20,6 +20,7 @@ import { getCwd } from '../utils/cwd.js';
 import { logForDebugging } from '../utils/debug.js';
 import { errorMessage } from '../utils/errors.js';
 import { enqueue } from '../utils/messageQueueManager.js';
+import { reportCurrentModel } from '../utils/gatewayClient.js';
 import { buildSystemInitMessage } from '../utils/messages/systemInit.js';
 import { createBridgeStatusMessage, createSystemMessage } from '../utils/messages.js';
 import { getAutoModeUnavailableNotification, getAutoModeUnavailableReason, isAutoModeGateEnabled, isBypassPermissionsModeDisabled, transitionPermissionMode } from '../utils/permissions/permissionSetup.js';
@@ -402,6 +403,8 @@ export function useReplBridge(messages: Message[], setMessages: (action: React.S
                   mainLoopModelForSession: resolved
                 };
               });
+              // 2026-08-24 模型 web/CLI 同步：切换后上报实际模型给网关
+              reportCurrentModel();
             },
             onSetMaxThinkingTokens(maxTokens) {
               const enabled = maxTokens !== null;

@@ -2822,6 +2822,23 @@ export function reAppendSessionMetadata(): void {
   getProject().reAppendSessionMetadata()
 }
 
+/**
+ * 应用外部（web/网关）发起的重命名到当前进程内存缓存（2026-08-25 web 重命名 → CLI 实时同步）。
+ *
+ * 文件记录已由网关经 saveCustomTitle/saveAgentName 写入转录，本函数只更新本进程内存缓存：
+ *  - currentSessionTitle → terminal title（REPL getCurrentSessionTitle）与 status line session_name
+ *  - currentSessionAgentName → 退出时 reAppendSessionMetadata 会用缓存的新标题写回 EOF
+ *    （若不更新，运行中 CLI 退出会把旧标题 re-append，把新 custom-title 推出 tail 窗口，web 列表回退）
+ * 不重复 append 文件、不触发 analytics。sessionId 不匹配当前会话时忽略（网关按会话路由，双保险防竞态）。
+ */
+export function applyExternalRename(sessionId: string, customTitle: string): void {
+  if (sessionId !== getSessionId()) return
+  const project = getProject()
+  project.currentSessionTitle = customTitle
+  project.currentSessionAgentName = customTitle
+  void updateSessionName(customTitle)
+}
+
 export async function saveAgentName(
   sessionId: UUID,
   agentName: string,

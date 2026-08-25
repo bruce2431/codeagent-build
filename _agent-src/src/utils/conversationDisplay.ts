@@ -13,11 +13,19 @@ import { COMMAND_MESSAGE_TAG } from '../constants/xml.js'
 import { isNotEmptyMessage, normalizeMessages, shouldShowUserMessage } from './messages.js'
 import { getGatewayToken } from './gatewayToken.js'
 
+/** 文件变更结构化数据（Edit/Write 工具的真实增删行数，权威数字 = diff.ts sumLinesChanged） */
+export type DisplayFileChange = {
+  filePath: string
+  added: number
+  removed: number
+}
+
 export type DisplayBlock = {
   kind: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'image'
   text?: string
   name?: string
   input?: unknown
+  fileChange?: DisplayFileChange
 }
 
 export type DisplayMessage = {
@@ -70,6 +78,36 @@ export function computeLastThinkingBlockId(
   return null
 }
 
+/**
+ * 文件变更文本格式（2026-08-23 起，遥测端不再正则反解，改消费结构化 fileChange）：
+ * FileEditTool/FileWriteTool 的 mapToolResultToToolResultBlockParam 在 tool_result 文本末尾
+ * 追加 ` (+added -removed)`（数字 = diff.ts sumLinesChanged 的结构化统计，见 FileEditTool.ts
+ * `changeSuffix` / FileWriteTool.ts create/update 分支）。本解析器与生成器同放源码侧，
+ * 是「字符串 → 结构化」的唯一权威；SubPj1 app.js 的 parseFileChange 已降级为旧网关兜底。
+ * 文本样例：
+ *   `The file X has been updated successfully (+2 -1).`（Edit 常规 / Write update）
+ *   `The file X has been updated. All occurrences were successfully replaced (+2 -1).`（Edit replaceAll）
+ *   `File created successfully at: X (+3 -0)`（Write create，新文件全行算新增）
+ */
+const FILE_CHANGE_SUFFIX_RE = /\([+-](\d+)\s*[+-](\d+)\)\s*\.?\s*$/
+const FILE_CHANGE_PATH_EDIT_RE = /The file\s+(.+?)\s+has been updated/
+const FILE_CHANGE_PATH_CREATE_RE = /File created successfully at:\s+(.+?)\s*\(/
+
+export function parseFileChangeFromToolResult(text: string): DisplayFileChange | null {
+  const t = (text || '').trim()
+  const m = FILE_CHANGE_SUFFIX_RE.exec(t)
+  if (!m) return null
+  let filePath: string | null = null
+  const fm = FILE_CHANGE_PATH_EDIT_RE.exec(t)
+  if (fm) filePath = fm[1]
+  else {
+    const cm = FILE_CHANGE_PATH_CREATE_RE.exec(t)
+    if (cm) filePath = cm[1]
+  }
+  if (!filePath) return null
+  return { filePath: filePath.trim(), added: Number(m[1]), removed: Number(m[2]) }
+}
+
 /** 输出单个块（kind 映射 + 文本提取） */
 function toDisplayBlock(b: NonNullable<SourceMessage['message']>['content'][number]): DisplayBlock | null {
   switch (b?.type) {
@@ -85,7 +123,12 @@ function toDisplayBlock(b: NonNullable<SourceMessage['message']>['content'][numb
       const t = b.content
       const txt =
         typeof t === 'string' ? t : Array.isArray(t) ? t.map((x) => (x && typeof x === 'object' && 'text' in x ? String(x.text) : '')).join(' ') : ''
-      return { kind: 'tool_result', text: txt }
+      const block: DisplayBlock = { kind: 'tool_result', text: txt }
+      // 文件变更（Edit/Write）：源码侧解析真实增删行数 → 结构化 fileChange，
+      // 遥测端「N 个文件已更改」卡片直接消费字段，不再从文本正则反解。
+      const fc = parseFileChangeFromToolResult(txt)
+      if (fc) block.fileChange = fc
+      return block
     }
     case 'image':
       return { kind: 'image' }

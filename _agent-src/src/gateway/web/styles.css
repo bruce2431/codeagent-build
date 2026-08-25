@@ -415,6 +415,27 @@ a { text-decoration: none; color: inherit; }
    中间那坨趴栏 webp（opacity:0 残留）拦截鼠标 → 会话内容点不动。会话态 stage 一并关闭。 */
 #chat-area.in-session #empty-hint .g-stage { pointer-events: none; }
 
+/* 2026-08-25 项目新建会话指示：项目「+」先到初始化界面（同笔），首条消息才真正建会话。
+   chip 浮在趴栏台面上方（输入栏锚点 76.75% 之上），显示「在 <项目> 新建会话」，可点 X 取消回全局。
+   注意：必须默认 display:none 且仅 :not([hidden]) 时 flex——否则 display:flex 会覆盖 hidden 属性
+   （作者样式优先级 > UA [hidden]{display:none}），导致普通首页也渲染空白胶囊（2026-08-25 修复）。 */
+#empty-hint .new-proj-chip {
+  position: absolute; left: 50%; transform: translateX(-50%); top: calc(62% - 14px);
+  z-index: 6; white-space: nowrap;
+  display: none;
+  padding: 6px 10px 6px 12px; border-radius: 999px;
+  background: var(--bg); border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm); font-size: 12.5px; color: var(--text);
+}
+#empty-hint .new-proj-chip:not([hidden]) { display: flex; align-items: center; gap: 8px; }
+#empty-hint .new-proj-chip .c-ico { display: inline-flex; color: var(--blue); }
+#empty-hint .new-proj-chip .c-name { font-weight: 600; color: var(--blue); }
+#empty-hint .new-proj-chip .c-clear {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; border-radius: 50%; cursor: pointer; color: var(--text-3);
+}
+#empty-hint .new-proj-chip .c-clear:hover { background: var(--hover); color: var(--text); }
+
 /* 输入栏（2026-08-21 dsh InputBar 完全移植，逐字对齐 deepseek-harness：
    InputBar.module.css(.card/.row/.tools/.trailing/.add/.primary) +
    ModelSelect.module.css(.root/.trigger/.triggerLabel/.triggerEffort/.chevron) +
@@ -1061,6 +1082,14 @@ body.token-gate #input-wrap { display: none; }
 .sess-item .title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sess-item .time { flex: 0 0 auto; font-size: 11px; color: var(--text-3); }
 .sess-item .cnt { flex: 0 0 auto; font-size: 10px; color: var(--text-3); margin-right: 2px; }
+/* 2026-08-25 项目会话编号气泡（复用原 w-tag 胶囊 UI）：「在一个列表中」堆叠视图里
+   项目会话标题后显示所属项目短编号（Pj16），hover 显示完整项目名；根会话无气泡。 */
+.sess-item .w-tag {
+  flex: 0 0 auto; font-size: 10px; line-height: 1; color: var(--text-2);
+  border: 1px solid var(--border); border-radius: 999px; padding: 2px 6px;
+  background: transparent; transform: translateY(-1px);
+}
+.sess-item.on .w-tag { border-color: transparent; background: rgba(0, 0, 0, 0.08); }
 
 .folder { display: flex; flex-direction: column; }
 .folder-head {
@@ -1210,5 +1239,96 @@ body.token-gate #input-wrap { display: none; }
   #model-seat.trigger .triggerEffort, #model-seat.trigger .chevron { display: none; }
   #cmd-pop, #model-pop { max-height: 300px; }
 }
+
+/* ===== 侧栏行 hover 操作（2026-08-24 DSH 侧栏行菜单移植：会话 … 重命名/归档 · 项目 + 新建）===== */
+.sess-item .sess-more {
+  flex: 0 0 auto; display: none; align-items: center; justify-content: center;
+  width: 20px; height: 20px; margin-left: 2px; border-radius: 6px;
+  font-size: 13px; line-height: 1; color: var(--text-3); cursor: pointer;
+}
+.sess-item:hover .sess-more { display: inline-flex; }
+.sess-item .sess-more:hover { background: rgba(0, 0, 0, 0.06); color: var(--text); }
+.folder-head .folder-add {
+  flex: 0 0 auto; display: none; align-items: center; justify-content: center;
+  width: 18px; height: 18px; border-radius: 5px; color: var(--text-3); cursor: pointer;
+}
+.folder-head .folder-add svg { width: 12px; height: 12px; }
+.folder-head:hover .folder-add { display: inline-flex; }
+.folder-head .folder-add:hover { background: rgba(0, 0, 0, 0.06); color: var(--text); }
+
+/* 会话行菜单（2026-08-24 DSH ui-primitives Menu 移植：白底 r12 + 4px padding + 40px 行 icon16+label） */
+.row-menu {
+  position: fixed; z-index: 1100;
+  display: flex; flex-direction: column; padding: 4px;
+  min-width: 170px;
+  border: 1px solid rgba(0, 0, 0, 0.1); border-radius: 12px;
+  background: #fff; box-shadow: 0 0 1px 0 rgba(0, 0, 0, 0.2), 0 0 4px 0 rgba(0, 0, 0, 0.02), 0 12px 32px 0 rgba(0, 0, 0, 0.08);
+}
+.row-menu .rm-item {
+  display: flex; align-items: center; gap: 8px;
+  min-height: 40px; padding: 8px 10px;
+  border: none; border-radius: 10px; background: transparent;
+  cursor: pointer; font-size: 14px; line-height: 22px; color: #0f1115; text-align: left;
+}
+.row-menu .rm-item:hover { background: rgba(38, 49, 72, 0.06); }
+.row-menu .rm-item svg { flex: none; width: 16px; height: 16px; color: #81858c; }
+
+/* ===== 会话重命名弹窗 #rename-modal（2026-08-24 对齐 DSH Modal.module.css + WorkspaceBrowser.renameInput）=====
+   dsh Modal：mask rgba(0,0,0,0.24)+blur2 · dialog r24 宽 min(380px,100%) · header[t22/l24/r14/b12] ·
+   body mt20 px24 · footer px24 右对齐 gap8 · Button outline/primary r18 h36 */
+#rename-modal {
+  position: fixed; inset: 0; z-index: 1000;
+  display: flex; align-items: center; justify-content: center; padding: 24px;
+}
+#rename-modal[hidden] { display: none; }
+#rename-modal .mask { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.24); backdrop-filter: blur(2px); }
+#rename-modal .dialog {
+  position: relative; z-index: 1;
+  display: flex; flex-direction: column; gap: 20px;
+  width: min(380px, 100%); max-width: 100%;
+  max-height: calc(100vh - 48px);
+  padding: 0 0 24px; overflow: hidden;
+  border: 1px solid rgba(0, 0, 0, 0.1); border-radius: 24px;
+  background: #fff;
+  box-shadow: 0 0 1px 0 rgba(0, 0, 0, 0.2), 0 0 4px 0 rgba(0, 0, 0, 0.02), 0 12px 32px 0 rgba(0, 0, 0, 0.08);
+}
+#rename-modal .header {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 22px 14px 12px 24px;
+}
+#rename-modal .title { margin: 0; font-size: 16px; line-height: 24px; font-weight: 500; color: #0f1115; }
+#rename-modal .close {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; border: none; border-radius: 8px; background: transparent;
+  cursor: pointer; color: #61666b;
+}
+#rename-modal .close:hover { background: rgba(38, 49, 72, 0.06); }
+#rename-modal .close svg { width: 14px; height: 14px; }
+#rename-modal .body { display: flex; flex-direction: column; min-width: 0; margin-top: 20px; padding: 0 24px; }
+/* dsh WorkspaceBrowser.renameInput：h44 pad 7/14 r22 胶囊、透明底、l2 边框 */
+#rename-modal .rename-input {
+  box-sizing: border-box; width: 100%; height: 44px; padding: 7px 14px;
+  border: 1px solid rgba(0, 0, 0, 0.12); border-radius: 22px;
+  outline: none; background: transparent;
+  font-size: 14px; line-height: 22px; color: #0f1115;
+}
+#rename-modal .rename-input:focus { border-color: rgba(38, 49, 72, 0.4); }
+#rename-modal .rename-error {
+  margin-top: 8px; font-size: 12px; line-height: 18px; color: #ec1313;
+}
+#rename-modal .footer {
+  display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 0 24px;
+}
+/* dsh Button.module.css：r18 h36 pad 0/14 · outline=l2 hairline 透明 · primary=brand ink 黑 */
+#rename-modal .button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 4px;
+  border: none; border-radius: 18px; cursor: pointer; font-size: 14px; line-height: 22px;
+  padding: 0 14px; height: 36px; color: #0f1115; background: transparent;
+}
+#rename-modal .button:disabled { cursor: not-allowed; opacity: 0.4; }
+#rename-modal .button.outline { border: 1px solid rgba(0, 0, 0, 0.12); min-width: 72px; }
+#rename-modal .button.outline:hover:not(:disabled) { background: rgba(38, 49, 72, 0.06); }
+#rename-modal .button.primary { background: #0f1115; color: #fff; min-width: 136px; }
+#rename-modal .button.primary:hover:not(:disabled) { background: #43454a; }
 
 /* 矮屏桌面（≤779px 高，非手机）：stage = 100vh-160px 主导，输入栏在 stage 内相对定位自动适配（无需覆盖） */

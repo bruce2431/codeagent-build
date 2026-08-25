@@ -79,12 +79,21 @@ export function extractJsonStringField(
 /**
  * Like extractJsonStringField but finds the LAST occurrence.
  * Useful for fields that are appended (customTitle, tag, etc.).
+ *
+ * BUGFIX 2026-08-24: the two patterns (`"key":"` compact and `"key": "` spaced)
+ * must be compared by match INDEX, not simply overwrite a shared `lastValue`.
+ * A file can hold both formats (e.g. an early spaced-format record written by
+ * an SDK/other writer and a later compact-format record from saveCustomTitle);
+ * the spaced pattern would match only the EARLY record and clobber the value
+ * found by the compact pattern, returning a stale title. Track the largest
+ * match index across both patterns instead.
  */
 export function extractLastJsonStringField(
   text: string,
   key: string,
 ): string | undefined {
   const patterns = [`"${key}":"`, `"${key}": "`]
+  let lastIdx = -1
   let lastValue: string | undefined
   for (const pattern of patterns) {
     let searchFrom = 0
@@ -100,7 +109,10 @@ export function extractLastJsonStringField(
           continue
         }
         if (text[i] === '"') {
-          lastValue = unescapeJsonString(text.slice(valueStart, i))
+          if (idx > lastIdx) {
+            lastIdx = idx
+            lastValue = unescapeJsonString(text.slice(valueStart, i))
+          }
           break
         }
         i++

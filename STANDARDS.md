@@ -155,7 +155,7 @@ description: <何时用/怎么用，一句话，供 Skill 工具自动命中>
 ### 5.7 现状清单
 - `neturon/`（name=`neturon-rag`）— RAG 引擎：`mcp/` 引擎 + `brain/` 活数据 + `Neturon-Template/` 模板 + `docs/`
 - `codegraph/`（name=`codegraph`）— 代码知识图谱 MCP，索引 `Pj16-CodeAgent构建/_agent-src/src/.codegraph/`
-- `qwen-mm/`（name=`qwen-mm`）— Qwen-MM-Plugins 便携版（2026-08-14）：core（本地多模态读取/可视化 MCP + skill）+ api（云端 Qwen VL/Omni/ASR，需 DashScope key）。引擎 `src/`（精简 pyproject：core viz 全依赖 + api 依赖并入 `[project].dependencies`，entry `qwen-mm-plugins-core`/`qwen-mm-plugins-api`）+ `skills/qwen-mm-plugins-core/`、`skills/qwen-mm-plugins-api/` + `config/config` 活数据。`.mcp.json` 两个 server，均 `uvx --from ${CLAUDE_PLUGIN_ROOT}`（本地构建，不联网）：`qwen-mm-plugins-core` / `qwen-mm-plugins-api`，env `PYTHONUTF8=1`（防 Windows GBK `UnicodeEncodeError`）+ `QWEN_MM_CONFIG_DIR=${CLAUDE_PLUGIN_ROOT}/config`（便携）。config 写 `DASHSCOPE_API_KEY` + `DASHSCOPE_BASE_URL`（用户百炼专属网关 `…maas.aliyuncs.com/compatible-mode/v1`，可覆盖默认 dashscope 地址）。MCP 工具命名空间 `mcp__plugin_qwen-mm_qwen-mm-plugins-core__*` / `mcp__plugin_qwen-mm_qwen-mm-plugins-api__*`
+- ~~`qwen-mm/`~~（已移除 2026-08-24 → `.trash/2026-08-24/qwen-mm/`）— Qwen-MM-Plugins 便携版（2026-08-14）：core（本地多模态读取/可视化 MCP + skill）+ api（云端 Qwen VL/Omni/ASR，需 DashScope key）。引擎 `src/`（精简 pyproject：core viz 全依赖 + api 依赖并入 `[project].dependencies`，entry `qwen-mm-plugins-core`/`qwen-mm-plugins-api`）+ `skills/qwen-mm-plugins-core/`、`skills/qwen-mm-plugins-api/` + `config/config` 活数据。`.mcp.json` 两个 server，均 `uvx --from ${CLAUDE_PLUGIN_ROOT}`（本地构建，不联网）：`qwen-mm-plugins-core` / `qwen-mm-plugins-api`，env `PYTHONUTF8=1`（防 Windows GBK `UnicodeEncodeError`）+ `QWEN_MM_CONFIG_DIR=${CLAUDE_PLUGIN_ROOT}/config`（便携）。config 写 `DASHSCOPE_API_KEY` + `DASHSCOPE_BASE_URL`（用户百炼专属网关 `…maas.aliyuncs.com/compatible-mode/v1`，可覆盖默认 dashscope 地址）。MCP 工具命名空间 `mcp__plugin_qwen-mm_qwen-mm-plugins-core__*` / `mcp__plugin_qwen-mm_qwen-mm-plugins-api__*`。移除原因：用户主动移除视觉插件；config 内 `DASHSCOPE_API_KEY` 已随目录进 `.trash` 未删除。MCP 工具下次重启会话后消失。
 - ~~`telemetry-monitor/`~~（已移除 2026-08-14 → `.trash/2026-08-14/telemetry-monitor/`）：会话遥测 MCP（notify_progress 推飞书 / get_session_status 读会话摘要）。`get_session_status` 用的旧桶 glob（`projects/*/*.jsonl`）与平铺会话存储不兼容已失效，功能被 SubPj1/SubPj2 `/api/sessions` 覆盖；`notify_progress` 飞书推送能力随 SubPj2 网关接管。MCP 工具下次重启会话后消失。
 
 ## 6. MCP 服务器标准
@@ -206,7 +206,7 @@ description: <何时用/怎么用，一句话，供 Skill 工具自动命中>
   - `bun run build:dev:full` → 开全部实验 feature（产物 `cli-dev-<ts>`，时间戳不同不覆盖）
   - `bun run compile` → `Pj16-CodeAgent构建/_agent-src/dist/cli-<YYYYMMDDHHMMSS>`（正式编译）
   - `bun run dev` — 源码直跑
-- 产物命名（`scripts/build.ts`，2026-08-14 起）= `<前缀>-<YYYYMMDDHHMMSS>[-<显式 --feature 代号>]`，显式 feature 代号用 `+` 连接（如 `cli-dev-20260814114321-PRIVATE_GATEWAY.exe`）；前缀 dev=`cli-dev`、compile=`dist/cli`。默认两个 feature（VOICE_MODE + BUILTIN_EXPLORE_PLAN_AGENTS）与 `--feature-set=dev-full` 不进文件名。
+- 产物命名（`scripts/build.ts`，2026-08-14 起）= `<前缀>-<YYYYMMDDHHMMSS>[-<显式 --feature 代号>]`，显式 feature 代号用 `+` 连接（如 `cli-dev-20260814114321-PRIVATE_GATEWAY.exe`）；前缀 dev=`cli-dev`、compile=`dist/cli`。默认三个 feature（VOICE_MODE + BUILTIN_EXPLORE_PLAN_AGENTS + PRIVATE_GATEWAY，2026-08-25 网关默认化）与 `--feature-set=dev-full` 不进文件名。
 - 产物是**自包含单文件二进制**（`bun build --compile --bytecode --packages bundle`），拷到任意项目目录即可用，运行时不需要 src/node_modules。**exe 产物带时间戳是强制规范，不允许覆盖**（禁止覆盖成固定名如 `cli-dev.exe`）；部署/换新 = 直接用新时间戳 exe 启动，旧产物原样保留。
 - codegraph 索引：`Pj16-CodeAgent构建/_agent-src/src/.codegraph/`（相对路径存储，随 src 迁移有效）；MCP 查询带 `projectPath=Pj16-CodeAgent构建/_agent-src/src`。
 - dev 版本号从 git 派生（本目录 2026-08-15 起已 git init，sha 取自 git HEAD；仓库仅跟踪 `_agent-src/`、`README.md`、`STANDARDS.md`，其余项目文件由 .gitignore 排除）。

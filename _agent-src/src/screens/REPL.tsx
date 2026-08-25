@@ -1130,6 +1130,10 @@ export function REPL({
   // all fall back to the product name.
   const terminalTitleFromRename = useAppState(s => s.settings.terminalTitleFromRename) !== false;
   const sessionTitle = terminalTitleFromRename ? getCurrentSessionTitle(getSessionId()) : undefined;
+  // 2026-08-25 web 重命名 → CLI 实时同步：订阅 standaloneAgentContext（外部 rename 事件经
+  // GatewayControlBridge setAppState 更新它），触发本组件重渲染使 terminal tab title
+  //（上方 getCurrentSessionTitle）立即反映新会话名，而非等到下一条消息。
+  useAppState(s => s.standaloneAgentContext);
   const [haikuTitle, setHaikuTitle] = useState<string>();
   // Gates the one-shot Haiku call that generates the tab title. Seeded true
   // on resume (initialMessages present) so we don't re-title a resumed

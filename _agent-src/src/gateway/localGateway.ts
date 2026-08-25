@@ -21,10 +21,11 @@
  * HTTP/WS 用 node:http + ws（已验证可打包进 bun 编译产物），不依赖 Bun.serve。
  */
 import { createServer, type Server } from 'node:http'
-import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync, readdirSync, openSync, closeSync, truncateSync, watch, type FSWatcher } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync, readdirSync, openSync, closeSync, truncateSync, appendFileSync, watch, type FSWatcher } from 'node:fs'
 import { open as fsOpen } from 'node:fs/promises'
 import { join, resolve, extname, basename, sep, isAbsolute } from 'node:path'
-import { randomBytes } from 'node:crypto'
+import { randomBytes, randomUUID } from 'node:crypto'
+import type { UUID } from 'crypto'
 import { networkInterfaces } from 'node:os'
 import { createServer as netCreateServer, createConnection as netCreateConnection } from 'node:net'
 import { spawn, spawnSync } from 'node:child_process'
@@ -45,6 +46,9 @@ import { setGatewayToken, saveGatewayTokenToDisk, clearGatewayTokenFromDisk } fr
 import { getActiveModel, getActiveProviderConfig, switchModel } from '../utils/credentials/pool.js'
 // 上下文占用（dsh ContextMeter 数据源）：复用 auto-compact 同源的模型上下文窗口解析，不本地复刻。
 import { getContextWindowForModel } from '../utils/context.js'
+// 会话重命名（2026-08-24 修复）：直接复用 CLI /rename 的落盘函数（saveCustomTitle + saveAgentName），
+// 不本地复刻写盘格式——与 CLI 完全同路径，保证含 sessionId、CLI resume 能读到、退出不回退。
+import { saveAgentName, saveCustomTitle } from '../utils/sessionStorage.js'
 import { webAssets } from './web-assets.generated.js'
 
 // ============================================================================
@@ -103,13 +107,109 @@ let backendReclaimTimer: NodeJS.Timeout | null = null
 // 循环据此提前退出并 kill 已 spawn 的子进程，避免「探测期网关停止 → 孤儿后端进程」竞态。
 let gatewayStopping = false
 
+// ============================================================================
+// Web 独立会话（2026-08-23 遥测端会话与 CLI 等权）
+// 每个 web 独立会话 = 网关 spawn 一个 cli-dev exe headless 子进程
+// （-p --verbose --input-format stream-json --output-format stream-json），
+// 复用同一 CLI 会话引擎/工具/权限/落盘格式，天然与 CLI 等权、真并行（独立进程，
+// CLI 主进程退出不影响 web 会话）。web 消息经子进程 stdin 喂入，stdout NDJSON
+// 逐行转发给订阅该会话的遥测端 WS；can_use_tool 审批请求转 approval 卡片。
+// ============================================================================
+interface WebSessionProc {
+  sessionId: string
+  child: import('node:child_process').ChildProcess
+  /** 真实 CLI 进程 pid（Start-Process -PassThru 输出；powershell 中转已退出，stopWebSession 用它 taskkill） */
+  pid?: number
+  clients: Set<WebSocket>
+  startedAt: number
+  lastActive: number // 最近活跃（消息/审批），用于空闲回收
+}
+const webSessions = new Map<string, WebSessionProc>()
+let webReclaimTimer: NodeJS.Timeout | null = null
+// web 会话 id 注册表（持久化到便携根 .claude/web-sessions.json）：用于 listSessions 标记
+// kind:'web'（进程停止后磁盘扫描仍能识别哪些会话是 web 端创建的）。
+// 2026-08-24 扩展 projects 映射 {sid → 项目 label}：web 会话可在指定项目下新建
+// （spawn cwd = 项目根），resume 时按注册的项目定位 cwd；旧格式（仅 ids）兼容。
+function webSessionsRegistryPath(): string {
+  return join(getPortableRoot(), '.claude', 'web-sessions.json')
+}
+function loadWebSessionRegistry(): { ids: Set<string>; projects: Record<string, string> } {
+  try {
+    const d = JSON.parse(readFileSync(webSessionsRegistryPath(), 'utf8')) as { ids?: unknown; projects?: unknown }
+    const ids = new Set(Array.isArray(d.ids) ? d.ids.map(String) : [])
+    const projects: Record<string, string> = {}
+    if (d.projects && typeof d.projects === 'object') {
+      for (const [k, v] of Object.entries(d.projects)) if (typeof v === 'string') projects[k] = v
+    }
+    return { ids, projects }
+  } catch {
+    /* 无注册表 → 空 */
+  }
+  return { ids: new Set(), projects: {} }
+}
+function saveWebSessionRegistry(ids: Set<string>, projects: Record<string, string>): void {
+  try {
+    const p = webSessionsRegistryPath()
+    mkdirSync(join(p, '..'), { recursive: true })
+    writeFileSync(p, JSON.stringify({ ids: [...ids], projects }), 'utf8')
+  } catch {
+    /* 忽略 */
+  }
+}
+// web 会话启动 cwd（2026-08-24 用户定案：笔=全局根，项目=项目目录内）：
+//  CLI 的 getProjectRoot() = 进程启动时的 cwd（state.ts getInitialState projectRoot: resolvedCwd），
+//  会话 jsonl 自然落 <cwd>/.claude/projects/——所以只需把 cwd 指对，落盘位置即正确，无需额外落盘逻辑。
+//  - project 指定（findProjects 命中的项目组，防任意路径）→ 该项目根目录
+//  - 未指定（笔/首页消息发送）→ 全局根（便携根 getPortableRoot() = @WrokSpace 散装对话区）
+function webSessionProjectRoot(project: string | undefined): string {
+  if (project && project.trim()) {
+    const g = findProjects(getPortableRoot()).find((x) => x.scope === 'project' && x.label === project)
+    if (g) return resolve(g.dir, '..', '..') // dir = <项目根>/.claude/projects → 上两级 = 项目根
+  }
+  return getPortableRoot()
+}
+
+// web 会话 exe 定位（2026-08-24 用户定案）：
+//  - project 指定（项目 label）→ 该项目根下找 cli-dev*.exe（带时间戳的 PRIVATE_GATEWAY 版本优先，取时间戳最大）
+//    例：Pj14 → @WrokSpace\Pj14-AI动画制作\cli-dev-20260816212109-PRIVATE_GATEWAY.exe
+//  - 未指定（笔/首页消息发送）→ 全局根（便携根 getPortableRoot()）下找 cli-dev*.exe
+//    例：@WrokSpace\cli-dev-20260820192634-PRIVATE_GATEWAY.exe
+//  - 找不到 → 回退网关自身 exe（process.execPath）
+function webSessionExe(project: string | undefined): string {
+  const candidates: string[] = []
+  if (project && project.trim()) {
+    const g = findProjects(getPortableRoot()).find((x) => x.scope === 'project' && x.label === project)
+    if (g) candidates.push(resolve(g.dir, '..', '..'))
+  } else {
+    candidates.push(getPortableRoot())
+  }
+  for (const dir of candidates) {
+    let files: string[] = []
+    try {
+      files = readdirSync(dir).filter((f) => /^cli-dev.*\.exe$/i.test(f))
+    } catch {
+      continue
+    }
+    if (!files.length) continue
+    // 带时间戳的 PRIVATE_GATEWAY 版本优先（按名称排序取最大时间戳）；否则任意 cli-dev*.exe
+    const stamped = files.filter((f) => /cli-dev-\d{14}-PRIVATE_GATEWAY\.exe/i.test(f)).sort().pop()
+    const chosen = stamped ?? files[0]
+    return join(dir, chosen)
+  }
+  return process.execPath
+}
+
 // CLI 侧 conversationDisplay.ts 上报的展示结果（内存，进程退出即消失）
 const conversationDisplays = new Map<string, { messages: unknown[]; updatedAt: number }>()
 // CLI 侧 sendSessionActivity 上报的活动状态（内存，进程退出即消失）
 const sessionActivity = new Map<string, { status: string; pid: number; cwd?: string; updatedAt: number }>()
+// 2026-08-24 模型 web/CLI 同步：CLI 侧 reportCurrentModel 上报的每会话实际模型（内存，进程退出即消失）。
+// 每会话模型 override 只存在于 CLI 进程内存，web 端 /api/session 据此读取校准模型 seat。
+const sessionModels = new Map<string, { model: string; updatedAt: number }>()
 // C1 修复：两个内存 Map 无上限（只增不删）→ 长跑泄漏。加 TTL + 死进程惰性清扫。
 const DISPLAY_TTL_MS = 10 * 60 * 1000 // conversationDisplays 10 分钟无刷新视为过期
 const ACTIVITY_TTL_MS = 10 * 60 * 1000 // sessionActivity 10 分钟无上报视为过期
+const SESSION_MODEL_TTL_MS = 10 * 60 * 1000 // sessionModels 10 分钟无上报视为过期
 const MAX_REPORT_BODY_BYTES = 1024 * 1024
 
 // ============================================================================
@@ -385,11 +485,16 @@ function sweepStaleMaps(now = Date.now()): void {
   for (const [sid, v] of sessionActivity) {
     if (now - v.updatedAt > ACTIVITY_TTL_MS || !isPidAlive(v.pid)) sessionActivity.delete(sid)
   }
+  for (const [sid, v] of sessionModels) {
+    if (now - v.updatedAt > SESSION_MODEL_TTL_MS) sessionModels.delete(sid)
+  }
 }
 
 async function listSessions(root: string) {
   sweepStaleMaps()
   const groups = findProjects(root)
+  // 2026-08-23 web 独立会话：注册表里的 sessionId 标记 kind:'web'（供前端列表区分，进程停止后仍可识别）
+  const webReg = loadWebSessionRegistry()
   const sessions: unknown[] = []
   for (const g of groups) {
     let files: string[] = []
@@ -405,8 +510,11 @@ async function listSessions(root: string) {
       const meta = metas[i]
       if (!meta || meta.sidechain) continue
       const p = join(g.dir, f)
-      const act = sessionActivity.get(f.replace(/\.jsonl$/, ''))
-      const state = act && isPidAlive(act.pid) ? act.status : null
+      const uuid = f.replace(/\.jsonl$/, '')
+      const act = sessionActivity.get(uuid)
+      // web 独立会话状态：进程在跑 → busy（绿）· 已停止 → idle（红）· 未注册的 CLI 会话走 activity 上报
+      const isWeb = webReg.ids.has(uuid)
+      const state = isWeb ? (webSessions.has(uuid) ? 'busy' : 'idle') : act && isPidAlive(act.pid) ? act.status : null
       sessions.push({
         id: Buffer.from(p).toString('base64url'),
         projectLabel: g.label,
@@ -417,6 +525,7 @@ async function listSessions(root: string) {
         messageCount: meta.messageCount,
         updatedAt: meta.updatedAt,
         state,
+        kind: webReg.ids.has(uuid) ? 'web' : 'cli',
       })
     }
   }
@@ -457,6 +566,8 @@ function extractContextUsage(records: Record<string, unknown>[]): Record<string,
 
 function readSession(id: string, root: string) {
   const { path: p } = decodeSessionPath(id, root)
+  // 2026-08-23 web 独立会话：新会话进程刚 spawn 时 jsonl 可能尚未落盘 → 返回空消息而非 500
+  if (!existsSync(p) || !statSync(p).isFile()) return { file: basename(p), path: p, messages: [], context: null }
   const raw = readFileSync(p, 'utf8')
   const records: Record<string, unknown>[] = []
   for (const line of raw.split('\n')) {
@@ -1050,6 +1161,88 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
     }
     return
   }
+  // 2026-08-23 web 独立会话（受上方 /api/* token 校验保护）：
+  //   POST /api/wsession {resume?} → spawn headless CLI 子进程，返回 {id}；resume 恢复已有会话
+  //   POST /api/wsession/stop {id} → 优雅关闭子进程
+  if (req.method === 'POST' && url.pathname === '/api/wsession') {
+    try {
+      const parsed = await readReportBody(req)
+      const resume =
+        typeof parsed.resume === 'string' && parsed.resume.trim() ? parsed.resume.trim() : undefined
+      // 2026-08-24 指定项目：project = findProjects 命中的项目 label → 会话落该项目 .claude/projects
+      const project =
+        typeof parsed.project === 'string' && parsed.project.trim() ? parsed.project.trim() : undefined
+      const sid = await spawnWebSession(resume, project)
+      // id = listSessions 同源 base64url（web 会话落盘 <项目根>/.claude/projects；笔=全局根、项目=项目根）；
+      // hash = 前端导航/WS 过滤用的会话哈希（= 转录文件名去 .jsonl，即 sessionId）
+      // resume 未显式指定项目时按注册表定位（与 spawnWebSession effectiveProject 同源）
+      let projLabel = project
+      if (resume && !projLabel) projLabel = loadWebSessionRegistry().projects[resume]
+      const projRoot = webSessionProjectRoot(projLabel)
+      const id = Buffer.from(join(projRoot, '.claude', 'projects', `${sid}.jsonl`)).toString('base64url')
+      sendJson(res, 200, { id, hash: sid, resumed: !!resume, project: project ?? null })
+    } catch (e) {
+      sendError(res, e)
+    }
+    return
+  }
+  if (req.method === 'POST' && url.pathname === '/api/wsession/stop') {
+    try {
+      const parsed = await readReportBody(req)
+      const id = typeof parsed.id === 'string' && parsed.id.trim() ? parsed.id.trim() : ''
+      sendJson(res, 200, { ok: id ? stopWebSession(id) : false })
+    } catch (e) {
+      sendError(res, e)
+    }
+    return
+  }
+  // 2026-08-24 审批链路诊断（受 token 保护）：返回最近审批轨迹 + 连接概览，用于调试「审批卡不弹」。
+  if (req.method === 'GET' && url.pathname === '/api/diagnostics') {
+    sendJson(res, 200, {
+      trail: approvalTrailSnapshot(),
+      cliClients: [...cliClients.keys()],
+      sockets: sockets.size,
+      sseClients: sseClients.size,
+      webSessions: [...webSessions.keys()],
+    })
+    return
+  }
+  // → 直接复用 CLI /rename 的落盘逻辑（saveCustomTitle + saveAgentName，见命令 rename.ts），
+  // 与 CLI 完全同路径：写盘格式含 sessionId（loadTranscriptFile/restoreSessionMetadata 按
+  // entry.sessionId 建索引，缺字段会被 resume 跳过 → 旧标题在退出时 re-append 回退 web 列表）；
+  // 若目标会话恰好是网关宿主 CLI 的当前会话，还会同步更新 CLI 内存标题缓存。
+  // 对已停止的会话同样生效；正在运行的会话下次列表刷新读盘即见新标题。
+  if (req.method === 'POST' && url.pathname === '/api/session/rename') {
+    try {
+      const parsed = await readReportBody(req)
+      const id = typeof parsed.id === 'string' && parsed.id.trim() ? parsed.id.trim() : ''
+      const title = typeof parsed.title === 'string' ? parsed.title.trim() : ''
+      if (!id || !title) {
+        sendJson(res, 400, { error: 'id 与 title 必填' })
+        return
+      }
+      if (title.length > 200) {
+        sendJson(res, 400, { error: '标题过长（最多 200 字符）' })
+        return
+      }
+      const { path: p, uuid } = decodeSessionPath(id, root)
+      if (!existsSync(p)) {
+        sendJson(res, 404, { error: 'session not found' })
+        return
+      }
+      await saveCustomTitle(uuid as UUID, title, p)
+      await saveAgentName(uuid as UUID, title, p)
+      // 2026-08-25 web 重命名 → CLI 实时同步：目标会话若有 /clients 注册的在线 CLI 进程
+      //（web 独立会话窗口 / 终端 CLI），按会话精确路由 rename 事件，CLI 侧更新内存标题缓存
+      // + 输入栏徽标（standaloneAgentContext），无需重启即可看到新名字；未命中静默跳过。
+      routeToClient(uuid, { type: 'rename', sessionId: uuid, title })
+      scheduleSseFlush(root) // 立即触发列表刷新，让新标题落进前端列表
+      sendJson(res, 200, { ok: true, title })
+    } catch (e) {
+      sendError(res, e)
+    }
+    return
+  }
   // 默认预览页数据：/api/project?label=<项目> → 文件树 + README + 会话元信息（GitHub 仓库风格默认界面）
   // 2026-08-19 Web 容器：/api/backend?label=<项目> → 懒加载 spawn 该项目 preview.json 声明的后端进程，
   // 返回 {url} 供前端 iframe 直连（受上方 /api/* token 校验保护；后端仅监听 127.0.0.1，访问面可控）。
@@ -1211,6 +1404,11 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
         data.messages = mergeDisplayMessages(data.messages as never, disp.messages as never)
         data.display = data.messages
       }
+      // 2026-08-24 模型 web/CLI 同步：附每会话实际模型（CLI 上报，override 不落盘只此有源）+
+      // 上报时间戳（web 端据此判断是否覆盖本地选择）；无上报时回落 null（web 回落凭据池 activeModel）。
+      const sm = sessionModels.get(uuid)
+      data.model = sm?.model ?? null
+      data.modelTs = sm?.updatedAt ?? null
       sendJson(res, 200, data)
     } catch (e) {
       sendError(res, e)
@@ -1252,6 +1450,26 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
         cwd: typeof parsed.cwd === 'string' && parsed.cwd ? parsed.cwd : undefined,
         updatedAt: Date.now(),
       })
+      sweepStaleMaps()
+      sendJson(res, 200, { ok: true })
+    } catch (error) {
+      const status = error instanceof ReportBodyTooLargeError ? 413 : 400
+      sendJson(res, status, { error: status === 413 ? 'payload too large' : 'invalid body' })
+    }
+    return
+  }
+  // 2026-08-24 模型 web/CLI 同步：CLI 侧 reportCurrentModel 上报每会话实际模型（内存 Map，TTL 清扫）。
+  // 每会话 override 不写凭据池，web 端 /api/session 据此读取校准模型 seat，与 CLI 实际使用一致。
+  if (req.method === 'POST' && url.pathname === '/api/model-report') {
+    try {
+      const parsed = await readReportBody(req)
+      const sid = typeof parsed.sessionId === 'string' ? parsed.sessionId : ''
+      const model = typeof parsed.model === 'string' && parsed.model.trim() ? parsed.model.trim() : ''
+      if (!sid || !model) {
+        sendJson(res, 400, { error: 'invalid body' })
+        return
+      }
+      sessionModels.set(sid, { model, updatedAt: Date.now() })
       sweepStaleMaps()
       sendJson(res, 200, { ok: true })
     } catch (error) {
@@ -1317,8 +1535,26 @@ function broadcast(msg: unknown): void {
   }
 }
 
+/** 遥测端 WS 断开 → 从所有 web 会话订阅集合中摘除（重连后前端重新 subscribe） */
+function detachWebSessionClient(ws: WebSocket): void {
+  for (const p of webSessions.values()) {
+    p.clients.delete(ws)
+  }
+}
+
+// 2026-08-24 审批链路诊断轨迹：环形日志记录 /clients 注册、approval-request 接收与广播、
+// approve 接收与路由、local-resolved/cancel。GET /api/diagnostics 读取（调试审批「卡片不弹」）。
+const approvalTrail: Array<{ ts: number; ev: string; sessionId?: string; requestId?: string; detail?: string }> = []
+function approvalTrailPush(ev: string, sessionId?: string, requestId?: string, detail?: string): void {
+  approvalTrail.push({ ts: Date.now(), ev, sessionId, requestId, detail })
+  if (approvalTrail.length > 500) approvalTrail.splice(0, approvalTrail.length - 500)
+}
+function approvalTrailSnapshot(): unknown[] {
+  return approvalTrail.slice(-50).reverse()
+}
+
 function handleWsMessage(ws: WebSocket, raw: string): void {
-  let data: { type?: string; text?: string; requestId?: string; allowed?: boolean; sessionId?: string }
+  let data: { type?: string; text?: string; requestId?: string; allowed?: boolean; sessionId?: string; toolUseId?: string; input?: unknown; answers?: Record<string, string> }
   try {
     data = JSON.parse(raw)
   } catch {
@@ -1328,13 +1564,23 @@ function handleWsMessage(ws: WebSocket, raw: string): void {
     case 'send': {
       const text = data.text ?? ''
       if (!text.trim()) break
-      // 2026-08-17 跨进程路由：遥测端消息按 sessionId 转发给对应 CLI 进程（/clients 注册的 WS）。
-      // 命中目标 → 精确转发；无 sessionId/未命中 → 广播全部 CLI 客户端；无在线 CLI → status 提示。
-      const target = data.sessionId ? cliClients.get(data.sessionId) : undefined
-      if (target && target.readyState === WebSocket.OPEN) {
-        target.send(JSON.stringify({ type: 'send', text }))
-        ws.send(JSON.stringify({ type: 'status', state: `已转发给会话 ${data.sessionId}` }))
-      } else if (cliClients.size) {
+      // 2026-08-24 web 会话改造：web 会话 = 本地可见交互 REPL（CLI 自己连 /clients 注册），
+      // 消息不再写子进程 stdin（stdin 归本地终端窗口），统一经 cliClients 精确路由 →
+      // CLI 侧 gatewayClient enqueue 注入 REPL（与本地打字同路径）。审批也在本地窗口操作。
+      // 会话启动中（/api/wsession 已返回但 CLI 尚未注册 /clients，理论竞态）→ 提示稍后再发。
+      if (data.sessionId) {
+        const target = cliClients.get(data.sessionId)
+        if (target && target.readyState === WebSocket.OPEN) {
+          target.send(JSON.stringify({ type: 'send', text }))
+        } else if (webSessions.has(data.sessionId)) {
+          ws.send(JSON.stringify({ type: 'status', state: 'web 会话启动中，请稍后再发送' }))
+        } else {
+          ws.send(JSON.stringify({ type: 'status', state: '目标会话未在线，消息未注入' }))
+        }
+        break
+      }
+      // 无 sessionId → 广播全部在线 CLI 客户端；无在线 CLI → status 提示
+      if (cliClients.size) {
         for (const c of cliClients.values()) {
           try {
             c.send(JSON.stringify({ type: 'send', text }))
@@ -1342,15 +1588,59 @@ function handleWsMessage(ws: WebSocket, raw: string): void {
             /* 断开忽略 */
           }
         }
-        ws.send(JSON.stringify({ type: 'status', state: `已广播给 ${cliClients.size} 个在线 CLI 进程` }))
       } else {
         ws.send(JSON.stringify({ type: 'status', state: '当前无在线 CLI 进程，消息未注入' }))
       }
       break
     }
     case 'approve': {
-      // TODO(阶段2)：接入 REPL 权限响应（replBridgePermissionCallbacks 等价机制）
-      broadcast({ type: 'status', state: 'approve 尚未接入（阶段2）' })
+      // 2026-08-24 审批双操作（web 与 CLI 均可）：floria 审批卡的应答路由回对应 CLI 会话
+      // （/clients 注册的交互 REPL——普通 CLI 会话与 web 独立会话窗口同路径，均支持远程审批）。
+      const target = data.sessionId ? cliClients.get(data.sessionId) : undefined
+      if (target && target.readyState === WebSocket.OPEN) {
+        approvalTrailPush('floria-approve-routed', data.sessionId, data.requestId, data.allowed === true ? 'allow' : 'deny')
+        // 2026-08-24 提问答复：floria 交互表单提交答案 → updatedInput 带 {questions, answers}，
+        // CLI 交互应答（buildAllow(updatedInput)）用完整输入执行工具（AskUserQuestion 拿到 answers）。
+        // data.input 是工具原始输入 {questions:[...]}，questions 取数组本体（勿再嵌套）。
+        let qInput: unknown = data.input ?? {}
+        if (data.input && typeof data.input === 'object' && Array.isArray((data.input as { questions?: unknown }).questions)) {
+          qInput = (data.input as { questions: unknown }).questions
+        }
+        const updatedInput = data.answers
+          ? { questions: qInput, answers: data.answers }
+          : {}
+        target.send(
+          JSON.stringify({
+            type: 'approval-response',
+            requestId: data.requestId ?? '',
+            response: data.allowed === true
+              ? { behavior: 'allow', updatedInput }
+              : { behavior: 'deny', message: '用户拒绝了该工具调用' },
+          }),
+        )
+      } else {
+        approvalTrailPush('floria-approve-miss', data.sessionId, data.requestId, 'target-not-online')
+        ws.send(
+          JSON.stringify({
+            type: 'status',
+            state: data.sessionId ? '目标会话未在线，审批未送达' : 'approve 尚未接入（阶段2）',
+          }),
+        )
+      }
+      break
+    }
+    case 'subscribe': {
+      // 2026-08-24 web 会话改造：实时流走 SSE（conversationDisplay 上报 + jsonl + 列表刷新），
+      // 无 WS out/approval 回推；订阅保留为兼容空操作（会话存在即确认）。
+      const sid = data.sessionId ?? ''
+      if (!sid) break
+      const p = webSessions.get(sid)
+      if (p) {
+        p.clients.add(ws)
+        ws.send(JSON.stringify({ type: 'status', state: '已订阅会话实时流' }))
+      } else {
+        ws.send(JSON.stringify({ type: 'status', state: 'web 会话进程未运行，未订阅' }))
+      }
       break
     }
     case 'ping':
@@ -1371,7 +1661,7 @@ export type LocalGatewayInfo = {
 }
 
 function hasClients(): boolean {
-  return cliClients.size > 0 || sockets.size > 0 || sseClients.size > 0
+  return cliClients.size > 0 || sockets.size > 0 || sseClients.size > 0 || webSessions.size > 0
 }
 
 // 2026-08-17 空闲自动回收：无任何客户端连接（CLI 注册 / 遥测 WS / SSE 全空）时起计时，持续
@@ -1563,6 +1853,175 @@ function scheduleBackendReclaim(): void {
   backendReclaimTimer.unref?.()
 }
 
+// ============================================================================
+// Web 独立会话实现（2026-08-24 改造：本地可见交互 REPL 窗口，替代 headless 管道转发）
+// ============================================================================
+
+/**
+ * spawn 一个「本地可见交互 REPL 窗口」作为 web 独立会话（2026-08-24 改造，替代 headless）。
+ *
+ * 与 headless 的区别：
+ *  - 不再传 -p/stream-json（headless 打印模式），改为交互 REPL（正常 ink UI + 终端窗口），
+ *    用户在本地可见窗口里可以直接看/操作（审批也在本地窗口弹）。
+ *  - 通信不再走 stdin/stdout 管道：交互 REPL 启动后由 CLI 侧 gatewayClient 连 /clients 注册
+ *    sessionId（interactiveHelpers.renderAndRun → startGatewayProbeAndConnect），web 消息经
+ *    cliClients 精确路由注入 REPL（gatewayClient enqueue，与本地打字同路径）；
+ *    展示走 conversationDisplay 上报（/api/conversation）+ jsonl 落盘 + SSE 列表刷新。
+ *  - 窗口通过 PowerShell Start-Process -PassThru 弹出（复用 deepLink/terminalLauncher 的
+ *    可见终端思路；-PassThru 返回真实 CLI pid 供 stopWebSession taskkill）。
+ *
+ * resume 提供 → 恢复已有会话（--resume <id>）；否则新会话由网关预分配 UUID 经 --session-id
+ * 传给子进程（main.tsx 支持 --session-id <uuid>：'Use a specific session ID for the
+ * conversation (must be a valid UUID)'），CLI 转录 init 首行即带该 id，jsonl 落盘
+ * <项目根>/.claude/projects/<id>.jsonl。
+ * project 提供（2026-08-24）→ 在指定项目下新建/恢复会话（cwd = 该项目根）；未指定 → 默认项目根。
+ * resolve 在 CLI 完成 /clients 注册后返回 sessionId（保证 web 首条消息可注入，不丢消息）；
+ * 注册超时（CLI 启动失败/网关未探测到）→ reject。
+ */
+function spawnWebSession(resume?: string, project?: string): Promise<string> {
+  // 幂等：resume 的会话进程已在跑（前端切走再切回）→ 复用现有进程，不重复 spawn（双进程会双写同一 jsonl）
+  if (resume && webSessions.has(resume)) {
+    const existing = webSessions.get(resume)
+    if (existing) existing.lastActive = Date.now()
+    return Promise.resolve(resume)
+  }
+  // resume 未显式指定项目时，按注册表里该会话的记录定位项目（项目会话切回后仍落在原项目）
+  let effectiveProject = project
+  if (resume && !effectiveProject) {
+    const reg = loadWebSessionRegistry()
+    effectiveProject = reg.projects[resume]
+  }
+  return new Promise((resolve, reject) => {
+    const sid = resume ?? randomUUID()
+    const args = resume ? ['--resume', resume] : ['--session-id', sid]
+    // cwd = 项目根（指定项目 → 该项目根）：会话 jsonl 落盘到 <项目根>/.claude/projects/<sessionId>.jsonl（与 CLI 同目录）
+    const cwd = webSessionProjectRoot(effectiveProject)
+    // 可见交互窗口：PowerShell Start-Process -PassThru（console 程序默认开新终端窗口，stdio 连窗口）。
+    // 单引号 PS 字符串无转义（仅 '' 表示字面 '），复用 terminalLauncher.psQuote 同款策略。
+    const psQuote = (s: string): string => `'${s.replace(/'/g, "''")}'`
+    // 2026-08-24 用户定案：exe 按会话来源选择——笔（无 project）= 全局根下 cli-dev exe；
+    // 项目 = 项目目录内 cli-dev exe；未找到 → 回退网关自身 exe。
+    const exe = webSessionExe(effectiveProject)
+    // 注入 FLOIRA_GATEWAY（CLI 探测网关地址；网关换过端口时回退 127.0.0.1:8124 会探测失败）
+    const gwUrl = `http://127.0.0.1:${currentPort}`
+    const ps = [
+      `$env:FLOIRA_GATEWAY = ${psQuote(gwUrl)};`,
+      `$p = Start-Process -FilePath ${psQuote(exe)} -ArgumentList ${args.map(psQuote).join(',')} -WorkingDirectory ${psQuote(cwd)} -PassThru;`,
+      'Write-Output $p.Id',
+    ].join(' ')
+    let child: import('node:child_process').ChildProcess
+    try {
+      child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], {
+        windowsHide: true, // powershell 中转进程本身隐藏，窗口由 Start-Process 弹出的 CLI 持有
+        stdio: ['ignore', 'pipe', 'ignore'],
+      })
+    } catch (e) {
+      reject(e as Error)
+      return
+    }
+    // 解析 Start-Process -PassThru 输出的真实 CLI pid（用于 stopWebSession taskkill）
+    let outBuf = ''
+    child.stdout?.setEncoding('utf8')
+    child.stdout?.on('data', (chunk: string) => {
+      outBuf += chunk
+    })
+    child.on('error', (err) => {
+      reject(err)
+    })
+    // 等 CLI 完成 /clients 注册（cliClients.has(sid)）——注册成功即 resolve；
+    // 超时（CLI 启动失败/未能探测到网关）→ 清理并 reject。
+    const startedAt = Date.now()
+    const REGISTER_TIMEOUT_MS = 20_000
+    const timer = setInterval(() => {
+      if (cliClients.has(sid)) {
+        clearInterval(timer)
+        const cliPid = Number(outBuf.trim())
+        const proc: WebSessionProc = {
+          sessionId: sid,
+          child,
+          pid: cliPid || undefined,
+          clients: new Set(),
+          startedAt,
+          lastActive: Date.now(),
+        }
+        webSessions.set(sid, proc)
+        const reg = loadWebSessionRegistry()
+        reg.ids.add(sid)
+        // 2026-08-24 记录会话来源项目（resume 时按 cwd 定位）：笔会话（无 project）不写 →
+        // resume 时 effectiveProject=undefined → cwd=全局根（散装）；项目会话记项目 label → cwd=该项目根
+        if (effectiveProject) reg.projects[sid] = effectiveProject
+        else delete reg.projects[sid]
+        saveWebSessionRegistry(reg.ids, reg.projects)
+        resolve(sid)
+        return
+      }
+      if (Date.now() - startedAt > REGISTER_TIMEOUT_MS) {
+        clearInterval(timer)
+        try {
+          if (child.pid && isPidAlive(child.pid)) spawnSync('taskkill', ['/F', '/T', '/PID', String(child.pid)], { stdio: 'ignore', windowsHide: true })
+        } catch {
+          /* 忽略 */
+        }
+        reject(new Error(`web 会话启动超时（${REGISTER_TIMEOUT_MS / 1000}s 内未完成网关注册）`))
+      }
+    }, 300)
+    // powershell 中转进程 spawn 完 CLI 即退出——它退出不代表 CLI 窗口关闭。
+    // 不在此清 timer（CLI 可能尚未注册 /clients）；若 powershell 本身失败（stderr 报错/非 0 退出
+    // 且未产出 pid）→ 提前 reject，避免空等 20s。
+    child.on('exit', (code) => {
+      const cliPid = Number(outBuf.trim())
+      if (code !== 0 && !cliPid && !webSessions.has(sid)) {
+        clearInterval(timer)
+        reject(new Error(`打开本地 CLI 窗口失败（powershell exit ${code ?? '?'}）`))
+      }
+    })
+    child.on('error', (err) => {
+      clearInterval(timer)
+      reject(err)
+    })
+  })
+}
+
+// 2026-08-24 web 会话改造：web 消息经 cliClients 注入（CLI 侧 gatewayClient enqueue），
+// 审批在本地窗口操作 → 原 stdin 管道函数 sendWebSessionMessage/handleWebApproval 已删除。
+
+/** 优雅停 web 会话：关闭本地可见 CLI 窗口（taskkill 真实 CLI pid 树，窗口随之关闭） */
+function stopWebSession(sessionId: string): boolean {
+  const p = webSessions.get(sessionId)
+  if (!p) return false
+  webSessions.delete(sessionId)
+  const pid = p.pid ?? p.child.pid
+  if (pid && isPidAlive(pid)) {
+    try {
+      spawnSync('taskkill', ['/F', '/T', '/PID', String(pid)], { stdio: 'ignore', windowsHide: true })
+    } catch {
+      /* 忽略 */
+    }
+  }
+  return true
+}
+
+function killAllWebSessions(): void {
+  for (const sid of [...webSessions.keys()]) stopWebSession(sid)
+}
+
+// 空闲回收：web 会话（本地可见交互 CLI 窗口）生命周期由用户本地操作决定——进程活着不回收
+// （lastActive 只是网关侧活跃，本地窗口用户可能正直接操作）；仅清理「进程已死」的残留注册。
+function reclaimIdleWebSessions(): void {
+  for (const [sid, p] of [...webSessions]) {
+    if (p.pid && !isPidAlive(p.pid)) {
+      console.log(`[gateway] web 会话 ${sid} CLI 进程已退出，清理运行注册`)
+      webSessions.delete(sid)
+    }
+  }
+}
+
+function scheduleWebReclaim(): void {
+  if (!ENABLE_IDLE_RECLAIM || webReclaimTimer) return
+  webReclaimTimer = setInterval(reclaimIdleWebSessions, 60 * 1000)
+  webReclaimTimer.unref?.()
+}
+
 function scheduleIdleShutdown(): void {
   if (idleTimer) {
     clearTimeout(idleTimer)
@@ -1604,6 +2063,8 @@ export function startLocalGateway(opts?: { host?: string; port?: number; token?:
   scheduleIdleShutdown()
   // 2026-08-19 Web 容器：backend 进程空闲回收（独立于网关自身，仅 --gateway 独立进程模式）
   scheduleBackendReclaim()
+  // 2026-08-23 web 独立会话：headless 子进程空闲回收
+  scheduleWebReclaim()
 
   server = createServer((req, res) => handleRequest(req, res, root))
   wss = new WebSocketServer({ noServer: true })
@@ -1616,10 +2077,12 @@ export function startLocalGateway(opts?: { host?: string; port?: number; token?:
     })
     ws.on('close', () => {
       sockets.delete(ws)
+      detachWebSessionClient(ws) // 2026-08-24 订阅修复：断开即摘除 web 会话订阅
       scheduleIdleShutdown()
     })
     ws.on('error', () => {
       sockets.delete(ws)
+      detachWebSessionClient(ws)
       scheduleIdleShutdown()
     })
   })
@@ -1655,9 +2118,59 @@ export function startLocalGateway(opts?: { host?: string; port?: number; token?:
           }
         }
         cliClients.set(sid, ws)
+        approvalTrailPush('cli-register', sid)
         scheduleIdleShutdown()
+        // 2026-08-24 审批双操作（web 与 CLI 均可）：CLI 交互权限弹窗经 /clients 上报审批请求，
+        // 网关转 floria 审批卡；本地先操作/请求撤销 → 通知 floria 撤卡。
+        ws.on('message', (data) => {
+          let m: {
+            type?: string
+            requestId?: string
+            toolName?: string
+            input?: unknown
+            toolUseId?: string
+            description?: string
+            suggestions?: unknown
+            blockedPath?: string
+            response?: unknown
+          }
+          try {
+            m = JSON.parse(data.toString())
+          } catch {
+            return
+          }
+          // 2026-08-24 中继握手：记录 CLI 是否带审批/提问中继代码（relay:true = 新代码）
+          if (m.type === 'cli-hello') {
+            approvalTrailPush('cli-hello', sid, undefined, m.relay === true ? 'relay-on' : 'relay-off')
+            return
+          }
+          if (m.type === 'approval-request' && m.requestId) {
+            approvalTrailPush('cli-approval-request', sid, m.requestId, m.toolName)
+            broadcast({
+              type: 'approval',
+              session_id: sid,
+              requestId: m.requestId,
+              toolName: m.toolName,
+              toolUseId: m.toolUseId,
+              input: m.input,
+            })
+            approvalTrailPush('gw-broadcast-approval', sid, m.requestId, `sockets=${sockets.size}`)
+            return
+          }
+          // 本地（CLI 终端/窗口）已操作（allow/deny/abort）或请求已解决 → floria 撤卡
+          if ((m.type === 'approval-local-resolved' || m.type === 'approval-cancel') && m.requestId) {
+            approvalTrailPush('cli-local-resolved-or-cancel', sid, m.requestId, m.type)
+            broadcast({ type: 'approval-dismiss', session_id: sid, requestId: m.requestId })
+            return
+          }
+        })
         const detach = () => {
           if (cliClients.get(sid) === ws) cliClients.delete(sid)
+          // 2026-08-24 web 会话：CLI 窗口被用户关闭 → 进程死亡 → 从运行表移除
+          // （registry 保留，列表仍标记 kind:'web'，resume 时重新开窗口）。
+          // 仅进程真死才删（gatewayClient 断线重连期间进程仍活着，不能误删）。
+          const wp = webSessions.get(sid)
+          if (wp && wp.pid && !isPidAlive(wp.pid)) webSessions.delete(sid)
           scheduleIdleShutdown()
         }
         ws.on('close', detach)
@@ -1703,6 +2216,12 @@ export function stopLocalGateway(): boolean {
     backendReclaimTimer = null
   }
   killAllBackends()
+  // 2026-08-23 web 独立会话：停网关时一并关停全部 headless 子进程 + 停回收 timer
+  if (webReclaimTimer) {
+    clearInterval(webReclaimTimer)
+    webReclaimTimer = null
+  }
+  killAllWebSessions()
   for (const c of sockets) {
     try {
       c.close()
@@ -1726,6 +2245,7 @@ export function stopLocalGateway(): boolean {
   // C1 修复：停网关时一并清空 CLI 上报的内存缓存（内存数据本就随网关重启失效）
   conversationDisplays.clear()
   sessionActivity.clear()
+  sessionModels.clear()
   // 共享 token 一并清空：网关停止后 CLI 上报不再附加（保持静默失败，不报错）。
   // 2026-08-17 独立化：同时清盘 token 文件，避免遗留的 token 被误用（新一轮网关会重新生成写盘）。
   setGatewayToken('')

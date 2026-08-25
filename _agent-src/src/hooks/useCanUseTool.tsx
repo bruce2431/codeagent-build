@@ -22,6 +22,7 @@ import { jsonStringify } from '../utils/slowOperations.js';
 import { handleCoordinatorPermission } from './toolPermission/handlers/coordinatorHandler.js';
 import { handleInteractivePermission } from './toolPermission/handlers/interactiveHandler.js';
 import { handleSwarmWorkerPermission } from './toolPermission/handlers/swarmWorkerHandler.js';
+import { getGatewayPermissionCallbacks } from '../bridge/gatewayPermissionRelay.js';
 import { createPermissionContext, createPermissionQueueOps } from './toolPermission/PermissionContext.js';
 import { logPermissionDecision } from './toolPermission/permissionLogging.js';
 export type CanUseToolFn<Input extends Record<string, unknown> = Record<string, unknown>> = (tool: ToolType, input: Input, toolUseContext: ToolUseContext, assistantMessage: AssistantMessage, toolUseID: string, forceDecision?: PermissionDecision<Input>) => Promise<PermissionDecision<Input>>;
@@ -162,7 +163,9 @@ function useCanUseTool(setToolUseConfirmQueue, setToolPermissionContext) {
                 description,
                 result,
                 awaitAutomatedChecksBeforeDialog: appState.toolPermissionContext.awaitAutomatedChecksBeforeDialog,
-                bridgeCallbacks: feature("BRIDGE_MODE") ? appState.replBridgePermissionCallbacks : undefined,
+                // 2026-08-24 网关中继：优先 bridge 回调（bridge 会话），否则用网关回调（网关已连接时）。
+                // 用 ?? 不依赖 feature('BRIDGE_MODE')（该 flag 已放弃），杜绝因门控导致不中继。
+                bridgeCallbacks: appState.replBridgePermissionCallbacks ?? getGatewayPermissionCallbacks(),
                 channelCallbacks: feature("KAIROS") || feature("KAIROS_CHANNELS") ? appState.channelPermissionCallbacks : undefined
               }, resolve);
               return;

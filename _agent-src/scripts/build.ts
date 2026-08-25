@@ -1,5 +1,6 @@
 import { chmodSync, existsSync, mkdirSync } from 'fs'
-import { dirname } from 'path'
+import { dirname, join, resolve } from 'path'
+import { fileURLToPath } from 'url'
 
 const pkg = await Bun.file(new URL('../package.json', import.meta.url)).json() as {
   name: string
@@ -75,7 +76,9 @@ function getVersionChangelog(): string {
   )
 }
 
-const defaultFeatures = ['VOICE_MODE', 'BUILTIN_EXPLORE_PLAN_AGENTS']
+// 2026-08-25 用户定案：PRIVATE_GATEWAY（内置私有化网关）进默认特性——所有构建默认含 /server，
+// 无需再显式 --feature=PRIVATE_GATEWAY（build:dev:gateway 显式传入仍按显式代号命名产物）
+const defaultFeatures = ['VOICE_MODE', 'BUILTIN_EXPLORE_PLAN_AGENTS', 'PRIVATE_GATEWAY']
 const featureSet = new Set(defaultFeatures)
 // 显式 --feature=X 的代号集合：用于输出 exe 以 feature 代号命名（feature 构建不复用默认 cli-dev 名，避免互相覆盖）
 const explicitFeatures = new Set<string>()
@@ -116,15 +119,22 @@ for (let i = 0; i < args.length; i += 1) {
 }
 const features = [...featureSet]
 
+// 2026-08-25 用户定案：dev 构建（build:dev / build:dev:gateway）产物直接输出到项目根
+// （_agent-src 的上一级 = 便携项目根，免手动复制部署）。基于脚本位置推导
+// （import.meta.url = <项目根>/_agent-src/scripts/build.ts → 上两级），不依赖 cwd。
+const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url)) // <项目根>/_agent-src/scripts
+const PROJECT_ROOT = resolve(SCRIPT_DIR, '..', '..') // <项目根>
+
 // 产物命名 = <前缀>-<YYYYMMDDHHMMSS>[-<显式 feature 代号>]，Windows 输出 .exe；
 // 时间戳保证不同构建不覆盖，显式 --feature 代号在时间戳后追加（多个用 + 连接）
+// compile（正式发布）仍输出 ./dist/，dev 构建直出项目根
 const baseOutfile = compile
   ? dev
     ? './dist/cli-dev'
     : './dist/cli'
   : dev
-    ? './cli-dev'
-    : './cli'
+    ? join(PROJECT_ROOT, 'cli-dev')
+    : join(PROJECT_ROOT, 'cli')
 const buildTimestamp = getBuildTimestamp()
 const outfile =
   explicitFeatures.size > 0

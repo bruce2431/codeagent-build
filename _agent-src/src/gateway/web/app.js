@@ -33,6 +33,11 @@
     dshCheck: '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M15.0498 3.92579L8.49512 12.3818C8.25774 12.6881 8.04517 12.9645 7.84668 13.1689C7.63957 13.3823 7.38732 13.5841 7.04492 13.6719C6.86373 13.7183 6.6757 13.7346 6.48926 13.7197C6.13666 13.6915 5.8528 13.5355 5.6123 13.3604C5.38201 13.1926 5.12573 12.9567 4.83984 12.6953L1.03125 9.21289L1.96875 8.1875L5.77734 11.6699C6.08684 11.9529 6.27773 12.1249 6.43066 12.2363C6.50183 12.2882 6.54699 12.3135 6.57324 12.3252C6.58525 12.3305 6.59269 12.3322 6.5957 12.333C6.59802 12.3336 6.59961 12.334 6.59961 12.334C6.63317 12.3367 6.66758 12.3335 6.7002 12.3252C6.7002 12.3252 6.70211 12.3251 6.7041 12.3242C6.70698 12.3229 6.71348 12.319 6.72461 12.3115C6.74849 12.2956 6.78843 12.2642 6.84961 12.2012C6.98138 12.0654 7.13957 11.8628 7.39648 11.5313L13.9502 3.07422L15.0498 3.92579Z"/></svg>',
     dshWarn: '<svg viewBox="0 0 14 14" fill="currentColor"><path d="M6.3002 3.32843L7.69986 3.32843L7.69986 7.79657H6.3002L6.3002 3.32843Z"/><path d="M6.3002 9.01935H7.69986V10.6711H6.3002V9.01935Z"/><path d="M12.6328 6.99976C12.6328 3.88874 10.111 1.36694 7 1.36694C3.88899 1.36695 1.3672 3.88875 1.36719 6.99976C1.36719 10.1108 3.88899 12.6326 7 12.6326C10.111 12.6326 12.6328 10.1108 12.6328 6.99976ZM13.8582 6.99976C13.8582 10.7873 10.7876 13.8579 7 13.8579C3.21244 13.8579 0.141846 10.7873 0.141846 6.99976C0.141857 3.2122 3.21245 0.141612 7 0.141602C10.7876 0.141602 13.8581 3.21219 13.8582 6.99976Z"/></svg>',
     dshClose: '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M14.1168 13.197L13.197 14.1167L1.8833 2.80303L2.80309 1.88324L14.1168 13.197Z"/><path d="M13.197 1.88326L14.1168 2.80305L2.80309 14.1168L1.8833 13.197L13.197 1.88326Z"/></svg>',
+    // 行菜单图标（2026-08-24 DSH 会话行 Menu 移植：重命名=EditOutline / 归档=ArchiveOutline20）
+    dshEdit: '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M10.9482 1.97949L13.9253 4.95508L5.51453 13.3659L2.53613 12.6157L2.18896 9.24414L10.9482 1.97949ZM8.2951 4.63011L4.75226 8.17207L7.71064 9.1084L11.2535 5.56544L8.2951 4.63011ZM3.60287 10.1729L3.78518 12.1367L5.7417 12.5674L6.2064 12.1027L4.06812 11.4503L3.60287 10.1729Z"/></svg>',
+    dshArchive: '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M13.6494 4.0498V12.3994C13.6494 12.9541 13.2041 13.3994 12.6494 13.3994H3.35059C2.7959 13.3994 2.35059 12.9541 2.35059 12.3994V4.0498C1.95534 4.0498 1.63281 3.72727 1.63281 3.33203V1.73242C1.63281 1.33718 1.95534 1.01465 2.35059 1.01465H13.6494C14.0447 1.01465 14.3672 1.33718 14.3672 1.73242V3.33203C14.3672 3.72727 14.0447 4.0498 13.6494 4.0498ZM3.35059 5.0498V12.3994H12.6494V5.0498H3.35059ZM6.35059 6.39941H9.64941V7.39941H6.35059V6.39941ZM2.63281 2.01465V3.0498H13.3672V2.01465H2.63281Z"/></svg>',
+    // 新建独立会话（web 与 CLI 等权并行）：终端窗口 + 提示符
+    web: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="M7 9l2.5 2.5L7 14"/><path d="M12.5 14h4"/></svg>',
   }
 
   // ---------- 管理视图数据源（2026-08-15 起接后端 /api/plugins：真实已安装插件/技能 + 官方市场） ----------
@@ -75,12 +80,15 @@
       const data = await res.json()
       if (!data || !('model' in data)) throw new Error(data.error || 'bad response')
       MODELS = data
-      // 与凭据池真实状态对齐（CLI 同源）：model 优先 activeModel，provider=activeProvider，effortLevel=settings.effortLevel
+      // 与凭据池真实状态对齐（CLI 同源）：model 优先本地持久化（刷新恢复，含 CLI 上报的会话模型），
+      // 次之 activeModel；provider=activeProvider；effortLevel=settings.effortLevel。
+      const saved = loadModelCur()
       MODEL_CUR = {
-        provider: data.activeProvider || MODEL_CUR.provider,
-        model: data.activeModel || (data.model ? String(data.model) : MODEL_CUR.model),
-        effortLevel: data.effortLevel != null ? String(data.effortLevel) : undefined,
+        provider: data.activeProvider || (saved ? saved.provider : '') || MODEL_CUR.provider,
+        model: (saved && saved.model) || data.activeModel || (data.model ? String(data.model) : MODEL_CUR.model),
+        effortLevel: data.effortLevel != null ? String(data.effortLevel) : (saved && saved.effortLevel !== undefined ? saved.effortLevel : undefined),
       }
+      saveModelCur()
     } catch (e) {
       MODELS_ERR = e.message || String(e)
     } finally {
@@ -118,7 +126,7 @@
   const modeTabsEl = $('mode-tabs')
 
   // ---------- 状态 ----------
-  const state = { mode: 'list', pt: 'projects', panelOpen: false, folded: false, currentHash: null, mgr: null, preview: null, mgrView: { kind: 'plugins', cat: 'public', q: '' } }
+  const state = { mode: 'list', pt: 'projects', panelOpen: false, folded: false, currentHash: null, mgr: null, preview: null, newProject: null, mgrView: { kind: 'plugins', cat: 'public', q: '' } }
 
   // 界面状态持久化（2026-08-16）：管理视图内部状态（mgrView：插件/技能切换、公开/个人、搜索词）
   // 存 localStorage，刷新后由 route 的 mgr 分支 loadMgrView 恢复——配合 hash 路由 #mgr/<kind>/#preview/<label>
@@ -271,7 +279,8 @@
   // ---------- 会话映射 ----------
   const hashOf = (s) => (s.file || '').replace(/\.jsonl$/, '')
   const findSession = (hash) => ALL.find((s) => hashOf(s) === hash)
-  const sorted = () => [...ALL].sort((a, b) => b.updatedAt - a.updatedAt)
+  // 2026-08-24 归档过滤：统一数据源过滤已归档会话（isArchived 声明在下方行菜单区，函数提升可用）
+  const sorted = () => [...ALL].filter((s) => !isArchived(s)).sort((a, b) => b.updatedAt - a.updatedAt)
 
   // ---------- 数据 ----------
   async function loadSessions() {
@@ -290,7 +299,7 @@
   }
 
   async function fetchMessages(sessionId) {
-    if (needToken()) return { messages: [], context: null } // token 门锁定态
+    if (needToken()) return { messages: [], context: null, model: null, modelTs: null } // token 门锁定态
     const res = await fetch(apiUrl('/api/session?id=' + encodeURIComponent(sessionId)))
     const data = await res.json()
     if (!Array.isArray(data.messages)) throw new Error(data.error || 'bad response')
@@ -298,7 +307,17 @@
     // 网关 /api/session 注入）→ 存在时优先消费（thinking 过滤 / 真实用户消息识别由 CLI 权威完成），
     // 尚未导出（如网关重启后 CLI 未重发）时回退后端原始消息映射。
     // context = 网关 readSession 提取的上下文占用（dsh ContextMeter 数据源），无则 null。
-    return { messages: data.display || data.messages, context: data.context || null }
+    // model/modelTs = 网关附带的每会话实际模型（CLI reportCurrentModel 上报），无则 null。
+    return { messages: data.display || data.messages, context: data.context || null, model: data.model || null, modelTs: data.modelTs || null }
+  }
+  // 用 CLI 上报的会话实际模型校准模型 seat（2026-08-24 模型 web/CLI 同步）。仅当用户本次会话内
+  // 未主动切换（modelUserPicked=false）时采纳，避免覆盖刚切的选择。modelTs 暂保留（供后续冲突判定）。
+  function applySessionModel(model, modelTs) {
+    if (!model || modelUserPicked) return
+    if (MODEL_CUR.model === model) return
+    MODEL_CUR = { ...MODEL_CUR, model }
+    saveModelCur()
+    renderModelSeat()
   }
 
   // ---------- 实时同步（阶段1：SSE 监听 jsonl 变化，自动刷新会话/列表）----------
@@ -350,6 +369,26 @@
     }, 600)
   }
 
+  // 2026-08-24 回合进行中探测（refreshSession 处理折叠抑制窗用）：末段是否仍处理中。
+  // 复刻 messagesHtml closeSeg 的 finished 判定——末条 assistant 纯文本回复（无 tool_use）= 回合结束；
+  // 刚发的真实用户消息 / thinking / tool_use / tool_result / 其余 = 处理中（等待回复）。
+  // system/progress/attachment 等非内容记录跳过（jsonl 末尾常有 progress 尾巴）。仅此一处轻量判定，
+  // 数据渲染权威仍在 messagesHtml；折叠关闭后交回下方整页数据渲染一次性出最终态。
+  function segIsProcessing(messages) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i]
+      if (m.role === 'system' || m.role === 'progress' || m.role === 'attachment') continue
+      if (isRealUser(m)) return true // 刚发的用户消息（assistant 回复未到）= 处理中
+      if (m.role === 'assistant') {
+        const hasText = m.blocks.some((b) => b.kind === 'text' && b.text && b.text.trim())
+        const hasTool = m.blocks.some((b) => b.kind === 'tool_use')
+        return !(hasText && !hasTool)
+      }
+      return true
+    }
+    return false
+  }
+
   function refreshSession() {
     const hash = state.currentHash
     if (!hash) return
@@ -360,7 +399,8 @@
       const s = findSession(hash)
       if (!s) return
       try {
-        const { messages, context } = await fetchMessages(s.id)
+        const { messages, context, model, modelTs } = await fetchMessages(s.id)
+        applySessionModel(model, modelTs) // 2026-08-24：实时刷新同样按 CLI 上报模型校准 seat
         renderCtxMeter(context)
         const last = messages.length ? messages[messages.length - 1] : null
         const sig = messages.length + ':' + (last ? (last.timestamp || '') : '') + ':' + (last && last.blocks.length ? last.blocks[last.blocks.length - 1].kind : '')
@@ -370,6 +410,20 @@
         const uSig = lastU >= 0 ? lastU + ':' + (messages[lastU].timestamp || '') : ''
         const hasNewUser = live.lastUserSig !== '' && uSig && uSig !== live.lastUserSig
         live.lastUserSig = uSig
+        // 2026-08-24 已处理立即出现 + 强刷根治：实时/乐观「正在处理」折叠已打开（回合进行中）→
+        // 跳过整页 innerHTML 重建（SSE 每写一条 thinking/tool 记录就强刷一次 → 卡顿）。只探测
+        // 回合是否结束：末段回复已落地（!segIsProcessing）→ 关折叠交回下方数据渲染一次性出最终态
+        // （已处理时长/回复/变更卡）；未结束 → 预记 curSig 防同 sig 早退、保持折叠计时静候下轮。
+        // 2026-08-24 修复：仅当消息区已有真实消息时才抑制——web 新会话首条消息发送后 jsonl 尚空，
+        // 界面停在「暂无 user/assistant 记录」空态，若此时抑制会把首条 user 消息也压住（约 10s 空白，
+        // 直到回复落地才一次性渲染）。空态（无 .msg）时正常重建，让首条消息 + 正在处理折叠立即上屏。
+        if (proc && proc.isConnected && messagesEl.querySelector('.msg') !== null) {
+          if (segIsProcessing(messages)) {
+            live.curSig = sig
+            return
+          }
+          procClose()
+        }
         if (sig === live.curSig) return
         live.curSig = sig
         const sc = $('chat-scroll')
@@ -430,7 +484,7 @@
     let t1 = 0
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i]
-      if (m.role === 'user' && m.timestamp && m.blocks.some((b) => (b.kind === 'text' && b.text && b.text.trim() && !isSynthText(b.text)) || b.kind === 'image')) {
+      if (isRealUser(m) && m.timestamp) {
         t1 = m.timestamp
         break
       }
@@ -498,14 +552,46 @@
     messagesEl.innerHTML = ''
     setChar(1) // 首页空态 → 默认形象
     renderCtxMeter(null) // 首页空态 → 隐藏上下文环
+    renderNewProjChip()
     inputWrap.classList.remove('docked')
     chatArea.classList.remove('in-session')
     chatArea.classList.remove('mgr-on')
     mountInput('stage')
   }
 
+  // 2026-08-25 项目新建会话指示：项目「+」先到初始化界面（同笔），首条消息才真正建会话。
+  // state.newProject 有值 → 显示「在 <项目> 新建会话」chip（可点 X 取消回全局）；无值 → 隐藏。
+  function renderNewProjChip() {
+    const chip = $('new-proj-chip')
+    if (!chip) return
+    if (!state.newProject) {
+      chip.hidden = true
+      chip.textContent = ''
+      return
+    }
+    chip.hidden = false
+    chip.innerHTML =
+      '<span class="c-ico">' + I.folder + '</span>' +
+      '<span>在 <span class="c-name">' + esc(state.newProject) + '</span> 新建会话</span>' +
+      '<span class="c-clear" role="button" tabindex="-1" title="取消，改为全局新建">' + I.dshClose + '</span>'
+    chip.querySelector('.c-clear').addEventListener('click', (e) => {
+      e.stopPropagation()
+      state.newProject = null
+      renderNewProjChip()
+    })
+  }
+
+  // 2026-08-24 订阅 web 会话实时流：进入会话即订阅（审批卡依赖 WS 回推）；WS 未开时挂起，open 后补发
+  let pendingSubscribe = null
+  function subscribeWebSession(hash) {
+    if (!GATEWAY) return
+    if (gws && gws.readyState === 1) gws.send(JSON.stringify({ type: 'subscribe', sessionId: hash }))
+    else pendingSubscribe = hash
+  }
+
   function renderSession(hash) {
     stopLiveFoldTimer()
+    modelUserPicked = false // 切换会话：允许 /api/session 上报的会话模型校准 seat
     pinRelease()
     clearTakeover() // 切换会话：清掉残留的提问/审批 takeover（输入栏恢复）
     chatArea.classList.remove('mgr-on')
@@ -519,13 +605,25 @@
       chatArea.classList.add('in-session')
       return
     }
+    // 2026-08-23 web 独立会话：进程未在跑（已停止/网关重启）→ 幂等 resume 重启进程；在跑则网关直接返回。
+    // 不阻塞首屏：历史先渲染，进程起来后子进程 display 上报 → SSE refreshSession 自动补实时尾巴。
+    if (s.kind === 'web') {
+      fetch(apiUrl('/api/wsession'), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ resume: hash }),
+      }).catch(() => {})
+      // 2026-08-24 审批链路修复：进入 web 会话即订阅实时流（approval/out 经网关按订阅回推；
+      // 不订阅审批卡永远到不了——审批请求不落盘，SSE 读历史补不到）。WS 未开时挂起，open 后补发。
+      subscribeWebSession(hash)
+    }
     messagesEl.innerHTML = '<div class="msg msg-system">加载中…</div>'
     setChar(1) // 加载中 → 默认形象
     inputWrap.classList.add('docked')
     chatArea.classList.add('in-session')
     fetchMessages(s.id)
-      .then(({ messages, context }) => {
+      .then(({ messages, context, model, modelTs }) => {
         if (state.currentHash !== hash) return
+        applySessionModel(model, modelTs) // 2026-08-24：打开会话即用 CLI 上报的实际模型校准 seat
         renderCtxMeter(context)
         messagesEl.innerHTML = messagesHtml(messages)
         if (pendingAskInput) showTakeover(questionCardHtml(pendingAskInput, null), 'ask')
@@ -563,6 +661,18 @@
           sc.style.scrollBehavior = 'auto'
           sc.scrollTop = sc.scrollHeight
           sc.style.scrollBehavior = ''
+        }
+        // 2026-08-26 新建会话首条消息乐观渲染：首屏 fetch 返回空（CLI 尚未把首条 user 消息写入
+        // jsonl）且本会话有待渲染的首条 → 立即上屏用户气泡 + 正在处理折叠，消除「暂无记录」闪烁；
+        // 真实数据随后经 SSE updated → refreshSession 整页替换（届时 messages 非空，不会重复）。
+        // 放滚动处理之后：addUser/procOpen 自带钉顶 + 吸底，避免被上方 auto 吸底覆盖。
+        if (pendingFirstSend && pendingFirstSend.hash === hash) {
+          const pf = pendingFirstSend
+          pendingFirstSend = null
+          if (messages.length === 0) {
+            addUser(pf.text)
+            procOpen()
+          }
         }
       })
       .catch((e) => toast('读取会话失败: ' + (e.message || e)))
@@ -662,13 +772,15 @@
   }
 
   // ---- 文件变更汇总卡片（Codex 风格：+N 绿 / -N 红）----
-  // 数据源：源码 Edit/Write 工具在 tool_result 文本末尾追加真实增删行数 `(+N -M)`，
-  // 前端从文本解析出 {file, added, removed}，按段聚合去重，回合/段结束时渲染圆角卡片。
+  // 数据源（2026-08-23 起）：源码 conversationDisplay.ts 在 tool_result 块上输出结构化
+  // fileChange {filePath, added, removed}（权威数字 = 源码 diff.ts sumLinesChanged，由
+  // Edit/Write 工具写入文本后缀 `(+N -M)`），前端直接消费字段。
+  // parseFileChange 正则反解仅作旧网关/离线数据兜底，新 exe 部署后可删。
   function baseName(p) {
     const s = String(p || '').replace(/\\/g, '/')
     return s.split('/').pop() || s
   }
-  // 从 tool_result 文本提取文件路径与增删行数（Edit/Write 统一格式）
+  // 从 tool_result 文本提取文件路径与增删行数（Edit/Write 统一格式）——旧网关兜底
   function parseFileChange(text) {
     if (!text) return null
     const t = String(text).trim()
@@ -683,6 +795,13 @@
     }
     if (!path) return null
     return { path: path.trim(), added: Number(m[1]), removed: Number(m[2]) }
+  }
+  // 归一化为聚合用的 {path, added, removed} 形态（结构化 fileChange 用 filePath 命名）
+  function normalizeFileChange(fc) {
+    if (!fc) return null
+    if (fc.path != null) return { path: fc.path, added: fc.added || 0, removed: fc.removed || 0 }
+    if (fc.filePath != null) return { path: fc.filePath, added: fc.added || 0, removed: fc.removed || 0 }
+    return null
   }
   function mergeChanges(map, fc) {
     const prev = map.get(fc.path)
@@ -797,36 +916,24 @@
     })
   })
 
-  // 系统注入文本（转录把系统消息记成 type:user；后端已标 role:'system'，前端再兜底滤一层）
-  const SYNTH_RE = [
-    /^<task-notification>/i,
-    /^\[Request interrupted by user/i,
-    /^<local-command-caveat>/i,
-    /^<command-name>/i,
-    /^<command-message>/i,
-    /^<local-command-stdout>/i,
-    /^<bash-stdout>/i,
-    /^<bash-stderr>/i,
-    /^This session is being continued from a previous conversation/i,
-  ]
-  function isSynthText(t) {
-    t = (t || '').trim()
-    return t.length > 0 && SYNTH_RE.some((re) => re.test(t))
-  }
-
   // 压缩/自动摘要标记：转录里压缩会把「会话续接」记成 user|text（后端已映射 role:'system'，
   // 标签「会话续接（自动摘要）」）。命中它 = 当前回合被压缩打断，但 agent 仍在干活——
   // 不应把它当成回合结束，否则「正在处理」被强收成「已处理」、后续思考/工具拆成断开的新段。
+  // ⚠️ 仅 server.mjs 离线兜底路径（C 路径）生效：A/B 路径（网关 display/磁盘兜底）的压缩标记
+  // 已被 filterConversationForDisplay('prompt') 剔除，此判定只服务于离线数据。
   const CONTINUED_RE = /This session is being continued from a previous conversation/i
   function isContinuationMsg(m) {
     if (m.role !== 'system' && m.role !== 'user') return false
     return m.blocks.some((b) => b.kind === 'text' && (CONTINUED_RE.test(b.text) || b.text.includes('会话续接')))
   }
 
-  // 真实用户消息（带文本/图片，非纯工具回包，非系统注入）
+  // 真实用户消息（带文本/图片，非纯工具回包）：开新段/新回合检测/处理中计时共用。
+  // 合成 user（后台任务通知/对话中断等）已由源码 shouldShowUserMessage 剔除（A/B 路径）、
+  // 离线路径由 server.mjs readSession 映射为 role:'system'（C 路径）——前端无需再判系统注入
+  // 文本（isSynthText/SYNTH_RE 已于 2026-08-23 删除，见交接文档任务 1）。
   function isRealUser(m) {
     if (m.role !== 'user') return false
-    return m.blocks.some((b) => (b.kind === 'text' && b.text && b.text.trim() && !isSynthText(b.text)) || b.kind === 'image')
+    return m.blocks.some((b) => (b.kind === 'text' && b.text && b.text.trim()) || b.kind === 'image')
   }
 
   // 已处理时长：10m 50s 风格
@@ -956,8 +1063,11 @@
       const processing = isFinal && !s.finished // 最后一段且末尾还没收到纯文本回复 = 处理中
       // 旁白 text 原位回填（与其后的动作交错，不再统一沉到段尾）；reply 占位置空（回复主内容在折叠外单独渲染）
       for (const t of s.texts) s.items[t.idx].html = (t === reply) ? '' : processTextHtml(t.text)
-      // 思考过滤：处理中段保留全部思考块（对齐 CLI 实时可见思考）；已处理段只留最后一个
-      // （对齐 CLI hidePastThinking——中间思考为无效对话剔除）
+      // 思考过滤（2026-08-23 任务 3 收敛：权威在数据层/源码，此处仅按段聚合兜底）：
+      // 网关 prompt 路径 thinking 已被源码 filterConversationForDisplay 全剔除 → s.thinks 恒空、本分支不执行；
+      // server.mjs toBlocks 已下沉「每条记录只留最后一个 thinking」（镜像 CLI hidePastThinking，权威在源码）。
+      // 保留本分支 = 旧数据 / transcript 模式尾巴兜底：同回合多条 assistant 记录时只显示段内最后一个思考块；
+      // 处理中段（!processing 为假）保留全部思考（对齐 CLI 实时可见思考）。
       if (s.thinks.length > 1 && !processing) {
         for (let k = 0; k < s.thinks.length - 1; k++) s.items[s.thinks[k]].html = ''
       }
@@ -1047,7 +1157,10 @@
           }
         }
         else if (b.kind === 'tool_result') {
-          const fc = parseFileChange(b.text); if (fc) mergeChanges(seg.changes, fc) // 聚合文件变更 → 段末汇总卡片
+          // 文件变更（2026-08-23 起）：源码 conversationDisplay.ts 输出结构化 fileChange（Edit/Write
+          // 真实增删行数，权威 = diff.ts sumLinesChanged），优先消费；parseFileChange 正则反解仅作
+          // 旧网关/旧数据兜底（新 exe 部署后可删）。聚合文件变更 → 段末汇总卡片
+          const fc = normalizeFileChange(b.fileChange) || parseFileChange(b.text); if (fc) mergeChanges(seg.changes, fc)
           // AskUserQuestion 答案关联：最近的未回答提问卡吸附该 tool_result 文本并标出所选
           if (seg.lastAsk && seg.lastAsk.answer == null && b.text) {
             seg.lastAsk.answer = String(b.text)
@@ -1086,12 +1199,25 @@
     $('organize-pop').classList.remove('show')
   }
 
-  function itemHtml(s) {
+  // 项目编号提取（2026-08-25）：projectLabel 如 'Pj16-CodeAgent构建' → 短编号 'Pj16'；
+  // 命中 Pj<数字> 前缀取前缀，否则回落完整 label（个别非 Pj 命名项目也能区分）。
+  function projIdOf(label) {
+    const m = /^Pj\d+/.exec(label || '')
+    return m ? m[0] : label || ''
+  }
+
+  function itemHtml(s, showProj) {
     const on = hashOf(s) === state.currentHash
     // 会话状态点：busy=绿（正在运行）· idle/waiting=红（运行暂停）· 无=透明（CLI 未打开）
     const dotCls = s.state === 'busy' ? ' st-busy' : (s.state === 'idle' || s.state === 'waiting') ? ' st-wait' : ''
+    // 2026-08-25 项目会话编号气泡（仅「在一个列表中」堆叠视图，renderList 传 showProj=true）：
+    // 平铺时项目会话混在根会话里，用短编号（Pj16）标识所属项目；项目文件夹视图已有文件夹名，不重复显示。
+    const projTag = showProj && s.projectScope === 'project' && s.projectLabel
+      ? `<span class="w-tag" title="${esc(s.projectLabel)}">${esc(projIdOf(s.projectLabel))}</span>` : ''
+    // 2026-08-24 会话行操作（DSH 侧栏 Menu 移植）：hover 显现 …，点击弹出行菜单（重命名/归档）
+    const more = '<span class="sess-more" role="button" tabindex="-1" title="会话操作">…</span>'
     return `<button class="sess-item${on ? ' on' : ''}" data-hash="${esc(hashOf(s))}" title="${esc(s.file)}">
-      <span class="dot${dotCls}"></span><span class="title">${esc(s.title)}</span></button>`
+      <span class="dot${dotCls}"></span><span class="title">${esc(s.title)}</span>${projTag}${more}</button>`
   }
 
   function bindSessClicks(root) {
@@ -1101,6 +1227,177 @@
         if (isMobile()) setPanel(false)
       }),
     )
+    // 2026-08-24 行菜单入口：…（span 嵌在 .sess-item button 内，stopPropagation 防触发打开会话）
+    root.querySelectorAll('.sess-more').forEach((m) =>
+      m.addEventListener('click', (e) => {
+        e.stopPropagation()
+        const b = m.closest('.sess-item')
+        if (b && b.dataset.hash) toggleRowMenu(e, b.dataset.hash)
+      }),
+    )
+  }
+
+  // ---------- 会话行菜单（2026-08-24 DSH 侧栏 Menu 移植：… → [重命名 / 归档会话]）----------
+  // 仿 DSH ui-primitives Menu：白底 r12 卡片 + 4px padding + 40px 行（icon 16 + label），
+  // portal 定位到 … 按钮下方；点外部关闭（mousedown 判定，对齐 dsh Menu closeOnPointerLeave 之外的行为）。
+  let rowMenu = null
+  function toggleRowMenu(e, hash) {
+    if (rowMenu && rowMenu.dataset.hash === hash) { closeRowMenu(); return }
+    closeRowMenu()
+    const m = document.createElement('div')
+    m.className = 'row-menu'
+    m.dataset.hash = hash
+    m.innerHTML =
+      `<button type="button" class="rm-item" data-a="rename">${I.dshEdit}<span>重命名</span></button>` +
+      `<button type="button" class="rm-item" data-a="archive">${I.dshArchive}<span>归档会话</span></button>`
+    document.body.appendChild(m)
+    const r = (e.currentTarget || e.target).getBoundingClientRect()
+    m.style.left = Math.max(8, Math.min(r.right, window.innerWidth - 240)) + 'px'
+    m.style.top = (r.bottom + 4) + 'px'
+    m.querySelector('.rm-item[data-a="rename"]').addEventListener('click', () => {
+      closeRowMenu()
+      openRenameDialog(hash)
+    })
+    m.querySelector('.rm-item[data-a="archive"]').addEventListener('click', () => {
+      closeRowMenu()
+      archiveSession(hash)
+    })
+    rowMenu = m
+  }
+  function closeRowMenu() {
+    if (rowMenu) { rowMenu.remove(); rowMenu = null }
+  }
+  document.addEventListener('mousedown', (e) => {
+    if (rowMenu && !rowMenu.contains(e.target)) closeRowMenu()
+  })
+
+  // ---------- 归档会话（2026-08-24 DSH archiveSession 移植）----------
+  // 归档 = 从侧栏/搜索列表隐藏（本地 localStorage 持久化，与 DSH「归档集」语义一致：
+  // 日志/转录保留，只是不在分组表面出现）。不提供恢复入口（对齐 DSH 当前行为）。
+  const ARCHIVED_KEY = 'floria-archived-v1'
+  let archivedSet = null
+  function loadArchived() {
+    if (archivedSet) return archivedSet
+    try {
+      const raw = JSON.parse(localStorage.getItem(ARCHIVED_KEY) || '[]')
+      archivedSet = new Set(Array.isArray(raw) ? raw.map(String) : [])
+    } catch {
+      archivedSet = new Set()
+    }
+    return archivedSet
+  }
+  function saveArchived() {
+    try { localStorage.setItem(ARCHIVED_KEY, JSON.stringify([...loadArchived()])) } catch { /* 忽略 */ }
+  }
+  function isArchived(s) { return loadArchived().has(hashOf(s)) }
+  function archiveSession(hash) {
+    loadArchived().add(hash)
+    saveArchived()
+    // 若当前正打开该会话 → 回首页（归档会话不再展示）
+    if (state.currentHash === hash) navigate('#/')
+    renderRecent()
+    toast('会话已归档')
+  }
+
+  // ---------- 会话重命名（2026-08-24 DSH 侧栏 rename dialog 移植）----------
+  // 弹窗 DOM 在 index.html（#rename-modal，复用 risk-modal 的 mask/dialog 样式骨架）；
+  // 提交 POST /api/session/rename → 网关 append custom-title 记录（对已停止会话同样生效）。
+  let renameTarget = null // { hash, title }
+  const renameModal = $('rename-modal')
+  const renameInput = $('rename-input')
+  const renameErr = $('rename-error')
+  function openRenameDialog(hash) {
+    const s = ALL.find((x) => hashOf(x) === hash)
+    if (!s) return toast('未找到该会话')
+    renameTarget = { hash, title: s.title || '' }
+    renameInput.value = renameTarget.title
+    renameErr.hidden = true
+    renameModal.hidden = false
+    renameInput.focus()
+    renameInput.select()
+  }
+  function closeRenameDialog() {
+    if (!renameModal.hidden) renameModal.hidden = true
+    renameTarget = null
+  }
+  async function confirmRename() {
+    if (!renameTarget) return
+    const title = renameInput.value.trim()
+    if (!title) {
+      renameErr.textContent = '标题不能为空'
+      renameErr.hidden = false
+      return
+    }
+    try {
+      const s = ALL.find((x) => hashOf(x) === renameTarget.hash)
+      const res = await fetch(apiUrl('/api/session/rename'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: s ? s.id : '', title }),
+      })
+      const body = await res.json()
+      if (!res.ok || !body.ok) throw new Error(body.error || '重命名失败')
+      if (s) {
+        s.title = title
+        renderRecent()
+        toast('已重命名为「' + title + '」')
+      }
+      closeRenameDialog()
+    } catch (e) {
+      renameErr.textContent = e.message || String(e)
+      renameErr.hidden = false
+    }
+  }
+  $('rename-cancel').addEventListener('click', closeRenameDialog)
+  $('rename-ok').addEventListener('click', confirmRename)
+  $('rename-modal').querySelector('.close').addEventListener('click', closeRenameDialog)
+  renameInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); confirmRename() }
+    if (e.key === 'Escape') { e.preventDefault(); closeRenameDialog() }
+  })
+  // 点遮罩关闭（与 risk-modal 一致：对话框外判定）
+  $('rename-modal').addEventListener('mousedown', (e) => {
+    if (!renameModal.hidden && !e.target.closest('.dialog')) closeRenameDialog()
+  })
+
+  // 新建 web 会话（2026-08-24 改造：本地可见交互 CLI 窗口，替代 headless 子进程）。
+  // 触发方式 = 首页空态输入第一条消息（gwSend 空态分支调用），不再有「新建独立会话」按钮。
+  // 网关 spawn 本地可见交互 REPL 窗口（--session-id 预分配）→ CLI 连 /clients 注册 →
+  // 网关等注册完成才返回 → 首条消息经 cliClients 精确路由注入 REPL（与本地打字同路径）。
+  // 展示走 conversationDisplay 上报 + jsonl 落盘 + SSE 列表刷新（与 CLI 会话一致）。
+  // 2026-08-24 防双 spawn：web 会话创建中标志（POST /api/wsession 等 CLI 注册最长 20s），
+  // 创建期间 gwSend 空态分支再次发送直接忽略，杜绝「每发一条新建一个会话」。
+  let webCreating = false
+  // 2026-08-26 新建会话首条消息乐观渲染：navigate 只置 location.hash（hashchange → renderSession
+  // 是后续宏任务），gwSend 的 await 续体（微任务）先跑 → 此时 currentHash 仍为 null，procOpen
+  // 不会触发；且 renderSession 首屏 fetch 常抢在 CLI 把首条 user 消息写入 jsonl 之前返回空 → 界面
+  // 先闪「该会话暂无 user/assistant 记录」，直到 SSE updated → refreshSession（网关 250ms + 前端
+  // 400ms 双重去抖）才渲染。记 pendingFirstSend，由 renderSession 渲染时把首条消息合并上屏。
+  let pendingFirstSend = null
+  async function newWebSession(projectLabel) {
+    if (needToken()) return toast('请先完成 token 验证')
+    if (webCreating) return null
+    webCreating = true
+    toast(projectLabel ? `正在 ${projectLabel} 打开本地 CLI 窗口…` : '正在全局根打开本地 CLI 窗口…')
+    try {
+      const res = await fetch(apiUrl('/api/wsession'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(projectLabel ? { project: projectLabel } : {}) })
+      const d = await res.json()
+      if (!d.hash || !d.id) throw new Error(d.error || 'bad response')
+      // 合成列表条目：子进程刚起 jsonl 可能未落盘，先插入列表保证可导航；SSE 刷新会用真实条目替换。
+      // 2026-08-24 用户定案：未指定项目（笔/首页消息发送）→ 会话落全局根（@WrokSpace 散装区，
+      // projectScope:'global'）；指定项目 → 该项目组（projectScope:'project'）。不再落启动服务器的项目根。
+      const isGlobal = !projectLabel
+      ALL.unshift({ id: d.id, file: d.hash + '.jsonl', title: '新会话', kind: 'web', state: 'busy', updatedAt: Date.now(), projectScope: isGlobal ? 'global' : 'project', projectLabel: projectLabel || '', messageCount: 0 })
+      renderRecent()
+      navigate('#/' + encodeURIComponent(d.hash))
+      if (isMobile()) setPanel(false)
+      return d
+    } catch (e) {
+      toast('创建独立会话失败: ' + (e.message || e))
+      return null
+    } finally {
+      webCreating = false
+    }
   }
 
   function renderRecent() {
@@ -1150,7 +1447,7 @@
     // 「项目」入口：仿照插件布设，每个项目胶囊占据一整行（数据源 = 会话按 projectLabel 分组）
     if (state.mgr === 'projects') {
       // 顶部结构与插件视图完全同构（mgr-top mgr-kind + mgr-cats 占位），避免切换跳动；无刷新/设置按钮
-      const projCount = new Set(ALL.filter((s) => s.projectScope === 'project' && s.projectLabel).map((s) => s.projectLabel)).size
+      const projCount = new Set(ALL.filter((s) => s.projectScope === 'project' && s.projectLabel && !isArchived(s)).map((s) => s.projectLabel)).size
       messagesEl.innerHTML =
         '<div class="mgr-pane">' +
         // 空 mgr-top 占位：与插件视图「插件/技能」切换行等高（.mgr-top min-height），避免切换时标题跳动
@@ -1282,7 +1579,7 @@
     if (!list) return
     const q = (state.mgrView.q || '').trim().toLowerCase()
     const byProject = {}
-    for (const s of ALL) if (s.projectScope === 'project' && s.projectLabel) (byProject[s.projectLabel] = byProject[s.projectLabel] || []).push(s)
+    for (const s of ALL) if (s.projectScope === 'project' && s.projectLabel && !isArchived(s)) (byProject[s.projectLabel] = byProject[s.projectLabel] || []).push(s)
     const labels = Object.keys(byProject).filter((l) => !q || l.toLowerCase().includes(q))
     // 按项目最近活跃时间降序（同 renderProject 排序）
     labels.sort((a, b) => {
@@ -1535,7 +1832,8 @@
 
   function renderList() {
     const box = document.createElement('div')
-    box.innerHTML = sorted().map(itemHtml).join('')
+    // 2026-08-25「在一个列表中」堆叠视图：项目会话显示所属项目短编号气泡（Pj16），根会话无气泡
+    box.innerHTML = sorted().map((s) => itemHtml(s, true)).join('')
     bindSessClicks(box)
     bodyEl.appendChild(box)
   }
@@ -1544,7 +1842,7 @@
     bodyEl.innerHTML = ''
     if (state.pt === 'projects') {
       const byProject = {}
-      for (const s of ALL) if (s.projectScope === 'project') (byProject[s.projectLabel] = byProject[s.projectLabel] || []).push(s)
+      for (const s of ALL) if (s.projectScope === 'project' && !isArchived(s)) (byProject[s.projectLabel] = byProject[s.projectLabel] || []).push(s)
       const labels = Object.keys(byProject).sort((a, b) => {
         const la = Math.max(0, ...byProject[a].map((s) => s.updatedAt))
         const lb = Math.max(0, ...byProject[b].map((s) => s.updatedAt))
@@ -1558,16 +1856,33 @@
       box.innerHTML = labels
         .map((label) => {
           const chats = [...byProject[label]].sort((a, b) => b.updatedAt - a.updatedAt)
+          // 2026-08-24 项目新建会话：项目文件夹行 + 按钮 → 在指定项目下新建 web 会话
+          // （与「笔」新建会话并存，两者指向不同 exe——见 newWebSession 注释）
           return `<div class="folder" data-f="${esc(label)}"><button class="folder-head">
             <span class="chev">▶</span><span class="ficon">${I.folder}</span><span class="fname">${esc(label)}</span>
-            <span class="fcount">${chats.length}</span></button><div class="folder-body">${chats.map(itemHtml).join('')}</div></div>`
+            <span class="fcount">${chats.length}</span>
+            <span class="folder-add" role="button" tabindex="-1" title="在 ${esc(label)} 新建会话">${I.dshPlus}</span></button><div class="folder-body">${chats.map(itemHtml).join('')}</div></div>`
         })
         .join('')
       box.querySelectorAll('.folder-head').forEach((h) => h.addEventListener('click', () => h.parentElement.classList.toggle('open')))
+      // 2026-08-24 项目新建会话入口：点击 → 在指定项目新建 web 会话
+      // 2026-08-25 改造：与「笔」一致，先到初始化界面（#/ 空态 + 目标项目 chip），
+      // 首条消息发送时才真正建会话（gwSend 空态分支带 project 调 newWebSession）。不再直接弹 CLI。
+      box.querySelectorAll('.folder-add').forEach((a) =>
+        a.addEventListener('click', (e) => {
+          e.stopPropagation()
+          const f = a.closest('.folder')
+          if (f && f.dataset.f) {
+            state.newProject = f.dataset.f
+            navigate('#/')
+            if (isMobile()) setPanel(false)
+          }
+        }),
+      )
       bindSessClicks(box)
       bodyEl.appendChild(box)
     } else {
-      const root = ALL.filter((s) => s.projectScope !== 'project')
+      const root = ALL.filter((s) => s.projectScope !== 'project' && !isArchived(s))
       const box = document.createElement('div')
       box.innerHTML = root.length ? root.map(itemHtml).join('') : '<div class="no-hit" style="padding:10px">暂无根会话</div>'
       bindSessClicks(box)
@@ -1625,7 +1940,7 @@
   $('panel-search').innerHTML = I.mag
   $('panel-search').addEventListener('click', openSearch)
   $('rail-new').innerHTML = I.pen
-  $('rail-new').addEventListener('click', () => { navigate('#/'); if (isMobile()) setPanel(false) })
+  $('rail-new').addEventListener('click', () => { state.newProject = null; navigate('#/'); if (isMobile()) setPanel(false) })
   $('rail-search').innerHTML = I.mag
   $('rail-search').addEventListener('click', openSearch)
 
@@ -1649,7 +1964,9 @@
     }
   })
   $('recent-write').innerHTML = I.pen
-  $('recent-write').addEventListener('click', () => { navigate('#/'); if (isMobile()) setPanel(false) })
+  $('recent-write').addEventListener('click', () => { state.newProject = null; navigate('#/'); if (isMobile()) setPanel(false) })
+  // 2026-08-24 定案：开启新会话只用「笔」图标（recent-write → 回首页空态），
+  // 首条消息触发创建（gwSend 空态分支调 newWebSession）；不再有独立的「新建独立会话」按钮。
   $('recent-more').addEventListener('click', (e) => { e.stopPropagation(); $('organize-pop').classList.toggle('show') })
 
   // 最近会话 折叠/展开
@@ -1923,7 +2240,16 @@
       .appr-btns button:disabled{opacity:.5;cursor:default}
       .appr-deny:hover:not(:disabled){background:#fef2f2;color:#dc2626;border-color:transparent}
       .appr-allow{border:none!important;background:#4176e6!important;color:#fff!important}
-      .appr-allow:hover:not(:disabled){background:#679efe!important}`
+      .appr-allow:hover:not(:disabled){background:#679efe!important}
+      /* 2026-08-24 提问交互表单（floria 作答）：逐题选项单选 */
+      .qa-opts{display:flex;flex-direction:column;gap:8px;padding:4px 0 2px}
+      .qa-opt{display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border:1px solid var(--border);border-radius:12px;background:#fff;text-align:left;cursor:pointer;color:var(--text)}
+      .qa-opt:hover{border-color:#4176e6;background:#f7faff}
+      .qa-opt.sel{border-color:#4176e6;background:#eff5ff}
+      .qa-opt .qa-dot{flex:none;width:16px;height:16px;margin-top:2px;border-radius:50%;border:1.5px solid var(--border);box-sizing:border-box}
+      .qa-opt.sel .qa-dot{border-color:#4176e6;background:#4176e6;box-shadow:inset 0 0 0 3px #fff}
+      .qa-opt .qa-copy{flex:1;display:flex;flex-direction:column;gap:3px;font-size:14px;line-height:20px}
+      .qa-opt .qa-desc{color:var(--text-2);font-size:12px;line-height:16px}`
     document.head.appendChild(s)
   }
 
@@ -2192,7 +2518,28 @@
     return out
   }
   // 当前选中模型（本地状态；首次 /api/models 加载后与凭据池 activeModel/provider/effortLevel 对齐）
-  let MODEL_CUR = { provider: '', model: '', effortLevel: undefined }
+  // 2026-08-24 模型 web/CLI 同步：MODEL_CUR 持久化 localStorage（刷新恢复），并按 /api/session 上报的
+  // 会话实际模型（CLI reportCurrentModel）校准——每会话 override 只在 CLI 内存，web 不持久化会回落
+  // 凭据池默认 activeModel 造成「CLI 用 vision-exp / web 显示 flash」不一致。
+  const MODEL_KEY = 'floria-model-v1'
+  function loadModelCur() {
+    try {
+      const raw = localStorage.getItem(MODEL_KEY)
+      if (!raw) return null
+      const o = JSON.parse(raw)
+      if (o && typeof o === 'object' && typeof o.model === 'string' && o.model) return o
+    } catch { /* 存储不可用忽略 */ }
+    return null
+  }
+  function saveModelCur() {
+    try {
+      localStorage.setItem(MODEL_KEY, JSON.stringify({ provider: MODEL_CUR.provider, model: MODEL_CUR.model, effortLevel: MODEL_CUR.effortLevel, ts: Date.now() }))
+    } catch { /* 存储不可用忽略 */ }
+  }
+  let MODEL_CUR = loadModelCur() || { provider: '', model: '', effortLevel: undefined }
+  // 用户本次会话内主动切换过模型 → 不再被 /api/session 旧上报覆盖（切换会话时重置）。避免
+  // POST /api/model 尚未落地前的一次刷新把刚切的选择回滚成旧值。
+  let modelUserPicked = false
   // 命令菜单状态（对齐 dsh PopupState：open/status/options/search/active/submitting/confirming/acknowledged/error）
   const cmd = { open: false, status: 'pending', options: [], search: '', active: 0, submitting: false, confirming: null, acknowledged: false, error: null }
   // 模型菜单状态（对齐 dsh ModelSelect Pane：root | model | effort）
@@ -2491,6 +2838,8 @@
       const id = row.id
       if (MODEL_CUR.model === id) { closeModelPop(); return }
       MODEL_CUR = { ...MODEL_CUR, model: id }
+      modelUserPicked = true // 2026-08-24：本次会话内主动切换，防止 /api/session 旧上报回滚
+      saveModelCur() // 2026-08-24：持久化，刷新后恢复
       renderModelSeat()
       closeModelPop()
       // 2026-08-23 用户定案：model 每会话覆盖，带 sessionId 精确路由，网关不广播兜底
@@ -2500,6 +2849,7 @@
       const eff = row.effort === undefined ? undefined : row.effort
       if (MODEL_CUR.effortLevel === eff) { closeModelPop(); return }
       MODEL_CUR = { ...MODEL_CUR, effortLevel: eff }
+      saveModelCur() // 2026-08-24：持久化推理等级
       renderModelSeat()
       closeModelPop()
       // Off（清除等级）发 'off'，网关据此 delete settings.effortLevel + 广播 null → CLI effortValue=undefined
@@ -3020,6 +3370,13 @@
   }
 
   function renderApproval(a) {
+    // 2026-08-24 提问答复（web 与 CLI 均可）：AskUserQuestion 审批卡渲染为交互表单，逐题选答案，
+    // 提交后经 approve 带 {input, answers} 回 CLI（网关 updatedInput 透传 → 工具拿到 answers）。
+    const qs = a.input && Array.isArray(a.input.questions) ? a.input.questions : null
+    if (a.toolName === 'AskUserQuestion' && qs && qs.length) {
+      renderQuestionApproval(a, qs)
+      return
+    }
     let input = ''
     try { input = JSON.stringify(a.input, null, 2) } catch { input = String(a.input || '') }
     const zh = TOOL_NAMES[a.toolName] || ''
@@ -3042,9 +3399,50 @@
     t.querySelector('.appr-deny').addEventListener('click', () => sendApprove(a.requestId, false))
   }
 
-  function sendApprove(requestId, allowed) {
+  // 2026-08-24 提问交互表单：DSH「输入栏转化、依次显示」的降级——floria 在一张卡里列出所有问题，
+  // 每题为单选（点选 option），全答完点「提交答案」→ 经审批中继回 CLI（CLI 端 handleInteractivePermission
+  // 的桥应答对 allow 用 updatedInput={questions, answers}，工具即拿到答案）。
+  function renderQuestionApproval(a, qs) {
+    const answers = {}
+    let html = '<div class="appr-card">'
+    html += '<div class="appr-strip"><span class="appr-dot"></span>需要你回答 · 提问</div>'
+    qs.forEach((qq, qi) => {
+      const question = String(qq.question || '').trim()
+      const header = String(qq.header || '提问')
+      const opts = Array.isArray(qq.options) ? qq.options : []
+      let rows = ''
+      opts.forEach((o) => {
+        const label = (o && typeof o === 'object') ? String(o.label || '') : String(o || '')
+        const desc = (o && typeof o === 'object' && o.description) ? String(o.description) : ''
+        rows += `<button type="button" class="qa-opt" data-q="${qi}" data-question="${esc(question)}" data-v="${esc(label)}"><span class="qa-dot"></span><span class="qa-copy">${esc(label)}${desc ? `<span class="qa-desc">${esc(desc)}</span>` : ''}</span></button>`
+      })
+      html += `<div class="question-card"><div class="q-head">${esc(header)}</div><div class="q-title">${esc(question)}</div><div class="qa-opts">${rows}</div></div>`
+    })
+    html += '<div class="appr-btns"><button class="appr-deny">拒绝</button><button class="appr-allow">提交答案</button></div></div>'
+    showTakeover(html, 'approval')
+    const t = takeoverEl()
+    t.querySelectorAll('.qa-opt').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const card = btn.closest('.question-card')
+        card.querySelectorAll('.qa-opt').forEach((b) => b.classList.remove('sel'))
+        btn.classList.add('sel')
+        answers[btn.dataset.question] = btn.dataset.v
+      })
+    })
+    t.querySelector('.appr-deny').addEventListener('click', () => sendApprove(a.requestId, false))
+    t.querySelector('.appr-allow').addEventListener('click', () => {
+      const missing = qs.filter((q) => !answers[q.question])
+      if (missing.length) return toast('请先回答所有问题')
+      sendApprove(a.requestId, true, { input: a.input, answers })
+    })
+  }
+
+  function sendApprove(requestId, allowed, qa) {
     if (!gws || gws.readyState !== 1) return addError('连接已断开，无法审批')
-    gws.send(JSON.stringify({ type: 'approve', requestId, allowed }))
+    // 2026-08-23 web 独立会话：带 sessionId 供网关路由到对应子进程（CLI 会话无此字段走 broadcast 未接入提示）
+    const payload = { type: 'approve', requestId, allowed, sessionId: state.currentHash || undefined }
+    if (qa && qa.answers) { payload.input = qa.input; payload.answers = qa.answers } // 2026-08-24 提问答复
+    gws.send(JSON.stringify(payload))
     clearTakeover() // 审批提交 → 输入栏回归
     addSystem(allowed ? '已允许该工具调用' : '已拒绝该工具调用')
   }
@@ -3116,6 +3514,11 @@
       if (gateAwait) gatePlayTransition() // 门流程：播过渡视频（白板拉伸成输入栏/角色转正趴栏），ended 后 hideGate
       else hideGate() // URL 带 token 直连（无门）：验证通过直接解锁
       syncGwSend()
+      // 2026-08-24 审批链路修复：WS 重开后补发挂起的 web 会话订阅（审批卡/实时流依赖）
+      if (pendingSubscribe) {
+        gws.send(JSON.stringify({ type: 'subscribe', sessionId: pendingSubscribe }))
+        pendingSubscribe = null
+      }
     }
     gws.onclose = () => {
       setConn(false, '未连接')
@@ -3133,9 +3536,19 @@
     gws.onmessage = (ev) => {
       let msg
       try { msg = JSON.parse(ev.data) } catch { return }
-      if (msg.type === 'out') handleLine(msg.line)
-      else if (msg.type === 'approval') renderApproval(msg)
-      else if (msg.type === 'status') addSystem('· ' + msg.state)
+      // 2026-08-23 web 独立会话：out/approval 带 session_id，仅当匹配当前会话才消费
+      // （多个独立会话并行运行，其它会话的流不干扰当前视图；CLI 会话不经 out 转发不受影响）
+      if (msg.type === 'out') {
+        if (msg.session_id && msg.session_id !== state.currentHash) return
+        handleLine(msg.line)
+      } else if (msg.type === 'approval') {
+        if (msg.session_id && msg.session_id !== state.currentHash) return
+        renderApproval(msg)
+      } else if (msg.type === 'approval-dismiss') {
+        // 2026-08-24 审批双操作（web 与 CLI 均可）：CLI 终端/窗口已先操作 → 撤掉 floria 审批卡
+        if (msg.session_id && msg.session_id !== state.currentHash) return
+        if (takeover === 'approval') clearTakeover()
+      } else if (msg.type === 'status') addSystem('· ' + msg.state)
       else if (msg.type === 'err') addError(msg.line)
     }
   }
@@ -3246,12 +3659,37 @@
     if (e.key === 'Enter') { e.preventDefault(); gateSubmit() }
   })
 
-  function gwSend() {
+  async function gwSend() {
     if (!GATEWAY) return false
     closeMentionPop()
     const text = serializeInput().trim()
     if (!text) { inputEl.focus(); return true }
     if (!gws || gws.readyState !== 1) { toast('未连接，无法发送'); return true }
+    // 2026-08-24 首页空态首条消息触发：未在具体会话（#/ 空态）输入第一条消息
+    // → 先创建 web 会话（网关 spawn 本地可见 CLI 窗口，返回后 CLI 已连 /clients），
+    // 再进会话发送首条消息。web 会话 = 本地可见交互 CLI 窗口（用户本地也可直接操作）。
+    // 2026-08-25 项目「+」先到初始化界面：state.newProject 有值 → 建会话时带上 project 落到该项目组；
+    // 用完即清（正常进会话后 currentHash 已设置，不再进此分支）。
+    // 2026-08-24 防双 spawn：创建期间（POST /api/wsession 等 CLI 注册，最长 20s）置 webCreating，
+    // 期间再发送直接忽略（否则每发一条都新建一个会话）；创建完成后 currentHash 已由 navigate 设置。
+    if (!state.currentHash) {
+      if (webCreating) { toast('正在创建会话，请稍候…'); return true }
+      const tgt = state.newProject
+      state.newProject = null
+      renderNewProjChip()
+      const d = await newWebSession(tgt || undefined)
+      if (!d || !d.hash) { state.newProject = tgt; renderNewProjChip(); return true }
+      // newWebSession 已 navigate 进会话（renderSession 设置 currentHash + 订阅 + 拉历史）。
+      // 2026-08-26：navigate 的 hashchange 是宏任务、本续体是微任务 → 此处 currentHash 仍为 null，
+      // 下方 procOpen 不会触发，首条消息完全依赖服务器回流；记 pendingFirstSend 供 renderSession
+      // 在 fetch 仍空时乐观渲染（用户气泡 + 正在处理折叠），消除「暂无记录」闪烁。
+      pendingFirstSend = { hash: d.hash, text }
+      gws.send(JSON.stringify({ type: 'send', text, sessionId: d.hash }))
+      if (state.currentHash) procOpen()
+      inputEl.textContent = ''
+      syncGwSend()
+      return true
+    }
     if (!inputWrap.classList.contains('docked')) {
       // 先入会话态（输入栏沉底、滚动区留底边距），再追加/钉顶消息，保证钉顶位置计算基于最终布局
       mountInput('chat') // 输入栏从空态 stage 移回 #chat-area 沉底
@@ -3262,6 +3700,10 @@
     // 2026-08-17 网关独立化：带当前会话 hash，网关按 sessionId 精确路由给对应 CLI 进程
     // （未在具体会话时 currentHash 为 null → 字段省略，网关广播兜底）
     gws.send(JSON.stringify({ type: 'send', text, sessionId: state.currentHash || undefined }))
+    // 2026-08-24 已处理立即出现：乐观打开「正在处理」折叠，不等 SSE 回程（模型开始思考前即见反馈）。
+    // 回合进行中 refreshSession 不再整页重建（强刷/卡顿根治），末段回复落地才一次性渲染。
+    // 仅真实会话内打开（currentHash 非空）；首页空态广播发送不开折叠，避免空区飘折叠。
+    if (state.currentHash) procOpen()
     inputEl.textContent = ''
     syncGwSend()
     return true

@@ -90,10 +90,13 @@
       }
       saveModelCur()
     } catch (e) {
-      MODELS_ERR = e.message || String(e)
+      // 2026-08-25 竞态防护：若期间已有一次成功加载（如 hideGate 用新 token 补拉已先落地），
+      // 此陈旧失败（典型：gate 前空 token 的 401）不覆盖已就绪数据，避免把成功态又标成错误。
+      if (!MODELS) MODELS_ERR = e.message || String(e)
     } finally {
       MODELS_LOADING = false
       renderMgrModels()
+      renderModelSeat() // 2026-08-25 模型数据落地后刷新输入栏模型 seat（含 hideGate 补拉场景）
     }
     return MODELS
   }
@@ -108,7 +111,6 @@
   const chatArea = $('chat-area')
   const messagesEl = $('messages')
   const inputWrap = $('input-wrap')
-  const liveChangeEl = $('live-change')
   const inputEl = $('input')
   const inputBarEl = $('input-bar')
   const sendBtn = $('send-btn')
@@ -146,7 +148,7 @@
   let ALL = []
   let timer = null
   // 阶段1 实时同步：SSE 变更驱动的去重/防抖状态
-  const live = { es: null, listSig: '', curSig: '', listT: null, sessT: null, lastUserSig: '', pinnedUserSig: '' }
+  const live = { es: null, listSig: '', curSig: '', listT: null, sessT: null, lastUserSig: '', pinnedUserSig: '', lastMsgLen: null }
 
   // ---------- 工具 ----------
   const esc = (s) =>
@@ -380,6 +382,9 @@
       if (m.role === 'system' || m.role === 'progress' || m.role === 'attachment') continue
       if (isRealUser(m)) return true // 刚发的用户消息（assistant 回复未到）= 处理中
       if (m.role === 'assistant') {
+        // 2026-08-26：stopReason 精确判定（stop_reason=null 的旁白/工具=处理中，end_turn=结束）；
+        // 字段缺失（旧数据 undefined）回落旧启发式
+        if (m.stopReason !== undefined) return m.stopReason !== 'end_turn'
         const hasText = m.blocks.some((b) => b.kind === 'text' && b.text && b.text.trim())
         const hasTool = m.blocks.some((b) => b.kind === 'tool_use')
         return !(hasText && !hasTool)
@@ -410,43 +415,55 @@
         const uSig = lastU >= 0 ? lastU + ':' + (messages[lastU].timestamp || '') : ''
         const hasNewUser = live.lastUserSig !== '' && uSig && uSig !== live.lastUserSig
         live.lastUserSig = uSig
-        // 2026-08-24 已处理立即出现 + 强刷根治：实时/乐观「正在处理」折叠已打开（回合进行中）→
-        // 跳过整页 innerHTML 重建（SSE 每写一条 thinking/tool 记录就强刷一次 → 卡顿）。只探测
-        // 回合是否结束：末段回复已落地（!segIsProcessing）→ 关折叠交回下方数据渲染一次性出最终态
-        // （已处理时长/回复/变更卡）；未结束 → 预记 curSig 防同 sig 早退、保持折叠计时静候下轮。
-        // 2026-08-24 修复：仅当消息区已有真实消息时才抑制——web 新会话首条消息发送后 jsonl 尚空，
-        // 界面停在「暂无 user/assistant 记录」空态，若此时抑制会把首条 user 消息也压住（约 10s 空白，
-        // 直到回复落地才一次性渲染）。空态（无 .msg）时正常重建，让首条消息 + 正在处理折叠立即上屏。
+        // 2026-08-26 定案：处理中段实时重建。原 2026-08-24 抑制逻辑（回合进行中跳过整页 innerHTML 重建）
+        // 假设实时折叠由 WS out 增量填充——但网关从不给 web 发 out 消息（实时流走 SSE：conversationDisplay
+        // 上报 + jsonl + 列表刷新），WS out 是死代码 → 处理中折叠一直空白（用户反馈「完全没有渲染，并且也不同步」）。
+        // 现改为：回合未结束（数据在增长或 segIsProcessing）→ 照常整页重建，messagesHtml 对处理中段走
+        // liveFoldBody 只渲染「当前正在运行」的工具步（400ms 去抖已限频，SSE 逐条写入时最多 ~2.5 次/秒）；
+        // 回合结束（末段回复落地）→ 关掉空 proc 折叠交回下方数据渲染一次性出最终态（已处理时长/回复/变更卡）。
+        // 2026-08-24 保留：仅当消息区已有真实消息时才关折叠——web 新会话首条消息发送后 jsonl 尚空，
+        // 界面停在「暂无 user/assistant 记录」空态，不关空折叠（下方正常重建让首条消息立即上屏）。
         if (proc && proc.isConnected && messagesEl.querySelector('.msg') !== null) {
-          if (segIsProcessing(messages)) {
-            live.curSig = sig
-            return
-          }
-          procClose()
+          const dataMoving = sig !== live.curSig
+          if (!dataMoving && !segIsProcessing(messages)) procClose()
+          // 注意：首次整页重建后 proc 元素随 innerHTML 被替换而失连，本分支自然退出（不再重复关折叠）
         }
         if (sig === live.curSig) return
         live.curSig = sig
         const sc = $('chat-scroll')
         const atBottom = sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 80
-        // 按索引保留折叠开合（messagesHtml 只在末尾追加新折叠，索引稳定）
-        const openState = [...messagesEl.querySelectorAll('details')].map((d) => d.open)
-        const doneLivePrev = [...messagesEl.querySelectorAll('details')].map((d) => d.classList.contains('done-live'))
-        // 采集刷新前的消息 key（data-m|data-t），重建后只给新增块播放入场动画
-        const prevMsgs = new Set([...messagesEl.querySelectorAll('[data-m]')].map((e) => e.dataset.m + '|' + (e.dataset.t || '')))
-        messagesEl.innerHTML = messagesHtml(messages)
-        if (pendingAskInput) showTakeover(questionCardHtml(pendingAskInput, null), 'ask')
+        // 2026-08-26 增量重建根治：SSE 实时推送只追加/改写尾部「处理中段」，历史消息不变。
+        // 对处理中末段只替换该段 DOM（applySegDelta，头部保留）→ 消除每次推送整页 innerHTML
+        // 重建的闪烁，且 tool-running 光泽动画不再被重建打断（2.6s 扫光能完整播放）。
+        // 条件：上次渲染存在 + 消息数只增不减（SSE 纯追加；回退/压缩等减少则整页）+ 有处理中末段。
+        // 回复落地（段结束）/新回合/消息数减少 → 整页重建一次（低频，带「已处理」收拢可接受）。
+        const html = messagesHtml(messages)
+        const canDelta = live.lastMsgLen != null && messages.length >= live.lastMsgLen && lastSegInfo && lastSegInfo.processing && lastSegInfo.html
+        live.lastMsgLen = messages.length
+        if (canDelta) {
+          applySegDelta(lastSegInfo)
+        } else {
+          // 按索引保留折叠开合（messagesHtml 只在末尾追加新折叠，索引稳定）
+          const openState = [...messagesEl.querySelectorAll('details')].map((d) => d.open)
+          const doneLivePrev = [...messagesEl.querySelectorAll('details')].map((d) => d.classList.contains('done-live'))
+          // 采集刷新前的消息 key（data-m|data-t），重建后只给新增块播放入场动画
+          const prevMsgs = new Set([...messagesEl.querySelectorAll('[data-m]')].map((e) => e.dataset.m + '|' + (e.dataset.t || '')))
+          messagesEl.innerHTML = html
+          stampMsgIn(prevMsgs)
+          // 已存在的折叠恢复刷新前状态（覆盖 messagesHtml 对处理中折叠的默认 open，避免折叠后被刷新强制弹开）；
+          // 处理中折叠（done-live）回复落地 → 自动收起（对齐「回复落地后收起」设计，短回复占位得以重新补回）；
+          // 用户手动展开的「已处理」折叠照常恢复。新增折叠（索引越界）保留默认：处理中展开、已处理收起
+          ;[...messagesEl.querySelectorAll('details')].forEach((d, i) => {
+            if (i >= openState.length) return
+            const finishedNow = doneLivePrev[i] && !d.classList.contains('done-live')
+            d.open = finishedNow ? false : openState[i]
+          })
+        }
+        if (takeover === 'approval') { /* 交互式逐题审批卡已占据输入栏，勿用只读堆叠卡覆盖/清除 */ }
+        else if (pendingAskInput) showTakeover(questionCardHtml(pendingAskInput, null), 'ask')
         else clearTakeover()
         setChar(charNote) // 只读 SSE：按末段最近工具/处理状态切形象
         bindLiveFoldTimer(messages)
-        stampMsgIn(prevMsgs)
-        // 已存在的折叠恢复刷新前状态（覆盖 messagesHtml 对处理中折叠的默认 open，避免折叠后被刷新强制弹开）；
-        // 处理中折叠（done-live）回复落地 → 自动收起（对齐「回复落地后收起」设计，短回复占位得以重新补回）；
-        // 用户手动展开的「已处理」折叠照常恢复。新增折叠（索引越界）保留默认：处理中展开、已处理收起
-        ;[...messagesEl.querySelectorAll('details')].forEach((d, i) => {
-          if (i >= openState.length) return
-          const finishedNow = doneLivePrev[i] && !d.classList.contains('done-live')
-          d.open = finishedNow ? false : openState[i]
-        })
         if (hasNewUser && uSig !== live.pinnedUserSig) {
           // 真正的新用户消息 → 钉顶到视口顶部（平滑上划）；
           // pinnedUserSig 防重复：网关 result 已解除钉顶后，迟到的刷新不会再重钉上一回合
@@ -469,6 +486,29 @@
         }
       } catch { /* 瞬时错误忽略 */ }
     }, 400)
+  }
+
+  // 增量重建（2026-08-26）：只替换「处理中末段」的 DOM，头部历史消息保留不动（不整页 innerHTML，
+  // 消除闪烁 + tool-running 光泽动画不被重建打断）。info = lastSegInfo {key, html, prev, processing}：
+  // 先删旧末段全部节点（data-m=key，含用户消息/折叠/回复/变更卡），新段节点按 prev 锚点
+  // （该段输出前的最后一个 data-m 元素）插回原位；无锚点（末段即首条）则追加到末尾。
+  function applySegDelta(info) {
+    const key = String(info.key)
+    messagesEl.querySelectorAll(`[data-m="${key}"]`).forEach((n) => n.remove())
+    const tmp = document.createElement('div')
+    tmp.innerHTML = info.html
+    const frag = document.createDocumentFragment()
+    for (const n of [...tmp.children]) frag.appendChild(n)
+    let anchor = null
+    if (info.prev) anchor = messagesEl.querySelector(`[data-m="${info.prev.key}"][data-t="${info.prev.type}"]`)
+    if (anchor && anchor.isConnected) {
+      let after = anchor.nextSibling
+      while (after && after.nodeType !== 1) after = after.nextSibling
+      if (after) messagesEl.insertBefore(frag, after)
+      else messagesEl.appendChild(frag)
+    } else {
+      messagesEl.appendChild(frag)
+    }
   }
 
   // 处理中折叠的「正在处理」实时计时（历史/SSE 路径）：末段尚无回复 = 处理中，
@@ -513,12 +553,17 @@
 
   function route() {
     closeMentionPop()
-    liveChangeReset() // 2026-08-19：导航（首页/会话/管理/预览切换）收起变更胶囊
+    liveChangeReset() // 导航（首页/会话/管理/预览切换）清空变更聚合 + 移除实时内联行
     const r = parseRoute()
     // 任何导航（route 被调用）→ 退出管理视图；管理视图只由 mgr-tab 点击直接 renderMgr 进入，不走 route
     state.mgr = null
     state.preview = null
     syncMgrTabs()
+    // 2026-08-25 会话切换滞后修复：renderRecent() 里 .on 高亮按 state.currentHash 判定，
+    // 原先 renderSession() 在 renderRecent() 之后才设 currentHash → 点第一次侧栏高亮停在旧会话，
+    // 要再点一次才高亮正确（用户反馈「需要选中会话多次才可以完全切换」）。这里按路由目标预置，
+    // 让 renderRecent() 一次导航即高亮正确目标。
+    state.currentHash = r.name === 'session' ? r.hash : null
     renderRecent()
     if (r.name === 'home') renderHome()
     else if (r.name === 'mgr') { state.mgr = r.mgr; loadMgrView(); renderMgr() }
@@ -531,9 +576,16 @@
     document.querySelectorAll('.mgr-tab').forEach((x) => x.classList.toggle('on', x.dataset.mgr === state.mgr))
   }
 
+  // 2026-08-25 同步路由：navigate 设置 hash 后同步调用 route()，不再依赖 hashchange 异步时序。
+  // 背景：切换会话需双击——第一次点击走 hashchange 异步 route() 内容区不切换（侧栏 .on 高亮已对，
+  // 因 currentHash 在 renderRecent 前预置），第二次点击 hash 已同 → navigate 同步 route() 才切。
+  // 实测差异在同步 vs 异步，故改为同步渲染；hashchange 只兜底浏览器前进/后退、手动改 URL。
+  let lastNavHash = null
   function navigate(hash) {
     if (location.hash === hash) return route()
+    lastNavHash = hash
     location.hash = hash
+    route()
   }
 
   // 2026-08-18 按 SubPj3 实现：空态输入栏挂 #empty-hint .g-stage 内真相对定位（top=台面 76.75%−26px），
@@ -581,16 +633,9 @@
     })
   }
 
-  // 2026-08-24 订阅 web 会话实时流：进入会话即订阅（审批卡依赖 WS 回推）；WS 未开时挂起，open 后补发
-  let pendingSubscribe = null
-  function subscribeWebSession(hash) {
-    if (!GATEWAY) return
-    if (gws && gws.readyState === 1) gws.send(JSON.stringify({ type: 'subscribe', sessionId: hash }))
-    else pendingSubscribe = hash
-  }
-
   function renderSession(hash) {
     stopLiveFoldTimer()
+    live.lastMsgLen = null // 切换会话：重置增量重建守卫（首个刷新必整页渲染，防跨会话误增量）
     modelUserPicked = false // 切换会话：允许 /api/session 上报的会话模型校准 seat
     pinRelease()
     clearTakeover() // 切换会话：清掉残留的提问/审批 takeover（输入栏恢复）
@@ -605,17 +650,9 @@
       chatArea.classList.add('in-session')
       return
     }
-    // 2026-08-23 web 独立会话：进程未在跑（已停止/网关重启）→ 幂等 resume 重启进程；在跑则网关直接返回。
-    // 不阻塞首屏：历史先渲染，进程起来后子进程 display 上报 → SSE refreshSession 自动补实时尾巴。
-    if (s.kind === 'web') {
-      fetch(apiUrl('/api/wsession'), {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ resume: hash }),
-      }).catch(() => {})
-      // 2026-08-24 审批链路修复：进入 web 会话即订阅实时流（approval/out 经网关按订阅回推；
-      // 不订阅审批卡永远到不了——审批请求不落盘，SSE 读历史补不到）。WS 未开时挂起，open 后补发。
-      subscribeWebSession(hash)
-    }
+    // 2026-08-25 发送即 resume：打开 web 会话仅预览（与 CLI 会话一致），不再自动拉起本地 CLI 窗口；
+    // 会话进程未在线时，发送消息（gwSend → 网关 resumeAndDeliver）才恢复窗口并投递。
+    // 原自动 resume + subscribe 已移除：审批卡经网关 broadcast → /ws sockets 到达，subscribe 为死代码。
     messagesEl.innerHTML = '<div class="msg msg-system">加载中…</div>'
     setChar(1) // 加载中 → 默认形象
     inputWrap.classList.add('docked')
@@ -626,7 +663,8 @@
         applySessionModel(model, modelTs) // 2026-08-24：打开会话即用 CLI 上报的实际模型校准 seat
         renderCtxMeter(context)
         messagesEl.innerHTML = messagesHtml(messages)
-        if (pendingAskInput) showTakeover(questionCardHtml(pendingAskInput, null), 'ask')
+        if (takeover === 'approval') { /* 交互式逐题审批卡已占据输入栏，勿用只读堆叠卡覆盖/清除 */ }
+        else if (pendingAskInput) showTakeover(questionCardHtml(pendingAskInput, null), 'ask')
         else clearTakeover()
         setChar(charNote) // 只读 SSE：按末段最近工具/处理状态切形象
         bindLiveFoldTimer(messages)
@@ -641,14 +679,12 @@
         live.pinnedUserSig = baseU
         // 最新真实用户消息之后的回复（含处理折叠）未填满视口 → 刷新后恢复钉顶 + 补占位：
         // 处理中 / 短回复 / 长回复未填满视口都钉顶；长回复已填满视口则不钉顶、吸底。
-        // messagesHtml 对处理中折叠默认展开（高思考内容会撑高 → baseH 虚大、占位被撤 =
-        // 刷新后占位死亡），先强制收起，让几何判定与占位补回基于真实内容。
+        // 2026-08-26 处理中折叠保持 messagesHtml 默认展开（用户需求：处理中展开处理过程），
+        // 不再强制收起；几何判定基于真实展开内容——未填满视口钉顶，已填满则吸底。
         let pinned = false
         if (lastU >= 0) {
           const el = messagesEl.querySelector(`[data-m="${lastU}"][data-t="u"]`)
           if (el) {
-            const df = messagesEl.querySelector('details.done-live')
-            if (df) df.open = false
             const g = pinGeometry(el)
             if (g.baseH < g.target) {
               pinApply(el, false)
@@ -693,13 +729,12 @@
     const zh = TOOL_NAMES[name] || name
     const inp = block.input && typeof block.input === 'object' ? block.input : null
     const detail = inp ? (inp.file_path || inp.filePath || inp.query || inp.pattern || inp.command || inp.toolName || inp.path || '') : ''
-    return { name, zh, detail: typeof detail === 'string' && detail ? String(detail).slice(0, 70) : '' }
+    return { name, zh, detail: typeof detail === 'string' && detail ? String(detail).slice(0, 120) : '' }
   }
   function toolLine(block) {
     const t = toolMeta(block)
-    return `<span class="tool-line" data-name="${esc(t.name)}"><span class="t-ico">${toolIcon(t.name)}</span>${esc(t.zh)}${t.detail ? ' · ' + esc(t.detail) : ''}</span>`
+    return `<span class="tool-line" data-name="${esc(t.name)}"><span class="t-ico">${toolIcon(t.name)}</span><span class="tl-text">${esc(t.zh)}${t.detail ? ' · ' + esc(t.detail) : ''}</span></span>`
   }
-
   // ---- AskUserQuestion 提问卡（2026-08-21 移植 DSH QuestionComposer 视觉，只读展示）----
   // eyebrow + 标题 + 编号选项行（label/推荐徽标/描述）+ 答案注脚；
   // 答案来自后续 tool_result 文本吸附标记（parseRecommendedLabel 后缀剥离对齐 DSH）。
@@ -758,7 +793,7 @@
       if (!group.length) return
       const rows = group.map((g) => g.html).join('')
       const running = group.some((g) => g.running)
-      html += `<details class="tool-fold"${running ? ' data-state="running"' : ''}><summary><span class="d-chev">${CHEV}</span>${running ? '<span class="tf-dot"></span>' : ''}<span class="tf-label">${esc(toolFoldLabel(group))}</span></summary><div class="tool-fold-body">${rows}</div></details>`
+      html += `<details class="tool-fold"${running ? ' data-state="running"' : ''}><summary>${running ? '<span class="tf-dot"></span>' : ''}<span class="tf-label">${esc(toolFoldLabel(group))}</span></summary><div class="tool-fold-body">${rows}</div></details>`
       group = []
     }
     for (const it of items) {
@@ -768,6 +803,46 @@
       html += it.html
     }
     flush()
+    return html
+  }
+  // 当前正在运行的工具步（实时段专用）：复用原灰色工具行（tool-line）的 inline 形态，仅加 .tool-running
+  // 光泽扫动标识运行态（无蓝点、无 <details> 提示行、无输入 JSON，用户 2026-08-26 定案）。
+  function toolCurHtml(block) {
+    const t = toolMeta(block)
+    return `<span class="tool-line tool-running" data-name="${esc(t.name)}"><span class="t-ico">${toolIcon(t.name)}</span><span class="tl-text">${esc(t.zh)}${t.detail ? ' · ' + esc(t.detail) : ''}</span></span>`
+  }
+  // 实时（处理中）段体（2026-08-26 用户定案：一个工具调用轮次只渲染一个工具折叠行）：
+  // 有工具在运行 → summary 显示「正在运行：<当前工具>」+ 光泽扫动，点开看全部工具步明细
+  // （已完成行 + 当前运行行）；全部完成（回合间等待回复/思考）→ 折叠概括（与已处理段同形态）。
+  // 思考块 → 只显示一次「正在思考」闪烁状态行（不显示思考内容，多块去重为一个，属实时动态）；
+  // 旁白/提问原位穿插（在其对应工具调用之上）。轮次结束（回复落地）后整段改走 groupTools 折叠概括。
+  function liveFoldBody(items) {
+    let html = ''
+    let tools = []
+    let thinkShown = false
+    const flushTools = () => {
+      if (!tools.length) return
+      const rows = tools.map((g) => (g.kind === 'tool' && g.done) ? g.html : toolCurHtml(g.block)).join('')
+      const running = tools.filter((g) => g.kind === 'tool' && !g.done)
+      if (running.length) {
+        const cur = toolMeta(running[running.length - 1].block)
+        html += `<details class="tool-fold"><summary><span class="tool-line tool-running"><span class="t-ico">${toolIcon(cur.name)}</span><span class="tl-text">正在运行：${esc(cur.zh)}${cur.detail ? ' · ' + esc(cur.detail) : ''}</span></span></summary><div class="tool-fold-body">${rows}</div></details>`
+      } else {
+        html += `<details class="tool-fold"><summary><span class="tf-label">${esc(toolFoldLabel(tools))}</span></summary><div class="tool-fold-body">${rows}</div></details>`
+      }
+      tools = []
+    }
+    for (const it of items) {
+      if (!it || !it.html) continue // 占位/置空的块（reply 占位、被过滤的思考）
+      if (it.kind === 'think') {
+        if (!thinkShown) { html += '<span class="think-state">正在思考…</span>'; thinkShown = true }
+        continue
+      }
+      if (it.kind === 'tool') { tools.push(it); continue } // 完成/运行中的工具都进当前组 → 统一成一个折叠行
+      flushTools()
+      html += it.html
+    }
+    flushTools()
     return html
   }
 
@@ -807,7 +882,7 @@
     const prev = map.get(fc.path)
     map.set(fc.path, prev ? { added: prev.added + fc.added, removed: prev.removed + fc.removed } : { added: fc.added, removed: fc.removed })
   }
-  function renderChangeCardHtml(changes) {
+  function renderChangeCardHtml(changes, key) {
     if (!changes || !changes.size) return ''
     let totalAdd = 0, totalDel = 0
     let rows = ''
@@ -817,63 +892,50 @@
       rows += `<div class="ch-row"><span class="ch-file">${esc(baseName(path))}</span><span class="ch-add">+${c.added}</span><span class="ch-del">-${c.removed}</span></div>`
     }
     // 2026-08-19 默认折叠：卡片落地即为收起姿态（标题行 + ▸），点右上角展开文件列表
-    return `<div class="msg change-card collapsed"><div class="ch-title"><span class="ch-count">${changes.size}个文件已更改</span><span class="ch-add">+${totalAdd}</span><span class="ch-del">-${totalDel}</span><button class="ch-toggle" title="收起/展开文件列表">${CHEV}</button></div><div class="ch-list">${rows}</div></div>`
+    // 2026-08-26：key 可选（messagesHtml 段尾传入 s.key）→ 带 data-m/data-t 供增量重建定位删除；
+    // 实时 commitLiveChangeCard 不带 key（无 data-m，属消息流外手动追加，不受增量删除影响）
+    return `<div class="msg change-card collapsed"${key != null ? ` data-m="${key}" data-t="c"` : ''}><div class="ch-title"><span class="ch-count">${changes.size}个文件已更改</span><span class="ch-add">+${totalAdd}</span><span class="ch-del">-${totalDel}</span><button class="ch-toggle" title="收起/展开文件列表">${CHEV}</button></div><div class="ch-list">${rows}</div></div>`
   }
 
-  // ---- 文件变更胶囊（2026-08-19）：回合运行中在输入栏中央上方悬浮小胶囊，回合结束 FLIP 平滑变形进消息流 ----
+  // ---- 文件变更内联行（2026-08-26 任务 C）：替代原输入栏上方悬浮胶囊。实时变更渲染在处理
+  //     折叠（done-fold body）内的一行「N个文件已更改 +N -M」，与消息流绑定一体；回合结束收拢
+  //     为汇总卡片（commitLiveChangeCard）。历史渲染走 messagesHtml 的 seg.changes（数据驱动，
+  //     从 transcript 的 tool_result.fileChange 重建，切会话/刷新不丢）----
+  // 新回合开始/回合结束：清空本回合变更聚合 + 移除处理折叠内的实时内联行
   function liveChangeReset() {
     liveChanges = new Map()
-    if (liveChangeEl) {
-      liveChangeEl.hidden = true
-      liveChangeEl.classList.remove('has')
-      liveChangeEl.innerHTML = ''
-    }
+    const inlineEl = document.querySelector('.change-inline')
+    if (inlineEl) inlineEl.remove()
   }
-  // tool_result 有真实文件变更 → 更新/浮现胶囊（N个文件已更改 +N -M，约整卡 1/5 宽）
-  function updateLiveChangeCapsule() {
+  // tool_result 有真实文件变更 → 在处理折叠内更新/新建内联行（N个文件已更改 +N -M，非悬浮）
+  function liveChangeInline() {
     if (!liveChanges || !liveChanges.size) return
-    if (!liveChangeEl) return
+    const d = procOpen()
+    const body = d.querySelector('.done-body')
+    if (!body) return
+    let el = body.querySelector(':scope > .change-inline')
+    if (!el) {
+      el = document.createElement('div')
+      el.className = 'change-inline'
+      body.appendChild(el)
+    }
     let add = 0, del = 0
     for (const c of liveChanges.values()) { add += c.added; del += c.removed }
-    liveChangeEl.innerHTML =
-      `<span class="lc-n">${liveChanges.size}个文件已更改</span><span class="ch-add">+${add}</span><span class="ch-del">-${del}</span>`
-    if (liveChangeEl.hidden) {
-      liveChangeEl.hidden = false
-      void liveChangeEl.offsetWidth // 强制 reflow → opacity 过渡生效（淡入）
-      liveChangeEl.classList.add('has')
-    }
+    el.innerHTML = `<span class="ci-n">${liveChanges.size}个文件已更改</span><span class="ch-add">+${add}</span><span class="ch-del">-${del}</span>`
+    scrollBottom()
   }
-  // 回合结束：胶囊 FLIP 平滑变形进消息流末尾，落地为默认折叠的汇总卡片。
-  // 步骤：记录胶囊视口矩形 → 消息流内建卡片（先 visibility:hidden 占位）→ 吸底 → 测卡片矩形 →
-  // 反演变换（translate+scale 到胶囊位/大小，top-left 锚定）→ 过渡回自然位 = 从胶囊形态长成卡片。
+  // 回合结束：实时内联行收拢为消息流内的汇总卡片（复用 renderChangeCardHtml，默认折叠）。
+  // 无胶囊可 FLIP 变形，直接落地；历史/刷新形态与 messagesHtml 段尾卡片一致。
   function commitLiveChangeCard() {
     if (!liveChanges || !liveChanges.size) return
     const html = renderChangeCardHtml(liveChanges)
+    liveChangeReset() // 清空本回合聚合 + 移除实时内联行
     const wrap = document.createElement('div')
     wrap.innerHTML = html
     const card = wrap.firstElementChild
-    const capRect = liveChangeEl && !liveChangeEl.hidden ? liveChangeEl.getBoundingClientRect() : null
-    liveChangeReset() // 隐藏胶囊 + 清空本回合聚合
     if (!card) return
-    card.style.transformOrigin = 'top left'
-    if (!capRect) {
-      msgAppend(card)
-      scrollBottom()
-      return
-    }
-    card.style.visibility = 'hidden'
     msgAppend(card)
     scrollBottom()
-    const cardRect = card.getBoundingClientRect()
-    const dx = capRect.left - cardRect.left
-    const dy = capRect.top - cardRect.top
-    const sx = cardRect.width ? capRect.width / cardRect.width : 1
-    const sy = cardRect.height ? capRect.height / cardRect.height : 1
-    card.style.transform = `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})`
-    card.style.visibility = 'visible'
-    void card.offsetWidth // 强制 reflow：让反演态成为过渡起点
-    card.style.transition = 'transform 0.45s cubic-bezier(0.22, 0.61, 0.36, 1)'
-    card.style.transform = 'none'
   }
   // 卡片右上角隐藏按钮：点击切换列表收起/展开（事件委托，innerHTML 重建不受影响）
   document.addEventListener('click', (e) => {
@@ -1004,20 +1066,13 @@
     try { return exec('copy') } catch { return false } finally { el.remove() }
   }
 
-  // 摘要语义（对齐 DSH ReasoningRow）：已结束=firstLine（不 trim 的首行）；运行中=latestLine（trimEnd 后取末行）
-  function thinkSummary(text, running) {
-    const t = String(text || '')
-    const visible = t.replace(/\s+$/, '')
-    const lastNl = visible.lastIndexOf('\n')
-    if (running) return lastNl === -1 ? visible : visible.slice(lastNl + 1)
-    const firstNl = t.indexOf('\n')
-    return firstNl === -1 ? t : t.slice(0, firstNl)
-  }
   function thinkRowHtml(text, running) {
     const t = String(text || '')
     if (!t.trim()) return ''
-    const summary = thinkSummary(t, running)
-    return `<details class="think-row" data-state="${running ? 'running' : 'ok'}"><summary><span class="tr-leading" aria-hidden="true"><span class="tr-ico">${THINK_ICON}</span><span class="tr-chev">${THINK_CHEV}</span></span><span class="tr-title">思考</span><span class="tr-sep" aria-hidden="true"></span><span class="tr-summary"${running ? ' data-follow-end' : ''}>${esc(summary)}</span></summary><div class="tr-body">${mdHtml(t)}</div></details>`
+    // 2026-08-26 任务 D 定案：思考块收起时**不显示思考正文摘要**（用户「思考过程未折叠」反馈——
+    // 摘要「思考 先说明：触发。」直接暴露内部推理）。summary 只留「思考」标题 + 运行态扫光，
+    // 点开才看全文。删除 thinkSummary 摘要（运行中 latestLine / 完成后 firstLine 语义一并废弃）。
+    return `<details class="think-row" data-state="${running ? 'running' : 'ok'}"><summary><span class="tr-leading" aria-hidden="true"><span class="tr-ico">${THINK_ICON}</span><span class="tr-chev">${THINK_CHEV}</span></span><span class="tr-title">思考</span></summary><div class="tr-body">${mdHtml(t)}</div></details>`
   }
 
   // 入场动画标记：对比刷新前的顶层消息 key 集合，只给「本次新增」的块加 .msg-in，
@@ -1034,13 +1089,14 @@
         n++
       }
     })
-    // 运行中思考行摘要：text-overflow clip 后把滚动位置甩到末尾（对齐 DSH ReasoningRow 实时跟随末行）
-    messagesEl.querySelectorAll('.think-row[data-state="running"] .tr-summary').forEach((el) => { el.scrollLeft = el.scrollWidth })
   }
 
   // messagesHtml 渲染时记录的末段形象（只读 SSE 路径）：末段仍在处理中且段内最近有工具调用
   // → 按该工具选形象（读/搜=3、写/编=2、执行/插件/命令=4）；回复已发布/空闲 → 默认 1
   let charNote = 1
+  // 增量重建（2026-08-26）：messagesHtml 记录「最后一个被 closeSeg 的段」的 key/html/前驱锚点/处理中标志，
+  // refreshSession 对处理中末段只替换该段 DOM（applySegDelta），头部历史消息保留不动——消除整页重建闪烁。
+  let lastSegInfo = null
 
   function messagesHtml(messages) {
     // 按「用户消息 → AI 处理 → 回复」切段：
@@ -1049,6 +1105,8 @@
     // role:'system'（后端已把合成/系统注入标成 system）= 无发布者的居中提示，独立一行。
     let html = ''
     let seg = null
+    lastSegInfo = null // 每次渲染重置：仅记录本次被 closeSeg 的最后一个段
+    let lastNode = null // 最近输出的 data-m 元素 {key, type}（供增量重建定位插入锚点）
     pendingAskInput = null // 每次渲染重置：末尾待答提问由下方检测重写
     // 兜底：最后一条真实用户消息的时间（供「系统消息打断后」无 user 的末段计时/展示时长）
     let lastUserTs = 0
@@ -1057,10 +1115,13 @@
       if (!seg) return
       const s = seg
       seg = null
-      const reply = s.texts.length ? s.texts[s.texts.length - 1] : null
+      const segPrev = lastNode // 该段输出前的最后一个 data-m 元素（增量重建插入锚点）
+      const processing = isFinal && !s.finished // 最后一段且末尾还没收到纯文本回复 = 处理中
+      // reply 仅当段已收尾（end_turn 回复已落盘）时取最后一条文本；未收尾段（处理中 / 被系统或新用户消息打断）
+      // 的文本都是过程旁白，留在折叠内原位穿插——修复旁白被当「伪回复」沉到工具折叠下方的乱序（2026-08-26）。
+      const reply = s.finished && s.texts.length ? s.texts[s.texts.length - 1] : null
       // 末段仍在处理中（未出正式回复）且段内最近有工具调用 → 按该工具选形象；否则（回复已发布/空闲）默认 1
       if (isFinal) charNote = (!s.finished && s.lastTool) ? toolToChar(s.lastTool) : 1
-      const processing = isFinal && !s.finished // 最后一段且末尾还没收到纯文本回复 = 处理中
       // 旁白 text 原位回填（与其后的动作交错，不再统一沉到段尾）；reply 占位置空（回复主内容在折叠外单独渲染）
       for (const t of s.texts) s.items[t.idx].html = (t === reply) ? '' : processTextHtml(t.text)
       // 思考过滤（2026-08-23 任务 3 收敛：权威在数据层/源码，此处仅按段聚合兜底）：
@@ -1076,23 +1137,28 @@
         const it = s.items[s.thinks[s.thinks.length - 1]]
         if (it && it.html) it.html = thinkRowHtml(it.text, true)
       }
-      // 处理中段末个工具行 → running 态（扫光 + 脉冲点，对齐 DSH ToolRow 流式尾块）
-      if (processing && s.lastToolIdx != null) s.items[s.lastToolIdx].running = true
 
+      let segHtml = ''
       if (s.user) {
         const m = s.user
         const txt = m.blocks.filter((b) => b.kind === 'text').map((b) => b.text).join('')
         const hasImg = m.blocks.some((b) => b.kind === 'image')
         const body = hasImg && !txt ? '[图片]' : txt
-        html += `<div class="msg user" data-m="${s.key}" data-t="u"><div class="body">${mdHtml(body)}</div><div class="msg-actions"><button class="msg-copy" title="复制" aria-label="复制">${ICON_COPY}</button></div></div>`
+        segHtml += `<div class="msg user" data-m="${s.key}" data-t="u"><div class="body">${mdHtml(body)}</div><div class="msg-actions"><button class="msg-copy" title="复制" aria-label="复制">${ICON_COPY}</button></div></div>`
+        lastNode = { key: s.key, type: 'u' }
       }
 
       // 已处理折叠：思考 + 阅读/编辑/搜索 等全部收进一个可展开容器
       // 时长 = 回复时间 − 用户消息时间（t2 − t1，即整段 AI 处理过程）
       let foldHtml = ''
-      if (s.items.length) {
-        const bodyHtml = groupTools(s.items) // 连续工具合并折叠 + 思考/旁白原位穿插
-        if (bodyHtml) {
+      // 2026-08-26：processing 时即使段内尚无 assistant 内容（刚发消息、CLI 还没写入 thinking/工具）
+      // 也渲染空「正在处理」折叠——gwSend 乐观开的折叠会被 SSE refreshSession 整页重建销毁，
+      // 若这里不补渲染则折叠会消失（发送后不立即弹已处理）。items 非空时正常渲染内容。
+      if (s.items.length || processing) {
+        // 处理中（实时）段：liveFoldBody 全部工具行原位渲染（已完成=文本行、当前=光泽运行行）；
+        // 已处理段保持现状（groupTools 连续工具合并概括折叠 + 思考/旁白原位穿插）
+        const bodyHtml = processing ? liveFoldBody(s.items) : groupTools(s.items)
+        if (bodyHtml || processing) {
           const endTs = reply ? reply.ts : s.lastTs
           // 处理中：label「正在处理」+ 实时计时（bindLiveFoldTimer 每秒跳字）；回复落地后「已处理 X」
           const t1 = (s.user && s.user.timestamp) || (isFinal ? lastUserTs : 0)
@@ -1104,14 +1170,21 @@
       }
 
       if (reply) {
-        html += `<div class="msg assistant" data-m="${s.key}" data-t="a"><div class="body"><div class="blocks">${foldHtml}${mdHtml(reply.text)}</div><div class="msg-actions"><button class="msg-copy" title="复制" aria-label="复制">${ICON_COPY}</button></div></div></div>`
+        segHtml += `<div class="msg assistant" data-m="${s.key}" data-t="a"><div class="body"><div class="blocks">${foldHtml}${mdHtml(reply.text)}</div><div class="msg-actions"><button class="msg-copy" title="复制" aria-label="复制">${ICON_COPY}</button></div></div></div>`
+        lastNode = { key: s.key, type: 'a' }
       } else if (foldHtml) {
         // 段被中断（无回复）：已处理折叠独立展示
-        html += foldHtml
+        segHtml += foldHtml
+        lastNode = { key: s.key, type: 'f' }
       }
 
       // 段末文件变更汇总卡片（回合内 Edit/Write 的真实增删行数）
-      if (s.changes && s.changes.size) html += renderChangeCardHtml(s.changes)
+      if (s.changes && s.changes.size) {
+        segHtml += renderChangeCardHtml(s.changes, s.key)
+        lastNode = { key: s.key, type: 'c' }
+      }
+      html += segHtml
+      lastSegInfo = { key: s.key, html: segHtml, prev: segPrev, processing }
     }
 
     for (let i = 0; i < messages.length; i++) {
@@ -1126,6 +1199,7 @@
         } else {
           closeSeg(false)
           html += `<div class="msg system" data-m="s${i}" data-t="s">${esc(txt || '会话续接')}</div>`
+          lastNode = { key: 's' + i, type: 's' }
         }
         continue
       }
@@ -1134,18 +1208,26 @@
         closeSeg(false)
         const txt = m.blocks.filter((b) => b.kind === 'text').map((b) => b.text).join('\n').trim()
         html += `<div class="msg system" data-m="s${i}" data-t="s">${esc(txt || '系统消息')}</div>`
+        lastNode = { key: 's' + i, type: 's' }
         continue
       }
       if (isRealUser(m)) {
         closeSeg(false)
-        seg = { user: m, items: [], texts: [], lastTs: null, key: i, thinks: [], lastTool: null, lastAsk: null, changes: new Map() }
+        seg = { user: m, items: [], texts: [], lastTs: null, key: i, thinks: [], lastTool: null, lastAsk: null, pendingTools: [], changes: new Map() }
         continue
       }
-      if (!seg) seg = { user: null, items: [], texts: [], lastTs: null, key: i, thinks: [], lastTool: null, lastAsk: null, changes: new Map() }
+      if (!seg) seg = { user: null, items: [], texts: [], lastTs: null, key: i, thinks: [], lastTool: null, lastAsk: null, pendingTools: [], changes: new Map() }
       const hasText = m.blocks.some((b) => b.kind === 'text' && b.text && b.text.trim())
+      const hasTool = m.blocks.some((b) => b.kind === 'tool_use')
       for (const b of m.blocks) {
         // 思考块先进 items 占位并记下索引：处理中段保留全部思考；已处理段只留最后一个（对齐 CLI hidePastThinking）
         if (b.kind === 'thinking') { seg.thinks.push(seg.items.length); seg.items.push({ kind: 'think', text: b.text, html: thinkRowHtml(b.text, false) }) }
+        else if (b.kind === 'text' && hasTool && b.text && b.text.trim()) {
+          // 工具消息里的旁白文本：按块原位插入 items（保持 content 数组顺序——旁白在其对应工具调用之上），
+          // 不统一沉到段尾；纯文本消息（无 tool_use）仍在循环后整体追加（保持同消息多 text 块拼接为一条的语义）。
+          seg.items.push({ kind: 'text', html: '', text: b.text })
+          seg.texts.push({ text: b.text, ts: m.timestamp, idx: seg.items.length - 1 })
+        }
         else if (b.kind === 'tool_use') {
           if (b.name === 'AskUserQuestion') {
             // 提问块 → DSH 风格提问卡（答案由后续 tool_result 文本吸附）
@@ -1153,7 +1235,7 @@
             seg.items.push(it)
             seg.lastAsk = it
           } else {
-            const t = toolMeta(b); seg.items.push({ kind: 'tool', html: toolLine(b), name: t.name, zh: t.zh }); seg.lastTool = b.name; seg.lastToolIdx = seg.items.length - 1 // 记录段内最近工具 → 供形象切换 + 处理中运行态标记
+            const t = toolMeta(b); seg.items.push({ kind: 'tool', html: toolLine(b), block: b, name: t.name, zh: t.zh }); seg.lastTool = b.name; seg.pendingTools.push(seg.items.length - 1) // 待完成工具队列（FIFO：连续多个 tool_use 全部登记，tool_result 按序逐个标记 done）
           }
         }
         else if (b.kind === 'tool_result') {
@@ -1161,6 +1243,9 @@
           // 真实增删行数，权威 = diff.ts sumLinesChanged），优先消费；parseFileChange 正则反解仅作
           // 旧网关/旧数据兜底（新 exe 部署后可删）。聚合文件变更 → 段末汇总卡片
           const fc = normalizeFileChange(b.fileChange) || parseFileChange(b.text); if (fc) mergeChanges(seg.changes, fc)
+          // 2026-08-26 实时折叠：该工具步已收到结果 → 标记 done，liveFoldBody 对完成的工具步
+          // 显示为普通文本行（「当这一步工具调用完成后，折叠为文本」，不再显示「正在运行」）
+          if (seg.pendingTools.length) { const pi = seg.pendingTools.shift(); seg.items[pi].done = true }
           // AskUserQuestion 答案关联：最近的未回答提问卡吸附该 tool_result 文本并标出所选
           if (seg.lastAsk && seg.lastAsk.answer == null && b.text) {
             seg.lastAsk.answer = String(b.text)
@@ -1168,16 +1253,20 @@
           }
         }
       }
-      if (hasText) {
-        // text 块占位进 items（记索引）：closeSeg 时旁白原位填充、reply 置空（回复主内容在折叠外单独渲染）
+      if (hasText && !hasTool) {
+        // text 块占位进 items（记索引）：closeSeg 时旁白原位填充、reply 置空（回复主内容在折叠外单独渲染）。
+        // 有 tool_use 的消息已在上面循环内逐块原位插入（hasTool 时走上面分支），不再重复追加。
         const text = m.blocks.filter((b) => b.kind === 'text').map((b) => b.text).join('')
-        seg.items.push({ kind: 'text', html: '' })
+        seg.items.push({ kind: 'text', html: '', text })
         seg.texts.push({ text, ts: m.timestamp, idx: seg.items.length - 1 })
       }
-      // finished = 该消息是「纯文本回复」（无 tool_use）= 段已收尾；
-      // 末尾仍在调工具/思考（含旁白文本后再跟 tool_use）= 处理中
+      // finished = 段已收尾判定。2026-08-26 起优先用 stopReason（源码 conversationDisplay 新增，
+      // 'end_turn' = 正式回复 = 回合结束；'tool_use'/null = 处理中，旁白/工具步保持「正在处理」）——
+      // 精确区分「过程旁白纯文本」与「正式回复」，根治旁白中段误判成已处理（实时折叠闪「已处理」）。
+      // 注意：stopReason=null（旁白，JSON 保留 null）也要算「处理中」；仅字段缺失（旧数据 undefined）回落
+      // 旧启发式：纯文本回复（无 tool_use）= 收尾。
       if (m.role === 'assistant') {
-        seg.finished = hasText && !m.blocks.some((b) => b.kind === 'tool_use') ? 1 : 0
+        seg.finished = m.stopReason !== undefined ? (m.stopReason === 'end_turn' ? 1 : 0) : (hasText && !m.blocks.some((b) => b.kind === 'tool_use') ? 1 : 0)
       }
       if (m.timestamp) seg.lastTs = m.timestamp
     }
@@ -1227,12 +1316,17 @@
         if (isMobile()) setPanel(false)
       }),
     )
-    // 2026-08-24 行菜单入口：…（span 嵌在 .sess-item button 内，stopPropagation 防触发打开会话）
+    // 2026-08-24 行菜单入口：…（span 嵌在 .sess-item button 内）
+    // 2026-08-25 根治「点三个点拦截首次点击 → 双击切换」：单击三个点 = 切换会话 + 弹出该行菜单（同一会话）。
+    // 不再 stopPropagation 阻断切换——任意位置单击都可靠切换；菜单照常打开，操作指向用户点击的会话。
     root.querySelectorAll('.sess-more').forEach((m) =>
       m.addEventListener('click', (e) => {
-        e.stopPropagation()
+        e.stopPropagation() // 阻止事件冒泡到 .sess-item 的 click（避免重复 navigate）
         const b = m.closest('.sess-item')
-        if (b && b.dataset.hash) toggleRowMenu(e, b.dataset.hash)
+        if (!b || !b.dataset.hash) return
+        toggleRowMenu(e, b.dataset.hash)
+        navigate('#/' + encodeURIComponent(b.dataset.hash))
+        if (isMobile()) setPanel(false)
       }),
     )
   }
@@ -1387,7 +1481,7 @@
       // 2026-08-24 用户定案：未指定项目（笔/首页消息发送）→ 会话落全局根（@WrokSpace 散装区，
       // projectScope:'global'）；指定项目 → 该项目组（projectScope:'project'）。不再落启动服务器的项目根。
       const isGlobal = !projectLabel
-      ALL.unshift({ id: d.id, file: d.hash + '.jsonl', title: '新会话', kind: 'web', state: 'busy', updatedAt: Date.now(), projectScope: isGlobal ? 'global' : 'project', projectLabel: projectLabel || '', messageCount: 0 })
+      ALL.unshift({ id: d.id, file: d.hash + '.jsonl', title: '新会话', state: 'busy', updatedAt: Date.now(), projectScope: isGlobal ? 'global' : 'project', projectLabel: projectLabel || '', messageCount: 0 })
       renderRecent()
       navigate('#/' + encodeURIComponent(d.hash))
       if (isMobile()) setPanel(false)
@@ -2172,7 +2266,13 @@
   })
 
   // 路由
-  window.addEventListener('hashchange', route)
+  window.addEventListener('hashchange', () => {
+    // 2026-08-25 同步路由配套：navigate 已同步 route()，其触发的同值 hashchange 跳过避免重复渲染；
+    // 浏览器前进/后退、手动改 URL 的非 navigate hashchange 正常走 route()（刷新保持恢复界面）。
+    if (lastNavHash !== null && location.hash === lastNavHash) { lastNavHash = null; return }
+    lastNavHash = null
+    route()
+  })
   // 默认项目主页（default-preview iframe）点会话 → 父级打开该会话（hash = 会话 uuid）
   window.addEventListener('message', (e) => {
     const d = e.data || {}
@@ -2212,6 +2312,7 @@
   let gateAwait = false // token 门态：网关 token 验证通过前锁定为全空白 + 中间输入框
   let gToken = new URLSearchParams(location.search).get('token') || ''
   let gws = null
+  let reconnectTimer = null
   let cur = null // 当前正在流的 assistant 消息元素
 
   // 安全加固（2026-08-15）：数据接口 URL 统一附加网关 token（query），与 WS 升级校验一致。
@@ -2249,7 +2350,28 @@
       .qa-opt .qa-dot{flex:none;width:16px;height:16px;margin-top:2px;border-radius:50%;border:1.5px solid var(--border);box-sizing:border-box}
       .qa-opt.sel .qa-dot{border-color:#4176e6;background:#4176e6;box-shadow:inset 0 0 0 3px #fff}
       .qa-opt .qa-copy{flex:1;display:flex;flex-direction:column;gap:3px;font-size:14px;line-height:20px}
-      .qa-opt .qa-desc{color:var(--text-2);font-size:12px;line-height:16px}`
+      .qa-opt .qa-desc{color:var(--text-2);font-size:12px;line-height:16px}
+      /* 2026-08-26 任务 A2：审批增强——原因说明/被拒路径/「记住此规则」建议多选 */
+      .appr-desc{color:var(--text-2);font-size:13px;line-height:20px}
+      .appr-path{display:flex;gap:6px;align-items:flex-start;color:var(--text-2);font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;line-height:18px;word-break:break-all}
+      .appr-path .ap-l{flex:none;color:#999}
+      .appr-sugs{display:flex;flex-direction:column;gap:6px;padding:2px 0 0}
+      .appr-sug{display:flex;align-items:flex-start;gap:9px;padding:8px 10px;border:1px solid var(--border);border-radius:10px;background:#fff;text-align:left;cursor:pointer;color:var(--text);font-size:13px;line-height:19px}
+      .appr-sug:hover{border-color:#4176e6;background:#f7faff}
+      .appr-sug.sel{border-color:#4176e6;background:#eff5ff}
+      .appr-sug .as-box{flex:none;width:15px;height:15px;margin-top:2px;border-radius:4px;border:1.5px solid var(--border);box-sizing:border-box}
+      .appr-sug.sel .as-box{border-color:#4176e6;background:#4176e6}
+      .appr-sug.sel .as-box::after{content:'';display:block;width:4px;height:7px;margin:1px auto 0;border:solid #fff;border-width:0 2px 2px 0;transform:rotate(45deg)}
+      .appr-sug .as-copy{flex:1}
+      .appr-sug .as-title{color:var(--text);font-size:13px;line-height:19px}
+      .appr-sug .as-sub{color:var(--text-2);font-size:11.5px;line-height:16px}
+      /* 2026-08-26 P0 审批确认送达：提交中（busy）/失败重试状态行 */
+      .appr-btns button.busy{opacity:.55;cursor:wait}
+      .appr-state{display:flex;align-items:center;gap:8px;padding:0 16px 12px;font-size:12px;line-height:18px}
+      .appr-state .as-wait{color:var(--text-3)}
+      .appr-state .as-err{color:#d25f4a}
+      .appr-state .appr-retry{height:26px;padding:0 12px;border-radius:999px;font-size:12px;font-weight:500;line-height:18px;cursor:pointer;border:1px solid var(--border);background:#fff;color:var(--text-1)}
+      .appr-state .appr-retry:hover{background:var(--hover)}`
     document.head.appendChild(s)
   }
 
@@ -2714,8 +2836,11 @@
     if (effort) { if (eff) { effort.textContent = eff; effort.hidden = false } else effort.hidden = true }
     modelSeatEl.title = eff ? `${name} · ${eff}` : name
     modelSeatEl.dataset.real = c ? '1' : ''
-    // 真实配置尚未拉取且未过 token 门 → 懒加载一次（成功后重渲触发座，静默失败保留占位）
-    if (!c && !needToken() && !MODELS_LOADING && !MODELS) {
+    // 真实配置尚未拉取且未过 token 门 → 懒加载一次（成功后重渲触发座，静默失败保留占位）。
+    // 2026-08-25 加 !MODELS_ERR 门：loadModelsData 的 finally 现在会回调 renderModelSeat，
+    // 若不加失败门，加载失败后（MODELS 仍 null、loading 已复位）此处会立即再触发 → 无限重试循环。
+    // 失败后不再自动重试，改由 hideGate 显式 loadModelsData(true) / mgr 视图重试钮驱动。
+    if (!c && !needToken() && !MODELS_LOADING && !MODELS && !MODELS_ERR) {
       loadModelsData(false).then(() => renderModelSeat()).catch(() => {})
     }
   }
@@ -3152,7 +3277,7 @@
     proc = null
     liveAskInput = null
     clearTakeover() // 新回合：清掉上一回合残留的提问/审批 takeover
-    liveChangeReset() // 2026-08-19：新回合开始收起上一回合残留的变更胶囊
+    liveChangeReset() // 新回合开始清空上一回合变更聚合 + 移除实时内联行
     const div = document.createElement('div')
     div.className = 'msg user msg-in'
     div.innerHTML = `<div class="body">${renderUserText(text)}</div><div class="msg-actions"><button class="msg-copy" title="复制" aria-label="复制">${ICON_COPY}</button></div>`
@@ -3169,7 +3294,12 @@
   // ---- 实时处理折叠：处理中展开流式展示思考/工具 + 「正在处理」实时计时，
   //      正式回复文本发布时收起为「已处理 X」（计时定格），下面跟上回复正文 ----
   let proc = null // 当前实时 .done-fold 元素
-  let procToolGroup = null // 当前实时工具折叠 <details>（连续工具行合并；思考/回复出现即封口另起一组）
+  // 2026-08-26 任务定案（工具行只显示当前步）：工具调用行在该步未结束时总是显示「当前正在进行的步」，
+  // 连续工具调用时同一行替换（Read→Grep 直接变更），不累积「此前已运行命令」历史折叠；
+  // 步完成（收到结果/思考/提问出现）移除当前行，段结束（旁白/正式回复）时最后当前步折叠为文本行。
+  // procCurEl/procCurBlock=当前工具进行时元素与块。
+  let procCurEl = null
+  let procCurBlock = null
   let procStart = 0 // 本次处理开始时间（ms）
   let procTimer = null // 计时器 id
   let liveChanges = new Map() // 当前回合文件变更聚合（tool_result 解析 → result 时渲染卡片）
@@ -3208,15 +3338,31 @@
   }
   function procClose() {
     procStopTimer()
-    procToolGroup = null // 处理结束：封口当前工具折叠组
-    // 回合结束：清掉工具折叠的运行态（扫光/脉冲点停止，对齐 DSH running → ok）
-    if (proc && proc.isConnected) proc.querySelectorAll('.tool-fold[data-state="running"]').forEach((el) => el.removeAttribute('data-state'))
+    // 任务定案：段结束（旁白/正式回复）——最后当前工具步折叠为文本行（去运行态、保留为
+    // 已完成工具文本，与「已处理」内工具行形态一致），不累积「此前已运行命令」历史折叠
+    if (procCurEl && procCurEl.isConnected) {
+      const wrap = document.createElement('span')
+      wrap.innerHTML = toolLine(procCurBlock)
+      const line = wrap.firstElementChild
+      if (line) procCurEl.replaceWith(line)
+      else procCurEl.remove()
+      procCurEl = null
+      procCurBlock = null
+    }
+    // 回合结束：清掉工具折叠的运行态（扫光/脉冲点停止，对齐 DSH running → ok）；移除残留当前工具行
+    if (proc && proc.isConnected) {
+      proc.querySelectorAll('.tool-fold[data-state="running"]').forEach((el) => el.removeAttribute('data-state'))
+      proc.querySelectorAll('.tool-cur').forEach((el) => el.remove())
+    }
     if (!proc || !proc.isConnected) { proc = null; return }
     const dur = fmtDur(Math.round((Date.now() - procStart) / 1000))
     const sum = proc.querySelector('summary')
     if (sum) sum.innerHTML = procLabel('已处理', dur)
     proc.open = false
     proc = null
+    // 复位当前工具状态（下回合重新累积）
+    procCurEl = null
+    procCurBlock = null
     // 思考折叠收起：占位在展开期可能已被 baseH≥target 撤掉，立即重算补回。不能依赖后续
     // scrollBottom——用户上滑时 follow=false，scrollBottom 会提前 return 不重算，短回复期间
     // 占位就持续缺失（上划即见占位消失）。
@@ -3224,7 +3370,7 @@
   }
   function procThink(text, start) {
     setChar(1) // 思考过程 → 默认形象
-    procToolGroup = null // 思考出现 → 封口当前工具折叠组，后续工具另起一组（思考与动作关联）
+    finishCurTool() // 任务定案：思考出现 → 移除当前工具行（该步完成，无「正在运行」工具步）
     const d = procOpen()
     const body = d.querySelector('.done-body')
     // start=true = 新一轮思考块开始：清掉折叠区内旧思考行，只保留当前块（对齐 CLI 实时只显示正在思考的块）
@@ -3234,42 +3380,52 @@
       th = document.createElement('details')
       th.className = 'think-row'
       th.dataset.state = 'running'
-      th.innerHTML = `<summary><span class="tr-leading" aria-hidden="true"><span class="tr-ico">${THINK_ICON}</span><span class="tr-chev">${THINK_CHEV}</span></span><span class="tr-title">思考</span><span class="tr-sep" aria-hidden="true"></span><span class="tr-summary" data-follow-end></span></summary><div class="tr-body"></div>`
+      th.innerHTML = `<summary><span class="tr-leading" aria-hidden="true"><span class="tr-ico">${THINK_ICON}</span><span class="tr-chev">${THINK_CHEV}</span></span><span class="tr-title">思考</span></summary><div class="tr-body"></div>`
       body.appendChild(th)
     }
     th.querySelector('.tr-body').appendChild(document.createTextNode(text))
-    // 运行中摘要 = 正文末行（DSH latestLine：trimEnd 后取末行），并把滚动甩到末尾实时跟随
-    const sum = th.querySelector('.tr-summary')
-    sum.textContent = thinkSummary(th.querySelector('.tr-body').textContent, true)
-    sum.scrollLeft = sum.scrollWidth
     scrollBottom()
   }
   function procTool(block) {
     const d = procOpen()
     const body = d.querySelector('.done-body')
-    const t = toolMeta(block)
-    // 上个元素仍是我们未封口的工具折叠组 → 追加进去；否则（新回合/思考/其它元素之后）另起一组
-    let g = procToolGroup
-    if (!g || !g.isConnected || body.lastElementChild !== g) {
-      g = document.createElement('details')
-      g.className = 'tool-fold'
-      g.innerHTML = `<summary><span class="d-chev">${CHEV}</span><span class="tf-dot"></span><span class="tf-label"></span></summary><div class="tool-fold-body"></div>`
-      body.appendChild(g)
-      procToolGroup = g
+    // 任务定案：连续工具调用时同一行替换为新的「当前正在进行的步」（Read→Grep 直接变更），
+    // 不累积「此前已运行命令」历史折叠；无当前行（上一工具已随思考/结果移除）则新建
+    if (procCurEl && procCurEl.isConnected) {
+      procCurBlock = block
+      procCurEl.querySelector('.tool-fold-body').innerHTML = toolLine(block)
+      updateCurLabel()
+      scrollBottom()
+      return
     }
-    // 运行态：只有当前组在跑（扫光 + 脉冲点），其它组清掉（对齐 DSH 只有流式尾块 running）
-    body.querySelectorAll('.tool-fold[data-state="running"]').forEach((el) => { if (el !== g) el.removeAttribute('data-state') })
-    g.dataset.state = 'running'
-    const row = document.createElement('span')
-    row.className = 'tool-line'
-    row.dataset.name = t.name
-    row.innerHTML = `<span class="t-ico">${toolIcon(t.name)}</span>${esc(t.zh)}${t.detail ? ' · ' + esc(t.detail) : ''}`
-    g.querySelector('.tool-fold-body').appendChild(row)
-    // 重算概括标签（组内工具名集合 → 「运行了命令（3）」风格）
-    const names = [...g.querySelectorAll('.tool-line')].map((el) => el.dataset.name)
-    const tools = [...new Set(names)].map((n) => ({ name: n, zh: TOOL_NAMES[n] || n }))
-    g.querySelector('.tf-label').textContent = toolFoldLabel(tools)
+    const el = document.createElement('details')
+    el.className = 'tool-cur'
+    el.dataset.state = 'running'
+    el.open = true
+    el.innerHTML = `<summary><span class="tf-dot"></span><span class="tc-label"></span></summary><div class="tool-fold-body"></div>`
+    body.appendChild(el)
+    el.querySelector('.tool-fold-body').insertAdjacentHTML('beforeend', toolLine(block))
+    procCurEl = el
+    procCurBlock = block
+    updateCurLabel()
     scrollBottom()
+  }
+  // P1：当前工具进行时摘要「正在运行：<工具>：<command/路径/查询>」，command 优先 + 超长省略
+  function updateCurLabel() {
+    if (!procCurEl || !procCurBlock) return
+    const t = toolMeta(procCurBlock)
+    const inp = procCurBlock.input && typeof procCurBlock.input === 'object' ? procCurBlock.input : null
+    const cmd = inp ? (inp.command || inp.file_path || inp.filePath || inp.query || inp.pattern || inp.path || '') : ''
+    const sum = procCurEl.querySelector('.tc-label')
+    const title = t.zh + (cmd ? '：' + String(cmd).slice(0, 64) : '')
+    if (sum) sum.textContent = '正在运行：' + title
+  }
+  // 任务定案：步完成（收到工具结果/思考/提问出现）→ 移除当前工具行（此时无「正在运行」的工具步，
+  // 不保留、不累积历史折叠；实时阶段只显示当前正在进行的步，刷新后历史加载仍全量显示）
+  function finishCurTool() {
+    if (procCurEl && procCurEl.isConnected) procCurEl.remove()
+    procCurEl = null
+    procCurBlock = null
   }
   function procResult(text) {
     const d = procOpen()
@@ -3344,9 +3500,12 @@
   let liveAskInput = null
   function procAsk(block) {
     setChar(1) // 提问 → 默认形象
-    procToolGroup = null // 提问出现 → 封口当前工具折叠组
+    finishCurTool() // 任务定案：提问出现 → 移除当前工具行（该步完成，无「正在运行」工具步）
     liveAskInput = block.input
-    showTakeover(questionCardHtml(block.input, null), 'ask')
+    // 2026-08-26 修复：问输出路径已由审批中继渲染出「交互式逐题」卡（takeover==='approval'，
+    // renderApproval→renderQuestionApproval）时，不再用只读堆叠卡覆盖——否则用户看到的是全部问题
+    // 叠在一起且无法作答的等待卡。只读 questionCardHtml 仅作「CLI/网关未桥接审批」时的兜底展示。
+    if (takeover !== 'approval') showTakeover(questionCardHtml(block.input, null), 'ask')
   }
   function addToolResult(text) {
     // 待答提问 → 输入栏回归，已答提问落到处理折叠只读展示（标记所选）；否则按普通结果行追加
@@ -3356,17 +3515,45 @@
       const body = d.querySelector('.done-body')
       const el = document.createElement('div')
       el.className = 'ask-holder'
-      el.innerHTML = questionCardHtml(liveAskInput, String(text || ''))
+      // 2026-08-26 任务 D 折叠：回答后的提问卡默认收起为「提问 · 已回答」一行（details），
+      // 点开展开问题详情与所选答案；不再全文展开显示（用户反馈「提问在折叠外」）
+      el.innerHTML = `<details class="ask-fold"><summary>${askLineHtml(true)}</summary><div class="ask-body">${questionCardHtml(liveAskInput, String(text || ''))}</div></details>`
       body.appendChild(el)
       liveAskInput = null
       scrollBottom()
       return
     }
+    finishCurTool() // 任务定案：收到工具结果 → 移除当前工具行（该步完成，无「正在运行」工具步）
     procResult(text)
   }
   function addThinking(text) {
     // 完成的 assistant 思考块：替换流式增量（去重）并清掉旧思考块，只留当前回合最后一个
     procThink(text, true)
+  }
+
+  // 2026-08-26 任务 A2：把 CLI 的 PermissionUpdate 建议转成前端可读标签/副标题
+  // （addRules=始终允许/拒绝 <工具>(<内容>)；addDirectories=添加目录；setMode=权限模式）。
+  // 勾选项原样透传（sendApprove.permissions → 网关 approval-response.updatedPermissions → CLI persistPermissions）。
+  function sugLabel(u) {
+    if (!u || typeof u !== 'object') return '记住此规则'
+    switch (u.type) {
+      case 'setMode': return '权限模式：' + (u.mode || '')
+      case 'addDirectories': return '添加目录：' + (Array.isArray(u.directories) ? u.directories.join('、') : '')
+      case 'removeDirectories': return '移除目录：' + (Array.isArray(u.directories) ? u.directories.join('、') : '')
+      case 'addRules': case 'replaceRules': case 'removeRules': {
+        const r = (Array.isArray(u.rules) && u.rules[0]) || null
+        const tool = r && r.toolName ? r.toolName : ''
+        const content = r && r.ruleContent ? r.ruleContent : ''
+        const verb = u.type === 'removeRules' ? '取消规则' : (u.behavior === 'allow' ? '始终允许' : u.behavior === 'deny' ? '始终拒绝' : '始终询问')
+        return (verb + (tool ? ' ' + tool : '') + (content ? ' (' + content + ')' : '')).trim()
+      }
+      default: return '记住此规则'
+    }
+  }
+  function sugSub(u) {
+    if (!u || typeof u !== 'object' || u.destination === 'session') return ''
+    const D = { userSettings: '全局', projectSettings: '项目', localSettings: '本目录' }
+    return (D[u.destination] || '') + '生效'
   }
 
   function renderApproval(a) {
@@ -3381,70 +3568,145 @@
     try { input = JSON.stringify(a.input, null, 2) } catch { input = String(a.input || '') }
     const zh = TOOL_NAMES[a.toolName] || ''
     const headline = a.justification || a.headline || (zh || a.toolName || '工具调用')
+    // 2026-08-26 任务 A2：审批增强——展示 CLI 侧 sendRequest 已上报的 description（原因说明）与
+    // blockedPath（被阻止路径）；suggestions = 「记住此规则」候选（PermissionUpdate[]），可多选，
+    // 允许时随 approve 带 permissions 透传回 CLI persistPermissions（复用既有 onAllow 语义，不扩协议）。
+    const sugs = Array.isArray(a.suggestions) ? a.suggestions : []
+    const desc = a.description && typeof a.description === 'string' ? a.description.trim() : ''
+    const path = a.blockedPath && typeof a.blockedPath === 'string' ? a.blockedPath.trim() : ''
+    let sugsHtml = ''
+    if (sugs.length) {
+      sugsHtml = `<div class="appr-sugs">${sugs.map((s, si) => {
+        const lbl = sugLabel(s)
+        const sub = sugSub(s)
+        return `<button type="button" class="appr-sug" data-si="${si}"><span class="as-box"></span><span class="as-copy"><span class="as-title">${esc(lbl)}</span>${sub ? `<span class="as-sub">${esc(sub)}</span>` : ''}</span></button>`
+      }).join('')}</div>`
+    }
     // 2026-08-22 composer takeover：审批卡占输入栏（DSH ApprovalPanel 语义），不再 appendMsg 进 chat
     showTakeover(`
       <div class="appr-card">
         <div class="appr-strip"><span class="appr-dot"></span>需要批准${zh ? ' · ' + esc(zh) : ''}${a.toolName ? '（' + esc(a.toolName) + '）' : ''}</div>
         <div class="appr-body">
           <div class="appr-headline">${esc(headline)}</div>
+          ${desc ? `<div class="appr-desc">${esc(desc)}</div>` : ''}
+          ${path ? `<div class="appr-path"><span class="ap-l">路径</span><span>${esc(path)}</span></div>` : ''}
           <div class="appr-command">${esc(input)}</div>
+          ${sugsHtml}
         </div>
         <div class="appr-btns">
           <button class="appr-deny">拒绝</button>
           <button class="appr-allow">允许</button>
         </div>
+        <div class="appr-state"></div>
       </div>`, 'approval')
     const t = takeoverEl()
-    t.querySelector('.appr-allow').addEventListener('click', () => sendApprove(a.requestId, true))
+    const sel = new Set()
+    if (sugs.length) {
+      t.querySelectorAll('.appr-sug').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const i = Number(btn.dataset.si)
+          if (sel.has(i)) { sel.delete(i); btn.classList.remove('sel') }
+          else { sel.add(i); btn.classList.add('sel') }
+        })
+      })
+    }
+    t.querySelector('.appr-allow').addEventListener('click', () => sendApprove(a.requestId, true, null, [...sel].map((i) => sugs[i])))
     t.querySelector('.appr-deny').addEventListener('click', () => sendApprove(a.requestId, false))
   }
 
   // 2026-08-24 提问交互表单：DSH「输入栏转化、依次显示」的降级——floria 在一张卡里列出所有问题，
   // 每题为单选（点选 option），全答完点「提交答案」→ 经审批中继回 CLI（CLI 端 handleInteractivePermission
   // 的桥应答对 allow 用 updatedInput={questions, answers}，工具即拿到答案）。
+  // 2026-08-26 用户「一次仅渲染一个」：与 DSH QuestionComposer 一致的逐题语义——输入栏只显示当前一题，
+  // 点选选项即记录，点「下一题」推进（带进度 第N/共M题），最后一题按钮变「提交答案」带全部 answers 回 CLI。
   function renderQuestionApproval(a, qs) {
     const answers = {}
-    let html = '<div class="appr-card">'
-    html += '<div class="appr-strip"><span class="appr-dot"></span>需要你回答 · 提问</div>'
-    qs.forEach((qq, qi) => {
+    let qi = 0
+    function renderOne() {
+      const qq = qs[qi]
       const question = String(qq.question || '').trim()
       const header = String(qq.header || '提问')
       const opts = Array.isArray(qq.options) ? qq.options : []
+      const isLast = qi + 1 >= qs.length
+      const fmt = (o) => (o && typeof o === 'object') ? String(o.label || '') : String(o || '')
+      const descOf = (o) => (o && typeof o === 'object' && o.description) ? String(o.description) : ''
       let rows = ''
       opts.forEach((o) => {
-        const label = (o && typeof o === 'object') ? String(o.label || '') : String(o || '')
-        const desc = (o && typeof o === 'object' && o.description) ? String(o.description) : ''
-        rows += `<button type="button" class="qa-opt" data-q="${qi}" data-question="${esc(question)}" data-v="${esc(label)}"><span class="qa-dot"></span><span class="qa-copy">${esc(label)}${desc ? `<span class="qa-desc">${esc(desc)}</span>` : ''}</span></button>`
+        const label = fmt(o)
+        const desc = descOf(o)
+        const sel = answers[question] === label ? ' sel' : ''
+        rows += `<button type="button" class="qa-opt${sel}" data-question="${esc(question)}" data-v="${esc(label)}"><span class="qa-dot"></span><span class="qa-copy">${esc(label)}${desc ? `<span class="qa-desc">${esc(desc)}</span>` : ''}</span></button>`
       })
+      let html = '<div class="appr-card">'
+      html += `<div class="appr-strip"><span class="appr-dot"></span>需要你回答 · 提问 ${qi + 1}/${qs.length}</div>`
       html += `<div class="question-card"><div class="q-head">${esc(header)}</div><div class="q-title">${esc(question)}</div><div class="qa-opts">${rows}</div></div>`
-    })
-    html += '<div class="appr-btns"><button class="appr-deny">拒绝</button><button class="appr-allow">提交答案</button></div></div>'
-    showTakeover(html, 'approval')
-    const t = takeoverEl()
-    t.querySelectorAll('.qa-opt').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const card = btn.closest('.question-card')
-        card.querySelectorAll('.qa-opt').forEach((b) => b.classList.remove('sel'))
-        btn.classList.add('sel')
-        answers[btn.dataset.question] = btn.dataset.v
+      html += `<div class="appr-btns"><button class="appr-deny">拒绝</button><button class="appr-allow">${isLast ? '提交答案' : '下一题'}</button></div><div class="appr-state"></div></div>`
+      showTakeover(html, 'approval')
+      const t = takeoverEl()
+      t.querySelectorAll('.qa-opt').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          t.querySelectorAll('.qa-opt').forEach((b) => b.classList.remove('sel'))
+          btn.classList.add('sel')
+          answers[btn.dataset.question] = btn.dataset.v
+        })
       })
-    })
-    t.querySelector('.appr-deny').addEventListener('click', () => sendApprove(a.requestId, false))
-    t.querySelector('.appr-allow').addEventListener('click', () => {
-      const missing = qs.filter((q) => !answers[q.question])
-      if (missing.length) return toast('请先回答所有问题')
-      sendApprove(a.requestId, true, { input: a.input, answers })
-    })
+      t.querySelector('.appr-deny').addEventListener('click', () => sendApprove(a.requestId, false))
+      t.querySelector('.appr-allow').addEventListener('click', () => {
+        const cur = String(qs[qi].question || '').trim()
+        if (!answers[cur]) return toast('请先选择本题答案')
+        if (isLast) sendApprove(a.requestId, true, { input: a.input, answers })
+        else { qi++; renderOne() }
+      })
+    }
+    renderOne()
   }
 
-  function sendApprove(requestId, allowed, qa) {
-    if (!gws || gws.readyState !== 1) return addError('连接已断开，无法审批')
+  // 2026-08-26 P0 审批确认送达（Codex）：sendApprove 不再 WS send 后立即 clearTakeover。
+  // 进入「提交中」（禁用按钮 + 状态行），等网关 approval-confirmed（CLI 已处理回执）才关卡；
+  // approval-rejected（目标不在线）/断连 → 卡片保留 + 可见错误 + 重试按钮；等待无超时（2026-08-26 用户定案，与 CLI 一致，仅凭 confirmed/rejected/dismiss 收尾）。
+  let approvalPending = null // {requestId, allowed, qa, perms}：等待确认中的审批
+  function sendApprove(requestId, allowed, qa, perms) {
+    if (!gws || gws.readyState !== 1) return showApprovalError('连接已断开，审批未送达', requestId, allowed, qa, perms)
     // 2026-08-23 web 独立会话：带 sessionId 供网关路由到对应子进程（CLI 会话无此字段走 broadcast 未接入提示）
     const payload = { type: 'approve', requestId, allowed, sessionId: state.currentHash || undefined }
     if (qa && qa.answers) { payload.input = qa.input; payload.answers = qa.answers } // 2026-08-24 提问答复
+    if (perms && perms.length) payload.permissions = perms // 2026-08-26 A2：勾选的「记住此规则」→ CLI persistPermissions
     gws.send(JSON.stringify(payload))
-    clearTakeover() // 审批提交 → 输入栏回归
-    addSystem(allowed ? '已允许该工具调用' : '已拒绝该工具调用')
+    if (approvalPending && approvalPending.requestId === requestId) approvalPending = null
+    approvalPending = { requestId, allowed, qa, perms }
+    const t = takeoverEl()
+    if (t) {
+      t.querySelectorAll('.appr-allow, .appr-deny').forEach((b) => { b.disabled = true; b.classList.add('busy') })
+      let st = t.querySelector('.appr-state')
+      if (!st) {
+        const btns = t.querySelector('.appr-btns')
+        st = document.createElement('div')
+        st.className = 'appr-state'
+        if (btns) btns.parentNode.appendChild(st)
+      }
+      st.innerHTML = '<span class="as-wait">正在提交…</span>'
+    }
+  }
+  // P0：审批失败（断连/目标不在线/超时）→ 卡片保留 + 可见错误 + 重试；卡片不在则降级 addError
+  function showApprovalError(text, requestId, allowed, qa, perms) {
+    if (approvalPending && approvalPending.requestId === requestId) approvalPending = null
+    const t = takeoverEl()
+    if (t && takeover === 'approval') {
+      t.querySelectorAll('.appr-allow, .appr-deny').forEach((b) => { b.disabled = false; b.classList.remove('busy') })
+      let st = t.querySelector('.appr-state')
+      if (!st) {
+        const btns = t.querySelector('.appr-btns')
+        st = document.createElement('div')
+        st.className = 'appr-state'
+        if (btns && btns.nextSibling) btns.parentNode.insertBefore(st, btns.nextSibling)
+        else if (btns) btns.parentNode.appendChild(st)
+      }
+      st.innerHTML = `<span class="as-err">${esc(text)}</span><button type="button" class="appr-retry">重试</button>`
+      const retry = st.querySelector('.appr-retry')
+      if (retry) retry.addEventListener('click', () => sendApprove(requestId, allowed, qa, perms))
+    } else {
+      addError(text)
+    }
   }
 
   function handleLine(line) {
@@ -3471,7 +3733,7 @@
         const fc = parseFileChange(text)
         if (fc) {
           mergeChanges(liveChanges, fc) // 聚合文件变更 → 回合结束渲染汇总卡片
-          updateLiveChangeCapsule() // 2026-08-19：回合中在输入栏上方悬浮变更胶囊
+          liveChangeInline() // 2026-08-26 任务 C：在处理折叠内内联展示变更行（不再悬浮输入栏上方）
         }
       }
     } else if (t === 'stream_event') {
@@ -3514,20 +3776,20 @@
       if (gateAwait) gatePlayTransition() // 门流程：播过渡视频（白板拉伸成输入栏/角色转正趴栏），ended 后 hideGate
       else hideGate() // URL 带 token 直连（无门）：验证通过直接解锁
       syncGwSend()
-      // 2026-08-24 审批链路修复：WS 重开后补发挂起的 web 会话订阅（审批卡/实时流依赖）
-      if (pendingSubscribe) {
-        gws.send(JSON.stringify({ type: 'subscribe', sessionId: pendingSubscribe }))
-        pendingSubscribe = null
-      }
     }
     gws.onclose = () => {
       setConn(false, '未连接')
-      liveChangeReset() // 2026-08-19：断连收起变更胶囊
+      liveChangeReset() // 断连清空变更聚合 + 移除实时内联行
       // 2026-08-18 修复：token 未验证成功即断开（URL token 过期——网关重启/换新 token、或门内输入错误）
       // 一律回 token 门重输，避免静默卡在空态、后续数据请求带着无效 token 全 401。
       if (!gateVerified) {
         toast(gateAwait ? 'token 错误或连接失败，请重试' : '连接失败：token 无效或已过期，请重新输入')
         showGate()
+      } else {
+        // 2026-08-26 修复：已通过 token 验证的会话断连后自动重连，否则 sockets=0 导致
+        // 审批卡/提问卡永远送不到 floria（用户必等不到审批）。重连由 onopen 恢复即可，不再回 token 门。
+        clearTimeout(reconnectTimer)
+        reconnectTimer = setTimeout(() => { try { connect() } catch {} }, 4000)
       }
       gws = null
       syncGwSend()
@@ -3544,9 +3806,25 @@
       } else if (msg.type === 'approval') {
         if (msg.session_id && msg.session_id !== state.currentHash) return
         renderApproval(msg)
+      } else if (msg.type === 'approval-confirmed') {
+        // 2026-08-26 P0 审批确认送达：CLI 已处理回执 → 关卡 + 提示（不再 send 后立即清卡）
+        if (msg.session_id && msg.session_id !== state.currentHash) return
+        if (approvalPending && approvalPending.requestId === msg.requestId) {
+          const wasAllow = approvalPending.allowed
+          approvalPending = null
+          clearTakeover()
+          addSystem(wasAllow ? '已允许该工具调用' : '已拒绝该工具调用')
+        }
+      } else if (msg.type === 'approval-rejected') {
+        // 2026-08-26 P0：目标 CLI 不在线 → 保留卡片 + 可见错误 + 重试
+        if (msg.session_id && msg.session_id !== state.currentHash) return
+        if (approvalPending && approvalPending.requestId === msg.requestId) {
+          showApprovalError('审批未送达目标，请重试', msg.requestId, approvalPending.allowed, approvalPending.qa, approvalPending.perms)
+        }
       } else if (msg.type === 'approval-dismiss') {
         // 2026-08-24 审批双操作（web 与 CLI 均可）：CLI 终端/窗口已先操作 → 撤掉 floria 审批卡
         if (msg.session_id && msg.session_id !== state.currentHash) return
+        if (approvalPending) { approvalPending = null }
         if (takeover === 'approval') clearTakeover()
       } else if (msg.type === 'status') addSystem('· ' + msg.state)
       else if (msg.type === 'err') addError(msg.line)
@@ -3567,7 +3845,7 @@
 
   function showGate() {
     closeMentionPop()
-    liveChangeReset() // 2026-08-19：回 token 门收起变更胶囊
+    liveChangeReset() // 回 token 门清空变更聚合 + 移除实时内联行
     gateAwait = true
     gateVerified = false
     document.body.classList.add('token-gate')
@@ -3641,7 +3919,13 @@
     // 恢复当前界面（gToken 已就绪）：预览态重挂 iframe、管理视图补拉数据、会话态增量刷新
     if (state.preview) route()
     else if (state.mgr) { loadMgrData(true); if (state.mgr === 'models') loadModelsData(true) }
-    else refreshSession()
+    else {
+      refreshSession()
+      // 2026-08-25 首页/会话态补拉模型数据：初始 renderModelSeat 时 GATEWAY 尚未就绪、
+      // token 空 → /api/models 401，MODELS 恒 null，seat 一直显示「选择模型」（用户反馈「看不到模型」）。
+      // hideGate 解锁后 token 已就绪 → 补拉一次，finally 内 renderModelSeat 刷新输入栏模型名。
+      loadModelsData(true).catch(() => {})
+    }
   }
   function gateSubmit() {
     const t = gTokenInput.value.trim()

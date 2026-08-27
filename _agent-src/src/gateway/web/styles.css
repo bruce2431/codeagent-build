@@ -143,7 +143,7 @@ a { text-decoration: none; color: inherit; }
 }
 /* 已处理折叠：思考 + 阅读/编辑/搜索等 AI 处理过程
    全部收进一个可展开容器，位于用户气泡与回复之间。浅灰小字标题 + V 形箭头（展开旋转 90°），
-   展开显示带左缩进线的浅灰过程区（思考文本无气泡框、浅灰色）。 */
+   展开显示与消息左对齐的浅灰过程区（思考文本无气泡框、浅灰色，2026-08-25 去嵌套缩进全对齐）。 */
 .done-fold { margin: 8px 0 2px; }
 /* 网关实时流式：独立成行的处理折叠（在 #messages 里 18px 间距基础上收小边距） */
 .done-live { margin: 2px 0; }
@@ -153,7 +153,7 @@ a { text-decoration: none; color: inherit; }
 }
 .done-fold summary {
   cursor: pointer; list-style: none; display: flex; align-items: center; gap: 7px;
-  color: #9ca3af; font-size: 13px; font-weight: 600; padding: 3px 0; user-select: none;
+  color: #9ca3af; font-size: 14px; font-weight: 600; padding: 3px 0; user-select: none;
 }
 .done-fold summary::-webkit-details-marker { display: none; }
 .done-fold summary .d-chev {
@@ -165,16 +165,19 @@ a { text-decoration: none; color: inherit; }
 .done-fold[open] summary .d-chev { transform: rotate(90deg); }
 .done-fold summary .d-dur { color: var(--text-3); font-size: 12px; font-weight: 500; margin-left: 1px; }
 .done-fold .done-body {
-  margin: 2px 0 4px 2px; padding: 4px 2px 6px 22px;
-  display: flex; flex-direction: column; gap: 4px;
+  margin: 2px 0; padding: 2px 0;
+  display: flex; flex-direction: column; gap: 2px;
 }
-.done-think { color: var(--text); font-size: 13px; line-height: 1.65; word-break: break-word; }
+.done-think { color: var(--text); font-size: 14px; line-height: 1.65; word-break: break-word; }
 .done-think p, .done-think .p { margin: 2px 0; }
 
 /* 思考折叠行（2026-08-22 移植 deepseek-harness ReasoningRow / DisclosureRow：
    24px 行 = 16px leading（思考图标 ↔ hover/展开 chevron）+ 标题 14/24 + 2×2 圆点 + 摘要截断；
-   展开正文 14/24 弱化色、左缩进 22px 与标题对齐；运行中扫光动画 + 末行摘要实时跟随。 */
-.think-row { display: flex; flex-direction: column; }
+   展开正文 14/24 弱化色、左对齐（2026-08-25 去 22px 缩进）；运行中扫光动画 + 末行摘要实时跟随。 */
+/* 2026-08-26 任务 D 修复：think-row 是 <details>，display:flex 会破坏原生折叠（内容无法收起，
+   用户反馈「思考未折叠」根因）；details 保持默认块布局，summary 内部已 flex（图标/标题/摘要横排），
+   tr-body 块级堆叠不受影响 */
+.think-row { display: block; }
 .think-row summary {
   position: relative; overflow: hidden;
   display: flex; align-items: center; height: 24px; min-width: 0;
@@ -205,26 +208,25 @@ a { text-decoration: none; color: inherit; }
 .think-row[open] .tr-ico { opacity: 0; }
 .think-row[open] .tr-chev { opacity: 1; }
 .tr-title { flex: none; font-size: 14px; line-height: 24px; font-weight: 400; color: var(--text-2); }
-.tr-sep { flex: none; width: 2px; height: 2px; margin: 0 8px; border-radius: 1px; background: var(--text-3); }
-.tr-summary {
-  min-width: 0; overflow: hidden; flex: 1 1 auto;
-  color: var(--text-3); font-size: 14px; line-height: 24px;
-  text-overflow: ellipsis; white-space: nowrap;
-}
-.tr-summary[data-follow-end] { text-overflow: clip; }
+/* 2026-08-26 任务 D：思考块收起不再显示正文摘要（.tr-summary/.tr-sep 已删，防暴露内部推理） */
 .tr-body {
-  padding: 4px 0 4px 22px;
+  padding: 4px 0;
   color: var(--text-3); font-size: 14px; line-height: 24px;
   white-space: pre-wrap; word-break: break-word;
 }
 .tr-body p { margin: 0; }
 /* 压缩/自动摘要标记（吸进处理折叠内的浅灰注释，不打断当前处理段） */
-.done-fold-note { color: var(--text-3); font-size: 12px; line-height: 1.6; margin: 2px 0; padding: 1px 0 1px 12px; border-left: 1px solid var(--border); }
+.done-fold-note { color: var(--text-3); font-size: 12px; line-height: 1.6; margin: 2px 0; padding: 1px 0; }
 
 /* 工具动作弱化行（阅读/编辑/搜索等，不单独成气泡） */
 .tool-line {
   display: inline-flex; align-items: center; gap: 5px;
-  color: var(--text-3); font-size: 12px; margin: 2px 0; padding: 0 2px;
+  color: var(--text-3); font-size: 14px; line-height: 22px; margin: 0; padding: 0;
+  max-width: 100%; min-width: 0; overflow: hidden;
+}
+/* 2026-08-26 工具文本超长不换行省略：动作 + 详情整段收进 .tl-text，超出容器宽度截断显示省略号 */
+.tool-line .tl-text {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 /* 2026-08-21：工具步骤图标改 DSH 风格 SVG（16px leading 槽放 14px 图标，替代旧 ⚙ 齿轮） */
 .tool-line .t-ico { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; flex: none; }
@@ -233,8 +235,9 @@ a { text-decoration: none; color: inherit; }
 .tool-fold { margin: 2px 0; }
 .tool-fold summary {
   cursor: pointer; list-style: none; display: inline-flex; align-items: center; gap: 5px;
-  color: var(--text-3); font-size: 12px; font-weight: 500; padding: 2px 2px;
+  color: var(--text-3); font-size: 14px; line-height: 22px; font-weight: 500; padding: 1px 0;
   user-select: none; border-radius: 6px;
+  max-width: 100%; overflow: hidden;
 }
 .tool-fold summary:hover { background: rgba(0, 0, 0, 0.045); }
 .tool-fold summary::-webkit-details-marker { display: none; }
@@ -246,12 +249,39 @@ a { text-decoration: none; color: inherit; }
   transition: transform 0.2s ease;
 }
 .tool-fold-body {
-  margin: 2px 0 4px 6px; padding: 2px 2px 2px 12px;
+  margin: 0; padding: 0;
   display: flex; flex-direction: column; gap: 2px;
 }
 /* 2026-08-21 折叠 chevron 统一 DSH IconChevronRightOutline14（「>」箭头，替代旧 ▸ 小三角）；
    展开旋转 90° 指向下。done-fold/tool-fold/think-row 三处共用 */
 .d-chev svg { width: 14px; height: 14px; display: block; }
+/* 实时工具行运行态（2026-08-26 用户定案）：原灰色工具行 + 光泽扫动标识正在使用（去蓝点） */
+.tool-line.tool-running { position: relative; overflow: hidden; }
+.tool-line.tool-running::after {
+  content: '';
+  position: absolute; inset-block: 0; left: 0; width: 300px;
+  background: linear-gradient(90deg, transparent 0%, color-mix(in srgb, var(--chat-bg) 55%, transparent) 55%, transparent 100%);
+  animation: think-row-sweep 2.6s ease-out infinite;
+  pointer-events: none;
+}
+@media (prefers-reduced-motion: reduce) { .tool-line.tool-running::after { animation: none; } }
+/* 实时思考状态行（2026-08-26 用户定案）：思考过程不显示内容，仅「正在思考」闪烁状态（动态态，不留 chat） */
+.think-state {
+  display: inline-flex; align-items: center; gap: 6px;
+  color: var(--text-3); font-size: 13px; font-weight: 500;
+  animation: think-state-blink 1.6s ease-in-out infinite;
+}
+.think-state::before {
+  content: '';
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--text-3);
+  animation: think-state-dot 1.6s ease-in-out infinite;
+}
+@keyframes think-state-blink { 0%, 100% { opacity: 1 } 50% { opacity: 0.4 } }
+@keyframes think-state-dot { 0%, 100% { opacity: 1 } 50% { opacity: 0.2 } }
+@media (prefers-reduced-motion: reduce) {
+  .think-state, .think-state::before { animation: none; }
+}
 /* 工具折叠运行态（2026-08-21 移植 DSH ToolRow sweep）：扫光 + 蓝色脉冲点，只有流式尾组在跑 */
 .tool-fold[data-state='running'] summary { position: relative; overflow: hidden; }
 .tool-fold[data-state='running'] summary::after {
@@ -266,6 +296,23 @@ a { text-decoration: none; color: inherit; }
 /* 「正在处理」折叠标题的脉冲点 */
 .df-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--blue); animation: floria-dot-pulse 1.2s ease-in-out infinite; }
 @keyframes floria-dot-pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
+/* P1 当前命令独立展示（2026-08-26 Codex）：当前工具进行时行——比历史折叠更醒目（text 主色），
+   标题「正在运行：<工具>：<命令/路径>」超长省略 + 扫光 + 脉冲点，展开可看完整输入 */
+.tool-cur { margin: 2px 0; }
+.tool-cur summary {
+  cursor: default; list-style: none; display: inline-flex; align-items: center; gap: 5px;
+  color: var(--text); font-size: 14px; font-weight: 600; padding: 2px 2px;
+  border-radius: 6px; position: relative; overflow: hidden; max-width: 100%;
+}
+.tool-cur summary::-webkit-details-marker { display: none; }
+.tool-cur summary::after {
+  content: ''; position: absolute; inset-block: 0; left: 0; width: 300px;
+  background: linear-gradient(90deg, transparent 0%, color-mix(in srgb, var(--chat-bg) 60%, transparent) 55%, transparent 100%);
+  animation: think-row-sweep 2.6s ease-out infinite; pointer-events: none;
+}
+.tool-cur .tc-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.tool-cur .tool-fold-body { margin: 2px 0; padding: 2px; display: flex; flex-direction: column; gap: 2px; }
+@media (prefers-reduced-motion: reduce) { .tool-cur summary::after { animation: none; } }
 
 /* ===== AskUserQuestion 提问卡（2026-08-21 移植 DSH QuestionComposer 视觉，只读展示）=====
    eyebrow + 标题（15/22 500）+ 编号选项行（20px 编号块 / label 14/24 500 / 推荐徽标 / 描述）+ 答案注脚 */
@@ -351,25 +398,29 @@ a { text-decoration: none; color: inherit; }
 .change-card .ch-add { color: #16a34a; font-weight: 600; font-variant-numeric: tabular-nums; }
 .change-card .ch-del { color: #dc2626; font-weight: 600; font-variant-numeric: tabular-nums; }
 
-/* 文件变更胶囊（2026-08-19）：回合运行中悬浮在输入栏中央上方（约整卡 1/5 宽的小胶囊），
-   回合结束 FLIP 平滑变形进消息流末尾，落地为默认折叠的汇总卡片。opacity 淡入由 JS 置 .has */
-#live-change {
-  position: absolute; left: 50%; bottom: calc(100% + 10px); transform: translateX(-50%);
-  z-index: 50;
-  display: flex; align-items: center; gap: 6px;
-  max-width: 22%; padding: 5px 13px; white-space: nowrap;
-  overflow: hidden; text-overflow: ellipsis;
-  background: #fff; border: 1px solid var(--border); border-radius: 999px;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.10);
-  font-size: 12px; line-height: 1.4; color: var(--text-2);
-  opacity: 0; pointer-events: none;
-  transition: opacity 0.25s ease;
+/* 实时内联变更行（2026-08-26 任务 C）：替代原输入栏上方悬浮胶囊（#live-change 已移除）。
+   文件变更聚合行渲染在处理折叠（done-fold body）内，与消息流绑定一体——弱化小字文本行
+   （无背景/无边框/无圆角，不再像胶囊），+N 绿 / -N 红沿用汇总卡片配色；
+   回合结束收拢为 .change-card 汇总卡片 */
+.change-inline {
+  display: inline-flex; align-items: baseline; gap: 6px;
+  margin: 1px 0 2px 4px; padding: 0;
+  color: var(--text-3); font-size: 12px; line-height: 1.6;
 }
-#live-change[hidden] { display: none; } /* display:flex 会覆盖 hidden 默认，须显式隐藏 */
-#live-change.has { opacity: 1; }
-#live-change .lc-n { color: var(--text-1); font-weight: 600; font-variant-numeric: tabular-nums; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-#live-change .ch-add { color: #16a34a; font-weight: 600; font-variant-numeric: tabular-nums; }
-#live-change .ch-del { color: #dc2626; font-weight: 600; font-variant-numeric: tabular-nums; }
+.change-inline .ci-n { color: var(--text-2); font-weight: 600; font-variant-numeric: tabular-nums; }
+.change-inline .ch-add { color: #16a34a; font-weight: 600; font-variant-numeric: tabular-nums; }
+.change-inline .ch-del { color: #dc2626; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* 提问回答折叠（2026-08-26 任务 D）：回答后的提问卡默认收起为「提问 · 已回答」一行，
+   点开展开问题详情与所选答案；与思考/工具折叠同视觉语言 */
+.ask-fold { margin: 2px 0; }
+.ask-fold summary {
+  cursor: pointer; list-style: none; display: inline-flex; align-items: center; gap: 5px;
+  color: var(--text-3); font-size: 14px; line-height: 22px; font-weight: 500; padding: 1px 0;
+  user-select: none; border-radius: 6px;
+}
+.ask-fold summary::-webkit-details-marker { display: none; }
+.ask-fold .ask-body { margin: 2px 0 2px 0; }
 
 /* ── Markdown 渲染（对话文本，作用于 .body 内的 mdHtml 输出） ── */
 .msg .body .p { margin: 0; }
@@ -407,7 +458,10 @@ a { text-decoration: none; color: inherit; }
    任意窗口大小都精确贴图，不再用视口百分比模拟。 */
 #empty-hint {
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-  text-align: center; transition: opacity 0.3s; pointer-events: none;
+  text-align: center; pointer-events: none;
+  /* 2026-08-25 空态避让侧栏：padding-left 随侧栏折叠/展开平滑过渡（rail 64 / panel 280），
+     趴栏画面保持在剩余可见区居中 */
+  transition: opacity 0.3s, padding-left 0.28s cubic-bezier(0.22, 0.61, 0.36, 1);
 }
 #empty-hint .g-stage { pointer-events: auto; }
 #chat-area.in-session #empty-hint { opacity: 0; pointer-events: none; }
@@ -879,9 +933,24 @@ body.token-gate #input-wrap { display: none; }
 @media (min-width: 721px) {
   #sidebar { position: absolute; top: 0; left: 0; bottom: 0; transform: translateX(-100%); }
   body:not(.token-gate) #sidebar { transform: none; }
-  /* 会话态主区内容避让侧栏（空态 / token 门保持全宽屏幕居中，不避让，webp 不偏移） */
+  /* 会话态主区内容避让侧栏（token 门保持全宽屏幕居中，不避让，webp 不偏移） */
   #chat-area.in-session { padding-left: var(--rail-w); }
   #sidebar.open ~ #chat-area.in-session { padding-left: var(--panel-w); }
+  /* 空态趴栏画面同样避让侧栏（2026-08-25 修复：此前空态全宽居中不避让，hideGate 后侧栏滑入，
+     画面中心仍落在视口中心，相对可见区偏右 rail-w/2——用户实测「初始界面未将侧栏大小计算在内」；
+     现与 .in-session 同构加 padding-left，趴栏在剩余可见区居中。token 门不受影响：门时侧栏隐藏，
+     全宽居中本就正确） */
+  #empty-hint { padding-left: var(--rail-w); }
+  #sidebar.open ~ #chat-area #empty-hint { padding-left: var(--panel-w); }
+  /* 管理视图（插件/项目/模型网格）内容避让侧栏（2026-08-25）：与 .in-session 同款给 #chat-area
+     加 padding-left，折叠 rail 64 / 展开 panel 280 均避让；预览 iframe 同规则生效。
+     2026-08-25 修：不能给 #messages 加 padding——#messages 是 max-width:760px + margin:0 auto
+     的居中容器，加 padding 会把内容挤到右侧（用户实测「打开侧栏后会话过度压缩到右侧」，
+     根因 `#sidebar.open ~ #chat-area #messages` 未限定 mgr-on，还命中了普通会话态）。
+     改给 #chat-area 加 padding（与 .in-session 同构），#messages 在剩余空间内继续居中。
+     手机端（≤720px）侧栏为抽屉、不在此块内，不加 padding。 */
+  #chat-area.mgr-on { padding-left: var(--rail-w); }
+  #sidebar.open ~ #chat-area.mgr-on { padding-left: var(--panel-w); }
   /* docked 输入栏相对 chat-area padding-box 定 left:50% 会偏左半个 padding-left，
      补偿 half-padding 使输入栏与消息流中线对齐（2026-08-19 修复；仅桌面≥721px，
      移动端无 padding-left 维持 left:50%） */
@@ -963,11 +1032,13 @@ body.token-gate #input-wrap { display: none; }
 #chat-area.mgr-on #messages { max-width: 920px; }
 /* 项目预览 iframe 充满整个聊天区：预览时解除 920 宽帽并撑满可用高度（与 chat 界面同自适应逻辑） */
 #chat-area.mgr-on #messages:has(.preview-shell) { max-width: none; height: 100%; }
-/* 预览态避让侧栏（2026-08-19 Web 容器）：桌面侧栏是 absolute 覆盖层不挤占主区，
-   会话态用 .in-session padding-left 避让；预览 iframe 满宽会被侧栏盖住（用户实测「侧栏遮挡了画面，
-   '正在加载'不在容器中央」）——镜像会话态规则，折叠 rail 64 / 展开 panel 280 均避让 */
-#chat-area.mgr-on #messages:has(.preview-shell) { padding-left: var(--rail-w); }
-#sidebar.open ~ #chat-area #messages:has(.preview-shell) { padding-left: var(--panel-w); }
+/* 管理视图内容避让侧栏（2026-08-19 Web 容器预览 + 2026-08-25 泛化到全部 mgr 网格）：
+   桌面侧栏是 absolute 覆盖层不挤占主区，会话态用 .in-session padding-left 避让；
+   插件/项目/模型网格满宽会被侧栏盖住（用户实测「侧栏会直接遮挡 plugin 界面」）——
+   镜像会话态规则给 #chat-area 加 padding（折叠 rail 64 / 展开 panel 280 均避让），
+   #messages 在剩余空间内保持居中（不给 #messages 加 padding，避免把居中内容挤右侧）。
+   避让规则放在下方 @media(min-width:721px) 桌面块内（与 .in-session 同处），
+   手机端侧栏是滑入抽屉、无 rail 且不挤占内容，不加 padding。 */
 /* scrollbar-gutter:stable 预留滚动条位，插件(高可滚)→技能(矮不滚)切换时不横向跳动（经典滚动条环境） */
 #chat-area.mgr-on #chat-scroll { scrollbar-gutter: stable; }
 .mgr-pane { width: 100%; }
@@ -1242,18 +1313,26 @@ body.token-gate #input-wrap { display: none; }
 
 /* ===== 侧栏行 hover 操作（2026-08-24 DSH 侧栏行菜单移植：会话 … 重命名/归档 · 项目 + 新建）===== */
 .sess-item .sess-more {
-  flex: 0 0 auto; display: none; align-items: center; justify-content: center;
+  flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
   width: 20px; height: 20px; margin-left: 2px; border-radius: 6px;
   font-size: 13px; line-height: 1; color: var(--text-3); cursor: pointer;
 }
-.sess-item:hover .sess-more { display: inline-flex; }
+/* 触摸设备（hover:none）：… 始终显示，避免 iOS「hover 改变布局 → 首次 tap 只激活 hover 不派发 click」导致双击切换。
+   桌面（有 hover + 精指针）：默认隐藏、hover 显示。 */
+@media (hover: hover) and (pointer: fine) {
+  .sess-item .sess-more { display: none; }
+  .sess-item:hover .sess-more { display: inline-flex; }
+}
 .sess-item .sess-more:hover { background: rgba(0, 0, 0, 0.06); color: var(--text); }
 .folder-head .folder-add {
-  flex: 0 0 auto; display: none; align-items: center; justify-content: center;
+  flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
   width: 18px; height: 18px; border-radius: 5px; color: var(--text-3); cursor: pointer;
 }
 .folder-head .folder-add svg { width: 12px; height: 12px; }
-.folder-head:hover .folder-add { display: inline-flex; }
+@media (hover: hover) and (pointer: fine) {
+  .folder-head .folder-add { display: none; }
+  .folder-head:hover .folder-add { display: inline-flex; }
+}
 .folder-head .folder-add:hover { background: rgba(0, 0, 0, 0.06); color: var(--text); }
 
 /* 会话行菜单（2026-08-24 DSH ui-primitives Menu 移植：白底 r12 + 4px padding + 40px 行 icon16+label） */

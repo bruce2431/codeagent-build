@@ -1,5 +1,5 @@
 /* 遥测 · 会话查看器 — Service Worker（静态资源缓存 + 离线兜底） */
-const CACHE = 'floria-v103'
+const CACHE = 'floria-v124'
 const CORE = ['./', './index.html', './styles.css', './app.js', './manifest.json', './icon.ico',
   './char/1.jpg', './char/2.jpg', './char/3.jpg', './char/4.jpg',
   './gate/state-token.webp', './gate/state-newchat.webp', './gate/transition.webm', './gate/transition.mp4']

@@ -154,6 +154,14 @@ function openSocket(token: string): void {
         if (handler) {
           pendingResponses.delete(msg.requestId)
           handler(msg.response ?? { behavior: 'deny', message: 'empty approval response' })
+          // 2026-08-26 P0 审批确认送达：回执网关「已处理」→ 转 floria approval-confirmed，
+          // 前端收到确认才关卡（不再 WS send 后立即清卡）。仅 handler 命中（本端消费）才回执；
+          // 本地已 resolve（竞速输）时 pendingResponses 已删，不发——floria 会收到 approval-dismiss 撤卡。
+          try {
+            sock.send(JSON.stringify({ type: 'approval-processed', requestId: msg.requestId }))
+          } catch {
+            /* 断开忽略 */
+          }
         }
         return
       }

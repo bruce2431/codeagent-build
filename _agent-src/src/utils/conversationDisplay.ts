@@ -32,6 +32,12 @@ export type DisplayMessage = {
   role: 'user' | 'assistant' | 'tool' | 'system'
   blocks: DisplayBlock[]
   timestamp?: number | string
+  /**
+   * 助手消息的 stop_reason（2026-08-26 新增，供 floria 实时段「回合结束」判定）：
+   * 'end_turn' = 正式回复（回合结束，折叠收拢为「已处理」）；'tool_use'/null = 处理中
+   * （旁白/工具步，折叠保持「正在处理」并只显示当前运行工具）。仅 assistant 消息携带。
+   */
+  stopReason?: string
 }
 
 export type DisplayMode = 'prompt' | 'transcript'
@@ -44,6 +50,7 @@ type SourceMessage = {
   message?: {
     role?: string
     content?: Array<{ type?: string; text?: string; thinking?: string; name?: string; input?: unknown; content?: unknown }>
+    stop_reason?: string
   }
 }
 
@@ -193,7 +200,7 @@ export function filterConversationForDisplay(messages: readonly SourceMessage[],
         const db = toDisplayBlock(b)
         if (db) blocks.push(db)
       }
-      if (blocks.length) out.push({ role: 'assistant', blocks, timestamp })
+      if (blocks.length) out.push({ role: 'assistant', blocks, timestamp, stopReason: msg.message?.stop_reason as string | undefined })
       continue
     }
 

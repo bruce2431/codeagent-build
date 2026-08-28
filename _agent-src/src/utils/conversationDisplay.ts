@@ -9,8 +9,21 @@
  * `Messages.tsx` 与 REPL 的导出共用这里，显示 = 导出，永不跑偏。
  */
 
-import { COMMAND_MESSAGE_TAG } from '../constants/xml.js'
-import { isNotEmptyMessage, normalizeMessages, shouldShowUserMessage } from './messages.js'
+import {
+  COMMAND_ARGS_TAG,
+  COMMAND_MESSAGE_TAG,
+  COMMAND_NAME_TAG,
+  LOCAL_COMMAND_STDERR_TAG,
+  LOCAL_COMMAND_STDOUT_TAG,
+  TASK_NOTIFICATION_TAG,
+} from '../constants/xml.js'
+import {
+  INTERRUPT_MESSAGE,
+  INTERRUPT_MESSAGE_FOR_TOOL_USE,
+  isNotEmptyMessage,
+  normalizeMessages,
+  shouldShowUserMessage,
+} from './messages.js'
 import { getGatewayToken } from './gatewayToken.js'
 
 /** 文件变更结构化数据（Edit/Write 工具的真实增删行数，权威数字 = diff.ts sumLinesChanged） */
@@ -40,18 +53,46 @@ export type DisplayMessage = {
   stopReason?: string
 }
 
-export type DisplayMode = 'prompt' | 'transcript'
+export type DisplayMode = 'prompt' | 'transcript' | 'prompt-tail-think'
 
 /** 宽松输入结构：与 NormalizedMessage / Message 运行时形状兼容（类型定义在缺失的 types/message.js） */
 type SourceMessage = {
   type?: string
+  /** system 记录子类型（local_command / compact_boundary / api_error …） */
+  subtype?: string
+  /** 记录级来源标记（转录 user 记录；'task-notification' = 后台任务通知系统注入） */
+  origin?: { kind?: string }
   uuid?: string
   timestamp?: number | string
+  /** system/local_command 记录的内容在顶层字符串（无 message 字段） */
+  content?: unknown
   message?: {
     role?: string
+    /** 该条 assistant 记录的实际请求模型名（模型切换派生提示的数据源） */
+    model?: string
     content?: Array<{ type?: string; text?: string; thinking?: string; name?: string; input?: unknown; content?: unknown }>
     stop_reason?: string
   }
+}
+
+/** 本地命令记录（system/local_command）顶层字符串里提取单个 XML 标签内容；无匹配返回 null */
+function extractXmlTag(xml: string, tag: string): string | null {
+  const m = new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`).exec(xml)
+  return m ? m[1] : null
+}
+
+/**
+ * 用户中断标记（`[Request interrupted by user]` / `… for tool use`）。转录持久化为普通 user
+ * text 块（无 isMeta 字段），CLI 由 UserTextMessage → InterruptedByUser 徽标渲染；导出侧转为
+ * role:'system' 居中提示。注意 isNotEmptyMessage 会把 FOR_TOOL_USE 变体判空丢弃，因此本判定
+ * 必须先于该过滤使用（见 filterConversationForDisplay 的保留谓词）。
+ */
+function isInterruptUserMessage(msg: SourceMessage): boolean {
+  if (msg.type !== 'user') return false
+  const c = msg.message?.content
+  if (!Array.isArray(c) || c.length !== 1 || c[0]?.type !== 'text') return false
+  const t = (c[0].text ?? '').trim()
+  return t === INTERRUPT_MESSAGE || t === INTERRUPT_MESSAGE_FOR_TOOL_USE
 }
 
 /**
@@ -145,10 +186,59 @@ function toDisplayBlock(b: NonNullable<SourceMessage['message']>['content'][numb
 }
 
 /**
+ * 「尾部放行」选中键（2026-08-27 思考等权展示·方案B；镜像 SubPj1 server.mjs readSession 同款规则）：
+ * 已收尾历史 = 全剔 thinking；未收尾尾巴（最后一个 end_turn 之后；整个转录无 end_turn 则最后一条
+ * 真实 user 消息之后）只保留【最后一条含 thinking/redacted_thinking 的 assistant 记录】里【最后一个】
+ * 该类块的 `${uuid}:${j}`，其余全剔。用途：网关 readSession('prompt-tail-think') 把「正在思考」
+ * 真实数据交给 floria liveFoldBody 行内状态（CLI REPL 渲染/上报路径不使用本模式，行为不变）。
+ */
+function computeTailThinkingPassId(messages: readonly SourceMessage[]): string | null {
+  const hasVisibleText = (m: SourceMessage | undefined): boolean => {
+    const content = m?.message?.content
+    if (!Array.isArray(content)) return false
+    return content.some((b) => {
+      if (b?.type !== 'text' || typeof b.text !== 'string') return false
+      const t = b.text.trim()
+      if (!t) return false
+      // 中断标记不是真实用户输入，不据此定尾巴起点（否则会把尾部思考放行窗口钉在错误位置）
+      return t !== INTERRUPT_MESSAGE && t !== INTERRUPT_MESSAGE_FOR_TOOL_USE
+    })
+  }
+  let lastEndTurn = -1
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.type === 'assistant' && messages[i]?.message?.stop_reason === 'end_turn') { lastEndTurn = i; break }
+  }
+  let lastRealUser = -1
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.type === 'user' && hasVisibleText(messages[i])) { lastRealUser = i; break }
+  }
+  const tailStart = lastEndTurn >= 0 ? lastEndTurn + 1 : lastRealUser >= 0 ? lastRealUser + 1 : messages.length
+  for (let i = messages.length - 1; i >= tailStart; i--) {
+    const msg = messages[i]
+    if (msg?.type !== 'assistant') continue
+    const content = msg.message?.content
+    if (!Array.isArray(content)) continue
+    for (let j = content.length - 1; j >= 0; j--) {
+      const t = content[j]?.type
+      if (t === 'thinking' || t === 'redacted_thinking') return `${msg.uuid}:${j}`
+    }
+  }
+  return null
+}
+
+/**
  * 核心过滤：把原始消息转成「CLI 实际显示的」`{role, blocks[]}`。
  * - prompt 模式：thinking 全隐藏（对齐 `Message.tsx` `!isTranscriptMode && !verbose → null`）。
  * - transcript 模式：只保留全局最后一个 thinking（对齐 `hidePastThinking` + `lastThinkingBlockId`）。
+ * - prompt-tail-think 模式（2026-08-27，仅网关 /api/session 用）：已收尾历史 thinking 全隐藏，
+ *   未收尾尾巴放行最后一块（computeTailThinkingPassId）——驱动 floria「正在思考」行内实时态，
+ *   且不让历史会话泄露无效思考（server.mjs 离线兜底同语义双份）。
  * - 用户消息按 `shouldShowUserMessage` 识别（isMeta/isVisibleInTranscriptOnly），替代遥测端的 isSynth 复刻。
+ * - 居中灰字系统提示（2026-08-27 定案）：①本地命令记录 system/local_command（顶层 content 字符串）
+ *   解析为命令行/stdout/stderr 提示行；②用户中断标记转提示行；③相邻 assistant 记录 model 字段
+ *   变化派生「已切换模型」提示（回合边界自然落位）；④后台任务通知 user 记录
+ *   （origin.kind='task-notification'）转「后台任务完成」提示行。全部以 role:'system' 下发，
+ *   消费端居中灰字渲染。
  */
 /** 归一时间戳为毫秒（流式/转录可能给 ISO 字符串；网关 /api/session 也转 ms，floria 时长计算依赖数字） */
 function tsMs(ts: number | string | undefined): number | undefined {
@@ -161,25 +251,86 @@ function tsMs(ts: number | string | undefined): number | undefined {
 
 export function filterConversationForDisplay(messages: readonly SourceMessage[], mode: DisplayMode): DisplayMessage[] {
   const isTranscript = mode === 'transcript'
-  const normalized = normalizeMessages(messages as never).filter(isNotEmptyMessage)
+  const isTailThink = mode === 'prompt-tail-think'
+  // 中断标记消息要保留（转 role:'system' 居中提示），不能被 isNotEmptyMessage 判空丢弃
+  // （FOR_TOOL_USE 变体会被它当空消息剔掉）。
+  const normalized = normalizeMessages(messages as never).filter(
+    m => isNotEmptyMessage(m as never) || isInterruptUserMessage(m as SourceMessage),
+  )
   const lastId = computeLastThinkingBlockId(normalized, { hidePastThinking: isTranscript, isStreamingThinkingVisible: false })
+  const tailPassId = isTailThink ? computeTailThinkingPassId(normalized) : null
 
   const out: DisplayMessage[] = []
+  let lastModel: string | undefined
+  /** 居中灰字系统提示行（2026-08-27 定案：指令信息/中断/模型切换统一此形态，role:'system' 下发） */
+  const pushSystemHint = (text: string, ts: number | string | undefined): void => {
+    out.push({ role: 'system', blocks: [{ kind: 'text', text }], timestamp: tsMs(ts) })
+  }
   for (const msg of normalized) {
-    const content = msg.message?.content
-    if (!Array.isArray(content)) continue
     const timestamp = tsMs(msg.timestamp)
 
+    if (msg.type === 'system') {
+      // 本地命令记录（/xxx、!bash）：CLI 渲染路径 = Message.tsx case 'system'/'local_command' →
+      // UserTextMessage（<local-command-stdout> 灰字输出）。内容在顶层 content 字符串，
+      // 解析为居中提示行下发；其余 system 子类型维持跳过。
+      if (msg.subtype !== 'local_command') continue
+      const raw = typeof msg.content === 'string' ? msg.content : ''
+      if (!raw) continue
+      const name = extractXmlTag(raw, COMMAND_NAME_TAG)
+      if (name) {
+        const args = extractXmlTag(raw, COMMAND_ARGS_TAG)?.trim()
+        pushSystemHint(args ? `${name} ${args}` : name, timestamp)
+      }
+      const stdout = extractXmlTag(raw, LOCAL_COMMAND_STDOUT_TAG)
+      if (stdout?.trim()) pushSystemHint(stdout.trim(), timestamp)
+      const stderr = extractXmlTag(raw, LOCAL_COMMAND_STDERR_TAG)
+      if (stderr?.trim()) pushSystemHint(stderr.trim(), timestamp)
+      continue
+    }
+
+    const content = msg.message?.content
+    if (!Array.isArray(content)) continue
+
     if (msg.type === 'user') {
+      if (isInterruptUserMessage(msg)) {
+        pushSystemHint('用户中断了对话', timestamp)
+        continue
+      }
+      // 后台任务通知（2026-08-27 定案转居中提示）：转录把系统通知记成无 isMeta 的 user 记录
+      // （origin.kind === 'task-notification'，内容 = <task-notification> XML 字符串，normalizeMessages
+      // 转为 text 块），曾被当真实用户渲染成气泡。判据 = origin 字段（最可靠）+ 文本前缀兜底
+      // （老记录无 origin）；文案对齐 SubPj1 server.mjs synthLabel（离线兜底镜像）。
+      const notifyTexts = content
+        .filter((b): b is { type: 'text'; text: string } => b?.type === 'text' && typeof b.text === 'string')
+        .map(b => b.text)
+      const isTaskNotify =
+        msg.origin?.kind === TASK_NOTIFICATION_TAG ||
+        notifyTexts.some(t => t.trimStart().startsWith(`<${TASK_NOTIFICATION_TAG}>`))
+      if (isTaskNotify) {
+        const summary = extractXmlTag(notifyTexts.join('\n'), 'summary')?.trim()
+        pushSystemHint(summary ? `后台任务完成：${summary}` : '后台任务通知', timestamp)
+        continue
+      }
       if (!shouldShowUserMessage(msg, isTranscript)) continue
       const blocks: DisplayBlock[] = []
       for (const b of content) {
         const db = toDisplayBlock(b)
-        // 遥测端不渲染 slash command（/xxx）：命令消息的 text 块是
-        // <command-name>/xxx</command-name>… 的 XML，CLI REPL 侧由 UserCommandMessage 渲染，
-        // 遥测端直接剔除（既不显示也不参与段切分）。判定对齐 CLI UserTextMessage：
-        // 文本含 <command-message> 标签即命令消息（含 skill-format 技能命令）。
-        if (db?.kind === 'text' && db.text && db.text.includes(`<${COMMAND_MESSAGE_TAG}>`)) continue
+        // 指令输入的 user XML echo 形态（2026-08-27 定案转居中提示行；原为静默剔除）：
+        // immediateCommand（如 /server）只走此形态；非 immediate（如 /rename）另写 system/local_command
+        // 双记录（见 system 分支），两形态互补不重复。<bash-input> = !bash 命令行。
+        if (db?.kind === 'text' && db.text && db.text.includes(`<${COMMAND_MESSAGE_TAG}>`)) {
+          const name = extractXmlTag(db.text, COMMAND_NAME_TAG)
+          if (name) {
+            const args = extractXmlTag(db.text, COMMAND_ARGS_TAG)?.trim()
+            pushSystemHint(args ? `${name.trim()} ${args}` : name.trim(), timestamp)
+          }
+          continue
+        }
+        if (db?.kind === 'text' && db.text && db.text.includes('<bash-input>')) {
+          const cmd = extractXmlTag(db.text, 'bash-input')
+          if (cmd?.trim()) pushSystemHint(`$ ${cmd.trim()}`, timestamp)
+          continue
+        }
         if (db) blocks.push(db)
       }
       if (blocks.length) out.push({ role: 'user', blocks, timestamp })
@@ -187,15 +338,27 @@ export function filterConversationForDisplay(messages: readonly SourceMessage[],
     }
 
     if (msg.type === 'assistant') {
+      // 模型切换派生提示（2026-08-27）：assistant 记录自带实际请求模型名；流式回合内各片段同模型，
+      // 切到新模型的第一条记录即新回合起点——提示自然落在回合结束后的边界（切在思考中也回合结束才出现）。
+      // 注意：/model 是 local-jsx 命令，「Set model to …」不落盘，派生是历史回放唯一数据源。
+      const model = typeof msg.message.model === 'string' && msg.message.model ? msg.message.model : undefined
+      if (model && lastModel && model !== lastModel) pushSystemHint(`已切换模型：${model}`, timestamp)
+      if (model) lastModel = model
       const blocks: DisplayBlock[] = []
       for (let j = 0; j < content.length; j++) {
         const b = content[j]
         if (b.type === 'thinking') {
-          if (!isTranscript) continue // prompt：不显示完成思考
+          if (!isTranscript && !isTailThink) continue // prompt：不显示完成思考
           const id = `${msg.uuid}:${j}`
-          if (!(lastId && id === lastId)) continue // transcript：只留全局最后一个
+          if (isTranscript) {
+            if (!(lastId && id === lastId)) continue // transcript：只留全局最后一个
+          } else if (!(tailPassId && id === tailPassId)) continue // prompt-tail-think：只留尾巴选中块，历史全剔
         } else if (b.type === 'redacted_thinking') {
-          if (!isTranscript) continue // prompt：不显示完成思考；transcript 恒显示（对齐 Message.tsx）
+          if (!isTranscript && !isTailThink) continue // prompt：不显示完成思考；transcript 恒显示（对齐 Message.tsx）
+          if (isTailThink) {
+            const id = `${msg.uuid}:${j}`
+            if (!(tailPassId && id === tailPassId)) continue // 与 thinking 同一竞争键，只留尾巴选中的一块
+          }
         }
         const db = toDisplayBlock(b)
         if (db) blocks.push(db)
@@ -204,15 +367,7 @@ export function filterConversationForDisplay(messages: readonly SourceMessage[],
       continue
     }
 
-    if (msg.type === 'system') {
-      const blocks: DisplayBlock[] = []
-      for (const b of content) {
-        const db = toDisplayBlock(b)
-        if (db) blocks.push(db)
-      }
-      if (blocks.length) out.push({ role: 'system', blocks, timestamp })
-    }
-    // tool / progress / 其它：CLI 已把 tool_result 收进 user 消息，此处跳过
+    // tool / progress / 其它 system 子类型：CLI 已把 tool_result 收进 user 消息，此处跳过
   }
   return out
 }

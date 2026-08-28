@@ -112,6 +112,12 @@ type UseTypeaheadResult = {
   maxColumnWidth?: number;
   commandArgumentHint?: string;
   inlineGhostText?: InlineGhostText;
+  /**
+   * Cycle the argument-position ghost candidates ("/model g" ↑/↓). Returns
+   * true when a ghost was active and the key was consumed; false lets the
+   * caller fall through to its normal history navigation.
+   */
+  argGhostNavigate: (dir: -1 | 1) => boolean;
   handleKeyDown: (e: KeyboardEvent) => void;
 };
 
@@ -192,6 +198,34 @@ export function applyShellSuggestion(suggestion: SuggestionItem, input: string, 
   const newInput = input.slice(0, wordStart) + replacementText + input.slice(cursorOffset);
   onInputChange(newInput);
   setCursorOffset(wordStart + replacementText.length);
+}
+/**
+ * Argument-position candidates for slash commands (e.g. "/model g" → every
+ * credential-pool model whose name starts with "g"). Applies when the cursor
+ * sits at end of input, the leading word resolves to an exact command that
+ * declares getArgumentCompletions, and the trailing token partially matches a
+ * candidate. Matches are sorted shortest-first: the initial ghost hint shows
+ * the shortest candidate, ↑/↓ cycles through them, and Tab fills whichever is
+ * displayed in one shot.
+ */
+function findCommandArgCandidates(input: string, cursorOffset: number, commands: Command[]): { matches: string[]; prefixEnd: number } | undefined {
+  if (!input || !isCommandInput(input)) return undefined;
+  const spaceIndex = input.indexOf(' ');
+  if (spaceIndex === -1) return undefined; // still typing the command name itself
+  if (cursorOffset !== input.length) return undefined;
+  const commandName = input.slice(1, spaceIndex);
+  const cmd = commands.find(c => getCommandName(c) === commandName || c.aliases?.includes(commandName));
+  const getter = cmd?.getArgumentCompletions;
+  if (!getter) return undefined;
+  const lastSpace = input.lastIndexOf(' ');
+  const token = input.slice(lastSpace + 1);
+  if (!token) return undefined;
+  const lowerToken = token.toLowerCase();
+  const matches = getter(input.slice(spaceIndex + 1))
+    .filter((c): c is string => typeof c === 'string' && c.length > 0 && c !== token && c.toLowerCase().startsWith(lowerToken))
+    .sort((a, b) => a.length - b.length || a.localeCompare(b));
+  if (matches.length === 0) return undefined;
+  return { matches, prefixEnd: lastSpace + 1 };
 }
 const DM_MEMBER_RE = /(^|\s)@[\w-]*$/;
 function applyTriggerSuggestion(suggestion: SuggestionItem, input: string, cursorOffset: number, triggerRe: RegExp, onInputChange: (value: string) => void, setCursorOffset: (offset: number) => void): void {
@@ -397,13 +431,39 @@ export function useTypeahead({
   // State for inline ghost text (bash history completion - async)
   const [inlineGhostText, setInlineGhostText] = useState<InlineGhostText | undefined>(undefined);
 
+  // Argument-position ghost browsing ("/model g" → pool models): which
+  // candidate ↑/↓ last picked. Falls back to the shortest match whenever it
+  // is unset or no longer part of the filtered candidate list.
+  const [argPickedModel, setArgPickedModel] = useState<string | undefined>(undefined);
+  const argGhost = useMemo(() => {
+    if (mode !== 'prompt' || suppressSuggestions) return undefined;
+    return findCommandArgCandidates(input, cursorOffset, commands);
+  }, [input, cursorOffset, mode, commands, suppressSuggestions]);
+
   // Synchronous ghost text for prompt mode mid-input slash commands.
   // Computed during render via useMemo to eliminate the one-frame flicker
   // that occurs when using useState + useEffect (effect runs after render).
   const syncPromptGhostText = useMemo((): InlineGhostText | undefined => {
     if (mode !== 'prompt' || suppressSuggestions) return undefined;
     const midInputCommand = findMidInputSlashCommand(input, cursorOffset);
-    if (!midInputCommand) return undefined;
+    if (!midInputCommand) {
+      // No partial slash command at the cursor: argument-position completion —
+      // the ghost shows the currently browsed candidate (shortest first until
+      // ↑/↓ cycles to another one).
+      if (!argGhost) return undefined;
+      const typedToken = input.slice(argGhost.prefixEnd);
+      const picked =
+        argPickedModel && argGhost.matches.includes(argPickedModel)
+          ? argPickedModel
+          : argGhost.matches[0]!;
+      const suffix = picked.slice(typedToken.length);
+      if (!suffix) return undefined;
+      return {
+        text: suffix,
+        fullCommand: input.slice(0, argGhost.prefixEnd) + picked,
+        insertPosition: input.length,
+      };
+    }
     const match = getBestCommandMatch(midInputCommand.partialCommand, commands);
     if (!match) return undefined;
     return {
@@ -411,7 +471,7 @@ export function useTypeahead({
       fullCommand: match.fullCommand,
       insertPosition: midInputCommand.startPos + 1 + midInputCommand.partialCommand.length
     };
-  }, [input, cursorOffset, mode, commands, suppressSuggestions]);
+  }, [input, cursorOffset, mode, commands, suppressSuggestions, argGhost, argPickedModel]);
 
   // Merged ghost text: prompt mode uses synchronous useMemo, bash mode uses async useState
   const effectiveGhostText = suppressSuggestions ? undefined : mode === 'prompt' ? syncPromptGhostText : inlineGhostText;
@@ -932,6 +992,20 @@ export function useTypeahead({
         setCursorOffset(newCursorOffset);
         return;
       }
+
+      // Argument-position completion: Tab fills the currently displayed
+      // candidate in one shot (the whole model name, no per-character crawl).
+      if (argGhost) {
+        const picked =
+          argPickedModel && argGhost.matches.includes(argPickedModel)
+            ? argPickedModel
+            : argGhost.matches[0]!;
+        const newInput = input.slice(0, argGhost.prefixEnd) + picked;
+        onInputChange(newInput);
+        setCursorOffset(newInput.length);
+        setArgPickedModel(undefined);
+        return;
+      }
     }
 
     // If we have active suggestions, select one
@@ -1131,7 +1205,7 @@ export function useTypeahead({
         setMaxColumnWidth(undefined);
       }
     }
-  }, [suggestions, selectedSuggestion, input, suggestionType, commands, mode, onInputChange, setCursorOffset, onSubmit, clearSuggestions, cursorOffset, updateSuggestions, mcpResources, setSuggestionsState, agents, debouncedFetchFileSuggestions, debouncedFetchSlackChannels, effectiveGhostText]);
+  }, [suggestions, selectedSuggestion, input, suggestionType, commands, mode, onInputChange, setCursorOffset, onSubmit, clearSuggestions, cursorOffset, updateSuggestions, mcpResources, setSuggestionsState, agents, debouncedFetchFileSuggestions, debouncedFetchSlackChannels, effectiveGhostText, argGhost, argPickedModel]);
 
   // Handle enter key press - apply and execute suggestions
   const handleEnter = useCallback(() => {
@@ -1238,7 +1312,10 @@ export function useTypeahead({
     dismissedForInputRef.current = input;
   }, [debouncedFetchFileSuggestions, debouncedFetchSlackChannels, clearSuggestions, input]);
 
-  // Handler for autocomplete:previous - selects previous suggestion
+  // Handler for autocomplete:previous - selects previous suggestion.
+  // NOTE: argument-position ghost cycling is NOT done here — raw ↑/↓ also
+  // reach TextInput's history path, so the switch lives in PromptInput's
+  // history handlers via argGhostNavigate to avoid double-cycling.
   const handleAutocompletePrevious = useCallback(() => {
     setSuggestionsState(prev => ({
       ...prev,
@@ -1246,13 +1323,29 @@ export function useTypeahead({
     }));
   }, [suggestions.length, setSuggestionsState]);
 
-  // Handler for autocomplete:next - selects next suggestion
+  // Handler for autocomplete:next - selects next suggestion. See the note on
+  // handleAutocompletePrevious about ghost cycling living elsewhere.
   const handleAutocompleteNext = useCallback(() => {
     setSuggestionsState(prev => ({
       ...prev,
       selectedSuggestion: prev.selectedSuggestion >= suggestions.length - 1 ? 0 : prev.selectedSuggestion + 1
     }));
   }, [suggestions.length, setSuggestionsState]);
+
+  // Key-level hook for callers (PromptInput routes raw ↑/↓ here before
+  // history navigation) — consumes the key only when an argument-position
+  // ghost with multiple candidates is showing.
+  const argGhostNavigate = useCallback((dir: -1 | 1): boolean => {
+    if (!argGhost || suggestions.length > 0 || argGhost.matches.length < 2) {
+      return false;
+    }
+    setArgPickedModel(prev => {
+      const base = prev && argGhost.matches.includes(prev) ? prev : argGhost.matches[0]!;
+      const i = argGhost.matches.indexOf(base);
+      return argGhost.matches[(i + dir + argGhost.matches.length) % argGhost.matches.length]!;
+    });
+    return true;
+  }, [argGhost, suggestions.length]);
 
   // Autocomplete context keybindings - only active when suggestions are visible
   const autocompleteHandlers = useMemo(() => ({
@@ -1379,6 +1472,7 @@ export function useTypeahead({
     maxColumnWidth,
     commandArgumentHint,
     inlineGhostText: effectiveGhostText,
+    argGhostNavigate,
     handleKeyDown
   };
 }

@@ -265,22 +265,17 @@ a { text-decoration: none; color: inherit; }
   pointer-events: none;
 }
 @media (prefers-reduced-motion: reduce) { .tool-line.tool-running::after { animation: none; } }
-/* 实时思考状态行（2026-08-26 用户定案）：思考过程不显示内容，仅「正在思考」闪烁状态（动态态，不留 chat） */
+/* 实时思考/压缩状态行（2026-08-26 用户定案；2026-08-27 二轮：去圆点仅文本 blink+icon；
+ * 三轮：去写死 13px 字号——行内作为折叠行 label 与「正在运行/正在处理」同级须继承 14px，
+ * 独立兜底行也随 .done-body 继承协调） */
 .think-state {
   display: inline-flex; align-items: center; gap: 6px;
-  color: var(--text-3); font-size: 13px; font-weight: 500;
+  color: var(--text-3); font-weight: 500;
   animation: think-state-blink 1.6s ease-in-out infinite;
 }
-.think-state::before {
-  content: '';
-  width: 6px; height: 6px; border-radius: 50%;
-  background: var(--text-3);
-  animation: think-state-dot 1.6s ease-in-out infinite;
-}
 @keyframes think-state-blink { 0%, 100% { opacity: 1 } 50% { opacity: 0.4 } }
-@keyframes think-state-dot { 0%, 100% { opacity: 1 } 50% { opacity: 0.2 } }
 @media (prefers-reduced-motion: reduce) {
-  .think-state, .think-state::before { animation: none; }
+  .think-state { animation: none; }
 }
 /* 工具折叠运行态（2026-08-21 移植 DSH ToolRow sweep）：扫光 + 蓝色脉冲点，只有流式尾组在跑 */
 .tool-fold[data-state='running'] summary { position: relative; overflow: hidden; }
@@ -1032,6 +1027,9 @@ body.token-gate #input-wrap { display: none; }
 #chat-area.mgr-on #messages { max-width: 920px; }
 /* 项目预览 iframe 充满整个聊天区：预览时解除 920 宽帽并撑满可用高度（与 chat 界面同自适应逻辑） */
 #chat-area.mgr-on #messages:has(.preview-shell) { max-width: none; height: 100%; }
+/* 2026-08-27 完全填满：#chat-scroll 自带 padding 24/20/8 在 iframe 四周留缝（用户实测「每个边约 15px」），
+   预览态清零内边距 + 关滚动槽/滚动（iframe 内部自己滚），退出预览即恢复 */
+#chat-area.mgr-on #chat-scroll:has(.preview-shell) { padding: 0; scrollbar-gutter: auto; overflow: hidden; }
 /* 管理视图内容避让侧栏（2026-08-19 Web 容器预览 + 2026-08-25 泛化到全部 mgr 网格）：
    桌面侧栏是 absolute 覆盖层不挤占主区，会话态用 .in-session padding-left 避让；
    插件/项目/模型网格满宽会被侧栏盖住（用户实测「侧栏会直接遮挡 plugin 界面」）——
@@ -1100,14 +1098,11 @@ body.token-gate #input-wrap { display: none; }
 .mgr-model-item.settable:hover { border-color: #4176e6; }
 .mgr-model-item.is-default { border-color: #22c55e; background: #f0fdf4; }
 .mgr-model-item.is-default:hover { border-color: #16a34a; }
-/* 管理视图：项目预览（点项目胶囊 → iframe 加载 <项目>/.claude/preview/ 替换主界面；返回栏回到项目列表） */
+/* 管理视图：项目预览（点项目胶囊 → iframe 加载 <项目>/.claude/preview/ 替换主界面；退出走侧栏导航） */
 .pv-badge { font-size: 11px; font-weight: 500; color: #fff; background: #4d6bfe; border-radius: 999px; padding: 1px 8px; flex: none; }
-/* 预览返回按钮嵌入界面右上角（不再占顶部整条栏）：.preview-shell relative 承载绝对定位 */
+/* .preview-shell relative 承载绝对定位（overlay 等依赖此定位上下文） */
 .preview-shell { position: relative; display: flex; flex-direction: column; height: 100%; min-height: 0; }
-.preview-bar { position: absolute; top: 12px; right: 12px; z-index: 5; }
-.preview-back { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px; font-size: 12px; background: rgba(255,255,255,0.85); color: var(--text); border: 1px solid var(--border); cursor: pointer; transition: background 0.15s, box-shadow 0.15s; box-shadow: var(--shadow-sm); }
-.preview-back:hover { background: #fff; box-shadow: var(--shadow); }
-.preview-frame { flex: 1; width: 100%; border: 1px solid var(--border); border-radius: 2px; background: #fff; }
+.preview-frame { flex: 1; width: 100%; border: none; border-radius: 0; background: #fff; } /* 2026-08-27 去 1px 边框+圆角：完全填满 */
 /* 预览加载/兜底（2026-08-15）：先 fetch 探测入口，命中挂 iframe；失败显示占位 + 返回按钮 */
 .preview-body { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .preview-loading { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--text-2); font-size: 13px; }

@@ -272,3 +272,11 @@ description: <何时用/怎么用，一句话，供 Skill 工具自动命中>
 
 - 后端只监听 `127.0.0.1`（ComfyUI `--listen` 默认）；后端 URL 获取须过网关 token（`/api/backend` 属 `/api/*` 自动受保护）。
 - 后端文件写路径由后端自身约束（如 ComfyUI `--input-directory`/`--output-directory`），粘贴图片落到项目内目录。
+
+### 13.4 远程端同源反代 /bp/<label>/（2026-08-27）
+
+- 背景：iframe 直连 `http://127.0.0.1:<port>/` 只在本机浏览器成立——手机/平板等远程宿主上 127.0.0.1 指向设备自身 → 连接拒绝、预览覆盖层永转圈；`/preview/*` 静态兜底因子资源不带 query token 全 401，不可用。
+- 路由：`/bp/<label>/<path>?<query>` → `http://127.0.0.1:<port>/<path>?<query>`。rest/search 原样透传（保留原始 %xx 编码，不二次解码重组，防中文路径双重编码错乱）；`proxyBackendRequest` 双向流式管道（媒体大文件不落盘），请求侧剥 hop-by-hop + host + cookie（不向项目后端泄露 floria_bp 票证），响应侧剥 hop-by-hop + 上游 set-cookie（防作用域泄漏），Location 改写回 `/bp` 前缀。后端仍只绑回环，访问面不变。
+- 鉴权：不靠 query token（页面内相对子请求必裸奔）。`/api/backend` 成功响应种 `HttpOnly` cookie `floria_bp`（Path=/bp、SameSite=Lax、24h）；票证存网关内存 Map（含 label 白名单，多项目并行预览互不顶掉，sweep 过期）。`/bp/*` 凭 cookie + 白名单放行，否则 401；label 须命中 findProjects 且 hasBackend，否则 404。
+- 前端分流：`openProjectPreview` 按 `location.hostname ∉ {127.0.0.1, localhost}` 判远程宿主 → iframe 用 `/bp/<label>/`（cookie 由上一拍 `/api/backend` 响应种下，子请求自动携带）；本机保持直连 `d.url` 零开销。心跳 60s `GET /api/backend` 不变（保 lastActive + 续票证）。
+- 配套约束：**经 /bp 代理的项目前端 API 一律相对路径**（根绝对路径 `/delete` 等在 /bp 前缀下会指回网关根 404）——Pj15 已清理全部根绝对 API 路径（2026-08-27 21:18）。

@@ -81,6 +81,7 @@ const provider = {
   description: 'List and switch API providers (from credential pool)',
   supportsNonInteractive: true,
   argumentHint: '[name | add | remove]',
+  getArgumentCompletions: () => [...listProviders(), 'add', 'remove'],
   load: () => Promise.resolve({ call }),
 } satisfies Command
 

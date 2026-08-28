@@ -922,6 +922,11 @@ function PromptInput({
   // Footer nav is NOT here — when a pill is selected, TextInput focus=false so
   // these never fire. The Footer keybinding context handles ↑/↓ instead.
   function handleHistoryUp() {
+    // Argument-position ghost ("/model g") active: ↑ cycles its candidates
+    // instead of pulling an input-history entry over the typed line.
+    if (argGhostNavigate(-1)) {
+      return;
+    }
     if (suggestions.length > 1) {
       return;
     }
@@ -942,6 +947,11 @@ function PromptInput({
     onHistoryUp();
   }
   function handleHistoryDown() {
+    // Argument-position ghost ("/model g") active: ↓ cycles its candidates
+    // instead of walking input history.
+    if (argGhostNavigate(1)) {
+      return;
+    }
     if (suggestions.length > 1) {
       return;
     }
@@ -1108,7 +1118,8 @@ function PromptInput({
     selectedSuggestion,
     commandArgumentHint,
     inlineGhostText,
-    maxColumnWidth
+    maxColumnWidth,
+    argGhostNavigate
   } = useTypeahead({
     commands,
     onInputChange: trackAndSetInput,

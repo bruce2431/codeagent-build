@@ -14,15 +14,26 @@ import {
  * PID ≤ 1 returns false (0 is current process group, 1 is init).
  *
  * Note: `process.kill(pid, 0)` throws EPERM when the process exists but is
- * owned by another user. This reports such processes as NOT running, which
- * is conservative for lock recovery (we won't steal a live lock).
+ * owned by another user. This reports such processes as NOT running by
+ * default, which is conservative for lock recovery (we won't steal a live
+ * lock). Pass `epermMeansRunning` to treat EPERM as "alive" instead — correct
+ * for liveness tracking of other-user processes (gateway activity sweeps).
  */
-export function isProcessRunning(pid: number): boolean {
+export function isProcessRunning(
+  pid: number,
+  opts?: { epermMeansRunning?: boolean },
+): boolean {
   if (pid <= 1) return false
   try {
     process.kill(pid, 0)
     return true
-  } catch {
+  } catch (e) {
+    if (
+      opts?.epermMeansRunning &&
+      !!e &&
+      (e as NodeJS.ErrnoException).code === 'EPERM'
+    )
+      return true
     return false
   }
 }

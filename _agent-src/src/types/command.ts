@@ -184,6 +184,13 @@ export type CommandBase = {
   aliases?: string[]
   isMcp?: boolean
   argumentHint?: string // Hint text for command arguments (displayed in gray after command)
+  /**
+   * Optional dynamic argument completions. Given the raw args string typed
+   * after the command, return candidate strings. When the user types a
+   * partial trailing token, typeahead renders the matching candidate as gray
+   * ghost text and Tab/rightArrow-style acceptance completes it.
+   */
+  getArgumentCompletions?: (args: string) => string[]
   whenToUse?: string // From the "Skill" spec. Detailed usage scenarios for when to use this command
   version?: string // Version of the command/skill
   disableModelInvocation?: boolean // Whether to disable this command from being invoked by models

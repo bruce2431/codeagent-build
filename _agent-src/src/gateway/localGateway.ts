@@ -20,8 +20,8 @@
  *
  * HTTP/WS 用 node:http + ws（已验证可打包进 bun 编译产物），不依赖 Bun.serve。
  */
-import { createServer, type Server } from 'node:http'
-import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync, readdirSync, openSync, closeSync, truncateSync, appendFileSync, watch, type FSWatcher } from 'node:fs'
+import { createServer, request as httpRequest, type Server } from 'node:http'
+import { readFileSync, existsSync, statSync, readdirSync, openSync, closeSync, truncateSync, watch, type FSWatcher } from 'node:fs'
 import { open as fsOpen } from 'node:fs/promises'
 import { join, resolve, extname, basename, sep, isAbsolute } from 'node:path'
 import { randomBytes, randomUUID } from 'node:crypto'
@@ -43,16 +43,20 @@ import { setGatewayToken, saveGatewayTokenToDisk, clearGatewayTokenFromDisk } fr
 // 复用官方凭据池：模型校验与 CLI 同一来源（credentials.json activeProvider.models），
 // 每会话切换不写全局凭据池（不 switchModel）；getActiveModel 与 CLI getUserSpecifiedModelSetting 同源。
 // 设为默认模型 = switchModel 写凭据池 activeModel（全局默认，2026-08-23）。
-import { getActiveModel, getActiveProviderConfig, switchModel } from '../utils/credentials/pool.js'
+import { getActiveModel, getActiveProviderConfig, loadCredentials, switchModel } from '../utils/credentials/pool.js'
 // 上下文占用（dsh ContextMeter 数据源）：复用 auto-compact 同源的模型上下文窗口解析，不本地复刻。
 import { getContextWindowForModel } from '../utils/context.js'
 // 会话重命名（2026-08-24 修复）：直接复用 CLI /rename 的落盘函数（saveCustomTitle + saveAgentName），
 // 不本地复刻写盘格式——与 CLI 完全同路径，保证含 sessionId、CLI resume 能读到、退出不回退。
 import { saveAgentName, saveCustomTitle } from '../utils/sessionStorage.js'
 import { webAssets } from './web-assets.generated.js'
-// 统一设置服务（2026-08-26 E）：写 effortLevel 走官方 updateSettingsForSource（校验/合并/删除/缓存失效/失败暴露），
-// 不再本地手写 settings.json 的 JSON I/O。userSettings 在便携模式下解析到便携根 .claude/settings.json。
-import { updateSettingsForSource } from '../utils/settings/settings.js'
+// 统一设置服务（2026-08-26 E）：写 effortLevel 走官方 updateSettingsForSource、读侧走官方
+// getSettingsForSource（带缓存，写后自动失效），均不本地手解 settings.json。
+// userSettings 在便携模式下解析到便携根 .claude/settings.json。
+import { getSettingsFilePathForSource, getSettingsForSource, updateSettingsForSource } from '../utils/settings/settings.js'
+import type { SettingsJson } from '../utils/settings/types.js'
+// P2 探活收敛（2026-08-27）：signal-0 探活唯一实现在官方 genericProcessUtils，不再保留本文件第二份
+import { isProcessRunning } from '../utils/genericProcessUtils.js'
 
 // ============================================================================
 // 状态
@@ -69,9 +73,10 @@ const cliClients = new Map<string, WebSocket>()
 const sseClients = new Set<{ res: import('node:http').ServerResponse }>()
 let ssePrimed = false
 const sseSizes = new Map<string, { size: number; mtime: number }>()
-// O4：SSE 事件驱动 —— 用 fs.watch 监听各项目会话目录，替代 2s 轮询。sseWatches 持所有 watcher，
-// sseDebounce 合并同一波文件写入的多个 change/rename 事件（250ms 去抖），避免频繁扫描。
-const sseWatches = new Set<FSWatcher>()
+// O4：SSE 事件驱动 —— 用 fs.watch 监听各项目会话目录，替代 2s 轮询。sseWatches 持所有 watcher
+// （key = 会话目录绝对路径），sseDebounce 合并同一波文件写入的多个 change/rename 事件（250ms 去抖），
+// 避免频繁扫描。
+const sseWatches = new Map<string, FSWatcher>()
 let sseDebounce: NodeJS.Timeout | null = null
 // 2026-08-17 空闲自动回收：三集合（cliClients/sockets/sseClients）全空持续 GATEWAY_IDLE_MINUTES
 // 分钟后自动关闭网关，避免「所有 CLI/遥测端都退出、网关空转占端口」的孤儿状态。仅 --gateway
@@ -83,7 +88,7 @@ let idleTimer: NodeJS.Timeout | null = null
 // ============================================================================
 // Web 容器 backend 进程管理（2026-08-19）
 // preview.json 声明 backend 的项目 → 网关懒加载 spawn 后端进程 + 动态端口分配，
-// 前端 iframe 直连 http://127.0.0.1:<port>/。生命周期：网关 stop 时全部 kill、
+// 前端 iframe 本机直连 http://127.0.0.1:<port>/；远程宿主走同源代理 /bp/<label>/。生命周期：网关 stop 时全部 kill、
 // 空闲回收（复用 GATEWAY_IDLE_MINUTES 阈值）、后端异常退出自动清理记录。
 // ============================================================================
 interface BackendCfg {
@@ -105,10 +110,44 @@ interface BackendProc {
 const backendProcesses = new Map<string, BackendProc>()
 const BACKEND_PORT_BASE = 8130
 const BACKEND_PORT_MAX = 8160
-let backendReclaimTimer: NodeJS.Timeout | null = null
 // 网关正在停止标志（O1 修复）：/server off → stopLocalGateway 置位，doSpawnBackend 就绪探测
 // 循环据此提前退出并 kill 已 spawn 的子进程，避免「探测期网关停止 → 孤儿后端进程」竞态。
 let gatewayStopping = false
+
+// 2026-08-27 同源代理 /bp/<label>/：Web 容器 iframe 直连方案写死 http://127.0.0.1:<port>/，
+// 仅在本机浏览器成立——遥测端（手机）打开预览时 127.0.0.1 指向手机自身 → 连接拒绝、页面永远转圈。
+// 解法：后端仍只绑回环（访问面不变），流量经网关主端口转发（/bp/<label>/）。鉴权不靠 query token
+// （页面内相对子请求不带 token，参考 /preview/* 子资源全 401 的教训），改用票证 cookie：
+// /api/backend 本身受 token 校验，成功时种 HttpOnly cookie 作为 /bp/* 凭据（票证内含 label 白名单）。
+const BP_COOKIE_NAME = 'floria_bp'
+const BP_COOKIE_TTL_MS = 24 * 60 * 60 * 1000
+const BP_COOKIE_KEY_RE = /^[0-9a-f]{32}$/
+interface BpSession {
+  labels: Set<string>
+  expires: number
+}
+const bpSessions = new Map<string, BpSession>()
+
+/** 解析 Cookie 请求头为键值表（值按 URI 组件反转义；无头/坏段安全跳过） */
+function parseCookieHeader(header: string | undefined): Record<string, string> {
+  const out: Record<string, string> = {}
+  if (!header) return out
+  for (const part of header.split(';')) {
+    const i = part.indexOf('=')
+    if (i < 0) continue
+    try {
+      out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim())
+    } catch {
+      /* 反转义失败跳过该段 */
+    }
+  }
+  return out
+}
+
+/** 清扫过期票证（拷贝遍历防迭代中删除） */
+function sweepBpSessions(now = Date.now()): void {
+  for (const [k, s] of [...bpSessions]) if (s.expires <= now) bpSessions.delete(k)
+}
 
 // ============================================================================
 // Web 独立会话（2026-08-23 遥测端会话与 CLI 等权）
@@ -128,7 +167,6 @@ interface WebSessionProc {
   lastActive: number // 最近活跃（消息/审批），用于空闲回收
 }
 const webSessions = new Map<string, WebSessionProc>()
-let webReclaimTimer: NodeJS.Timeout | null = null
 // 会话 → 项目根定位（2026-08-25 用户定案：resume 不依赖 web 注册表，改按磁盘会话文件定位）。
 // 会话转录在 <项目根>/.claude/projects/<sessionId>.jsonl；扫描 findProjects 各组找该文件 →
 // 项目 scope → {projectLabel}（供 webSessionProjectRoot/webSessionExe 路由 cwd 与 exe），
@@ -482,13 +520,18 @@ async function parseMeta(file: string): Promise<SessionMeta | null> {
   return { title, messageCount, updatedAt: mtime }
 }
 
-function isPidAlive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) return false
+// B 探活收敛（2026-08-27 P2）：与 utils/genericProcessUtils.isProcessRunning 同为 signal-0 探活，
+// 唯一差异是 EPERM 语义——锁恢复方保守报「不在跑」（防误抢他人锁），网关场景 EPERM=进程存在但属
+// 他人所有 → 应视为存活（活动记录不误删、子进程不误判退出）。差异用选项表达，全部调用点经由本别名。
+const isPidAlive = (pid: number): boolean =>
+  Number.isInteger(pid) && pid > 0 && isProcessRunning(pid, { epermMeansRunning: true })
+
+/** Windows 杀进程树兜底：child.kill() 只杀直接进程，taskkill /F /T 连同子孙进程一并结束。 */
+function killTree(pid: number): void {
   try {
-    process.kill(pid, 0)
-    return true
-  } catch (e) {
-    return !!e && (e as NodeJS.ErrnoException).code === 'EPERM'
+    spawnSync('taskkill', ['/F', '/T', '/PID', String(pid)], { stdio: 'ignore', windowsHide: true })
+  } catch {
+    /* 忽略 */
   }
 }
 
@@ -509,6 +552,7 @@ function sweepStaleMaps(now = Date.now()): void {
 
 async function listSessions(root: string) {
   sweepStaleMaps()
+  ensureSseWatches(root) // P0 自愈兜底：前端拉列表即按当前项目布局增量补齐 watch
   const groups = findProjects(root)
   const sessions: unknown[] = []
   for (const g of groups) {
@@ -608,9 +652,11 @@ function readSession(id: string, root: string) {
   }
   // 复用 CLI 权威过滤（conversationDisplay.filterConversationForDisplay），
   // 与 CLI 上报的 display 同源，不再本地复刻 isSynth/toBlocks 等逻辑。
-  // mode 用 'prompt'（对齐 CLI 默认 REPL 显示）：thinking 全隐藏。原 'transcript' 会保留
-  // 全局最后一个 thinking，遥测端历史会话因此显示出不该出现的思考过程（无效思考过滤失效）。
-  const messages = filterConversationForDisplay(records as never, 'prompt')
+  // mode 用 'prompt-tail-think'（2026-08-27 思考等权展示·方案B）：已收尾历史 thinking 全隐藏
+  // （原 'prompt' 语义不变），未收尾尾巴放行最后一块 thinking → 前端 liveFoldBody 以 vacuumState=
+  // 'think' 驱动「正在思考」行内状态（CLI 高 effort 思考期 web 不再全空白）。原 'transcript' 曾
+  // 保留全局最后一个 thinking，遥测端历史会话因此泄露不该出现的思考过程（废弃）。
+  const messages = filterConversationForDisplay(records as never, 'prompt-tail-think')
   const context = extractContextUsage(records)
   return { file: basename(p), path: p, messages, context }
 }
@@ -876,8 +922,9 @@ function modelProviderLabel(name: string): string {
   return MODEL_PROVIDER_LABELS[name.toLowerCase()] || name
 }
 function listModels(root: string): Record<string, unknown> {
-  const settingsPath = join(root, '.claude', 'settings.json')
-  const settings = readJsonObject(settingsPath) || {}
+  // 读侧走官方统一设置服务（2026-08-27 P1 修复）：getSettingsForSource('userSettings') 解析到
+  // 便携根 .claude/settings.json（与写侧 updateSettingsForSource 同源，写后缓存自动失效）。
+  const settings = getSettingsForSource('userSettings') ?? ({} as SettingsJson)
   const items: Array<{ k: string; v: string; src: string }> = []
   if (settings.model !== undefined) items.push({ k: 'model', v: String(settings.model), src: 'settings.json' })
   const env0 = settings.env && typeof settings.env === 'object' ? (settings.env as Record<string, unknown>) : {}
@@ -894,15 +941,12 @@ function listModels(root: string): Record<string, unknown> {
       seen.add(k)
     }
   }
-  // 凭据池：credentials.json providers[].models[] = 各供应商实际可用的模型清单
-  const creds = readJsonObject(join(root, '.claude', 'credentials.json')) || {}
-  const providers =
-    creds.providers && typeof creds.providers === 'object'
-      ? (creds.providers as Record<string, unknown>)
-      : {}
+  // 凭据池（2026-08-27 P1 修复）：不再手解 credentials.json，复用官方 loadCredentials()
+  // （providers[].models[] = 各供应商实际可用的模型清单）
+  const creds = loadCredentials()
   const poolRows: Array<{ k: string; v: string; src: string; vision?: boolean }> = []
   const poolSet = new Set<string>()
-  for (const [name, cfg0] of Object.entries(providers)) {
+  for (const [name, cfg0] of Object.entries(creds.providers)) {
     const cfg = (cfg0 && typeof cfg0 === 'object' ? cfg0 : {}) as Record<string, unknown>
     const models = Array.isArray(cfg.models) ? (cfg.models as string[]) : []
     const mv =
@@ -928,21 +972,26 @@ function listModels(root: string): Record<string, unknown> {
     // 当前供应商可切换的模型清单（每会话模型切换的校验集；前端模型浮窗据此渲染）
     providerModels: activeCfg && Array.isArray(activeCfg.models) ? (activeCfg.models as string[]) : [],
     effortLevel: settings.effortLevel !== undefined ? String(settings.effortLevel) : null,
-    source: settingsPath,
+    source: getSettingsFilePathForSource('userSettings') ?? null,
     items: [...poolRows, ...cfgItems],
+  }
+}
+
+/** 统一群发（P2 收敛）：逐个发送并吞掉单个客户端断开异常，broadcast/broadcastToClients/pollSse/内联群发共用。 */
+function sendAll<T>(targets: Iterable<T>, send: (t: T) => void): void {
+  for (const t of targets) {
+    try {
+      send(t)
+    } catch {
+      /* 断开忽略 */
+    }
   }
 }
 
 /** 广播控制消息给所有在线 CLI 进程（/clients 注册的 WS）。 */
 function broadcastToClients(msg: unknown): void {
   const s = JSON.stringify(msg)
-  for (const c of cliClients.values()) {
-    try {
-      c.send(s)
-    } catch {
-      /* 断开忽略 */
-    }
-  }
+  sendAll(cliClients.values(), (c) => c.send(s))
 }
 
 /** 精确路由控制消息到指定会话（/clients 注册的 WS）；无 sessionId/未命中 → 返回 false（不广播兜底，2026-08-23 用户定案）。 */
@@ -974,18 +1023,25 @@ function scheduleSseFlush(root: string): void {
   }, 250)
 }
 function ensureSseWatches(root: string): void {
-  if (sseWatches.size > 0) return
+  // P0 修复（2026-08-27）：原版 `size > 0` 早退只在首个 SSE 订阅时建一批 watch，网关运行中
+  // 新建的项目目录永不覆盖，其会话变化无法触发 SSE → 改为增量补建：每次调用按 findProjects
+  // 当前结果为缺失的目录补 watch；watcher error（Windows 目录删除等失效）摘除条目，下次调用自动重建。
   for (const g of findProjects(root)) {
+    if (sseWatches.has(g.dir)) continue
     try {
-      const w = watch(g.dir, () => scheduleSseFlush(root))
-      sseWatches.add(w)
+      const dir = g.dir
+      const w = watch(dir, () => scheduleSseFlush(root))
+      w.on('error', () => {
+        if (sseWatches.get(dir) === w) sseWatches.delete(dir)
+      })
+      sseWatches.set(dir, w)
     } catch {
       /* 目录不存在/被移除，忽略 */
     }
   }
 }
 function stopSseWatches(): void {
-  for (const w of sseWatches) {
+  for (const w of sseWatches.values()) {
     try {
       w.close()
     } catch {
@@ -1023,13 +1079,9 @@ function pollSse(root: string): void {
       if (ssePrimed && (changed || !prev)) {
         const obj = { type: 'updated', hash: f.replace(/\.jsonl$/, ''), file: f, updatedAt: st.mtimeMs }
         const s = `data: ${JSON.stringify(obj)}\n\n`
-        for (const c of sseClients) {
-          try {
-            c.res.write(s)
-          } catch {
-            /* 断开忽略 */
-          }
-        }
+        sendAll(sseClients, (c) => {
+          c.res.write(s)
+        })
       }
       sseSizes.set(p, { size: st.size, mtime: st.mtimeMs })
     }
@@ -1048,6 +1100,11 @@ function sendJson(res: ServerResponse, status: number, obj: unknown): void {
 }
 function sendError(res: ServerResponse, e: unknown): void {
   sendJson(res, 500, { error: String((e && (e as Error).message) || e) })
+}
+/** readReportBody 统一 catch 响应（P2 收敛）：超限 413 payload too large，其余一律 400 invalid body。 */
+function sendReportBodyError(res: ServerResponse, error: unknown): void {
+  const status = error instanceof ReportBodyTooLargeError ? 413 : 400
+  sendJson(res, status, { error: status === 413 ? 'payload too large' : 'invalid body' })
 }
 
 async function handleRequest(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse, root: string): Promise<void> {
@@ -1162,8 +1219,7 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
       if (effortLevel !== undefined) broadcastToClients({ type: 'effort', value: effortLevel })
       sendJson(res, 200, { ok: true, model: model ?? null, effortLevel: effortLevel ?? null, defaultModel: defaultModel ?? null })
     } catch (error) {
-      const status = error instanceof ReportBodyTooLargeError ? 413 : 400
-      sendJson(res, status, { error: status === 413 ? 'payload too large' : 'invalid body' })
+      sendReportBodyError(res, error)
     }
     return
   }
@@ -1254,7 +1310,7 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
   }
   // 默认预览页数据：/api/project?label=<项目> → 文件树 + README + 会话元信息（GitHub 仓库风格默认界面）
   // 2026-08-19 Web 容器：/api/backend?label=<项目> → 懒加载 spawn 该项目 preview.json 声明的后端进程，
-  // 返回 {url} 供前端 iframe 直连（受上方 /api/* token 校验保护；后端仅监听 127.0.0.1，访问面可控）。
+  // 返回 {url}：本机 iframe 直连；远程宿主由前端改走同源代理 /bp/<label>/（受上方 /api/* token 校验保护；后端仅监听 127.0.0.1，访问面可控）。
   if (req.method === 'GET' && url.pathname === '/api/backend') {
     const bLabel = url.searchParams.get('label') || ''
     const bProj = findProjects(root).find((g) => g.scope === 'project' && g.label === bLabel && g.hasBackend)
@@ -1264,6 +1320,20 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
     }
     try {
       const proc = await ensureBackend(bLabel, bProj.backendCfg)
+      // 同源代理票证：为该浏览器种/续 HttpOnly cookie，开放 /bp/<label>/ 转发通道；
+      // 已有票证则追加本 label 并续期（多项目并行预览互不顶掉）。
+      sweepBpSessions()
+      const ckJar = parseCookieHeader(req.headers.cookie)
+      let ckKey = ckJar[BP_COOKIE_NAME]
+      let bpSess = ckKey && BP_COOKIE_KEY_RE.test(ckKey) ? bpSessions.get(ckKey) : undefined
+      if (!bpSess) {
+        ckKey = randomBytes(16).toString('hex')
+        bpSess = { labels: new Set<string>(), expires: 0 }
+        bpSessions.set(ckKey, bpSess)
+      }
+      bpSess.labels.add(bLabel)
+      bpSess.expires = Date.now() + BP_COOKIE_TTL_MS
+      res.setHeader('Set-Cookie', `${BP_COOKIE_NAME}=${ckKey}; Path=/bp; HttpOnly; SameSite=Lax; Max-Age=86400`)
       // name：overlay 提示用（preview.json backend.name 或项目 label），前端据此显示「正在启动 <name>…」，可插拔
       sendJson(res, 200, { url: `http://127.0.0.1:${proc.port}/`, port: proc.port, pid: proc.pid, name: proc.cfg.name || bLabel })
     } catch (e) {
@@ -1337,6 +1407,42 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
     const fType = MIME[extname(fAbs)] ?? 'application/octet-stream'
     res.writeHead(200, { 'Content-Type': fType, 'Cache-Control': 'no-cache' })
     res.end(readFileSync(fAbs))
+    return
+  }
+
+  // 2026-08-27 Web 容器同源反向代理：/bp/<label>/<path>?<query> → http://127.0.0.1:<port>/<path>?<query>
+  // 远程端（手机遥测）无法直连回环后端端口，统一经网关主端口转发；后端仍只绑 127.0.0.1，访问面不变。
+  // 不做 query token 校验（子资源必裸奔）；凭 /api/backend 种下的票证 cookie + label 白名单放行。
+  const bpMatch = /^\/bp\/([^/?]+)(\/[^?]*)?(\?.*)?$/.exec(req.url ?? '')
+  if (bpMatch) {
+    let bpLabel = ''
+    try {
+      bpLabel = decodeURIComponent(bpMatch[1])
+    } catch {
+      bpLabel = bpMatch[1]
+    }
+    const bpJar = parseCookieHeader(req.headers.cookie)
+    const bpKey = bpJar[BP_COOKIE_NAME]
+    const bpTicket = bpKey ? bpSessions.get(bpKey) : undefined
+    if (!bpTicket || !bpTicket.labels.has(bpLabel)) {
+      sendJson(res, 401, { error: 'unauthorized' })
+      return
+    }
+    const bpProj = findProjects(root).find((g) => g.scope === 'project' && g.label === bpLabel && g.hasBackend)
+    if (!bpProj || !bpProj.backendCfg) {
+      sendJson(res, 404, { error: 'no backend for project' })
+      return
+    }
+    let bpProc: BackendProc
+    try {
+      bpProc = await ensureBackend(bpLabel, bpProj.backendCfg) // 直开页面（无父页心跳）也顺带保活
+    } catch (e) {
+      sendError(res, e)
+      return
+    }
+    bpTicket.expires = Date.now() + BP_COOKIE_TTL_MS
+    // rest/search 原样透传（保留原始 %xx 编码），不在网关层二次解码重组，防中文路径双重编码错乱
+    proxyBackendRequest(req, res, bpProc, `/bp/${bpMatch[1]}`, bpMatch[2] || '/', bpMatch[3] || '')
     return
   }
   // 项目预览页静态托管：/preview/<项目>/* → <root>/<项目>/.claude/preview/*（点击项目胶囊时前端 iframe 加载替换界面）
@@ -1437,8 +1543,7 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
       sweepStaleMaps()
       sendJson(res, 200, { ok: true })
     } catch (error) {
-      const status = error instanceof ReportBodyTooLargeError ? 413 : 400
-      sendJson(res, status, { error: status === 413 ? 'payload too large' : 'invalid body' })
+      sendReportBodyError(res, error)
     }
     return
   }
@@ -1462,8 +1567,7 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
       sweepStaleMaps()
       sendJson(res, 200, { ok: true })
     } catch (error) {
-      const status = error instanceof ReportBodyTooLargeError ? 413 : 400
-      sendJson(res, status, { error: status === 413 ? 'payload too large' : 'invalid body' })
+      sendReportBodyError(res, error)
     }
     return
   }
@@ -1482,8 +1586,7 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
       sweepStaleMaps()
       sendJson(res, 200, { ok: true })
     } catch (error) {
-      const status = error instanceof ReportBodyTooLargeError ? 413 : 400
-      sendJson(res, status, { error: status === 413 ? 'payload too large' : 'invalid body' })
+      sendReportBodyError(res, error)
     }
     return
   }
@@ -1535,13 +1638,7 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
 
 function broadcast(msg: unknown): void {
   const s = JSON.stringify(msg)
-  for (const c of sockets) {
-    try {
-      c.send(s)
-    } catch {
-      /* 断开忽略 */
-    }
-  }
+  sendAll(sockets, (c) => c.send(s))
 }
 
 /** 遥测端 WS 断开 → 从所有 web 会话订阅集合中摘除（重连后前端重新 subscribe） */
@@ -1619,13 +1716,7 @@ function handleWsMessage(ws: WebSocket, raw: string): void {
       }
       // 无 sessionId → 广播全部在线 CLI 客户端；无在线 CLI → status 提示
       if (cliClients.size) {
-        for (const c of cliClients.values()) {
-          try {
-            c.send(JSON.stringify({ type: 'send', text }))
-          } catch {
-            /* 断开忽略 */
-          }
-        }
+        sendAll(cliClients.values(), (c) => c.send(JSON.stringify({ type: 'send', text })))
       } else {
         ws.send(JSON.stringify({ type: 'status', state: '当前无在线 CLI 进程，消息未注入' }))
       }
@@ -1850,13 +1941,7 @@ async function doSpawnBackend(label: string, cfg: BackendCfg): Promise<BackendPr
     } catch {
       /* 忽略 */
     }
-    if (child.pid) {
-      try {
-        spawnSync('taskkill', ['/F', '/T', '/PID', String(child.pid)], { stdio: 'ignore', windowsHide: true })
-      } catch {
-        /* 忽略 */
-      }
-    }
+    if (child.pid) killTree(child.pid)
     throw new Error(`backend ${label}: 端口 ${port} 就绪探测失败（${cfg.readyPath}），详见日志 ${backendLogPath(label)}`)
   }
   backendProcesses.set(label, proc)
@@ -1873,17 +1958,76 @@ function killBackend(label: string): void {
     /* 忽略 */
   }
   // Windows 兜底：child.kill 不杀进程树，taskkill /T 连子进程一起清
-  if (p.pid) {
-    try {
-      spawnSync('taskkill', ['/F', '/T', '/PID', String(p.pid)], { stdio: 'ignore', windowsHide: true })
-    } catch {
-      /* 忽略 */
-    }
-  }
+  if (p.pid) killTree(p.pid)
 }
 
 function killAllBackends(): void {
   for (const label of [...backendProcesses.keys()]) killBackend(label)
+}
+
+// ============================================================================
+// Web 容器同源反代助手（2026-08-27）：远程端经网关主端口访问回环后端容器
+// ============================================================================
+const PROXY_HOP_HEADERS = new Set([
+  'connection',
+  'keep-alive',
+  'proxy-authenticate',
+  'proxy-authorization',
+  'te',
+  'trailer',
+  'transfer-encoding',
+  'upgrade',
+])
+
+/** 上游 Location 重写：127.0.0.1:<port> 绝对地址或根相对路径改写到 /bp 前缀下；其余原样返回 */
+function rewriteLocation(loc: string, prefix: string, port: number): string {
+  const abs = `http://127.0.0.1:${port}`
+  if (loc === abs) return prefix
+  if (loc.startsWith(abs + '/')) return prefix + loc.slice(abs.length)
+  if (loc.startsWith('/')) return prefix + loc
+  return loc
+}
+
+/** 把 /bp/<label>/… 请求原样转发到回环后端 http://127.0.0.1:<port>/…（双向流式管道，媒体大文件不落盘） */
+function proxyBackendRequest(
+  req: import('node:http').IncomingMessage,
+  res: import('node:http').ServerResponse,
+  proc: BackendProc,
+  prefix: string,
+  rawPath: string,
+  rawSearch: string,
+): void {
+  const upHeaders: Record<string, string | string[] | undefined> = {}
+  for (const [k, v] of Object.entries(req.headers)) {
+    const lk = k.toLowerCase()
+    // cookie 必须剥离：不向项目后端泄露 floria_bp 票证
+    if (PROXY_HOP_HEADERS.has(lk) || lk === 'host' || lk === 'cookie') continue
+    upHeaders[k] = v as string | string[] | undefined
+  }
+  upHeaders.host = `127.0.0.1:${proc.port}`
+  const upReq = httpRequest(
+    { host: '127.0.0.1', port: proc.port, method: req.method, path: rawPath + rawSearch, headers: upHeaders },
+    (upRes) => {
+      const outHeaders: Record<string, string> = {}
+      for (const [k, v] of Object.entries(upRes.headers)) {
+        const lk = k.toLowerCase()
+        // hop-by-hop 与上游 set-cookie 一并剥离（防止上游会话 cookie 泄漏到网关作用域）
+        if (PROXY_HOP_HEADERS.has(lk) || lk === 'set-cookie') continue
+        outHeaders[k] = Array.isArray(v) ? v.join(', ') : String(v ?? '')
+      }
+      const loc = upRes.headers.location
+      if (typeof loc === 'string') outHeaders.location = rewriteLocation(loc, prefix, proc.port)
+      else if (Array.isArray(loc) && loc.length > 0) outHeaders.location = rewriteLocation(loc[0], prefix, proc.port)
+      res.writeHead(upRes.statusCode ?? 502, outHeaders)
+      upRes.pipe(res)
+    },
+  )
+  req.pipe(upReq)
+  req.on('error', () => upReq.destroy())
+  upReq.on('error', () => {
+    if (!res.headersSent) sendJson(res, 502, { error: 'backend unreachable' })
+    else res.destroy()
+  })
 }
 
 // 空闲回收：backend 超过 idleMinutes 无活跃 → kill（独立于网关自身空闲回收，
@@ -1897,12 +2041,6 @@ function reclaimIdleBackends(): void {
       killBackend(label)
     }
   }
-}
-
-function scheduleBackendReclaim(): void {
-  if (!ENABLE_IDLE_RECLAIM || backendReclaimTimer) return
-  backendReclaimTimer = setInterval(reclaimIdleBackends, 60 * 1000)
-  backendReclaimTimer.unref?.()
 }
 
 // ============================================================================
@@ -2001,11 +2139,7 @@ function spawnWebSession(resume?: string, project?: string): Promise<string> {
       }
       if (Date.now() - startedAt > REGISTER_TIMEOUT_MS) {
         clearInterval(timer)
-        try {
-          if (child.pid && isPidAlive(child.pid)) spawnSync('taskkill', ['/F', '/T', '/PID', String(child.pid)], { stdio: 'ignore', windowsHide: true })
-        } catch {
-          /* 忽略 */
-        }
+        if (child.pid && isPidAlive(child.pid)) killTree(child.pid)
         reject(new Error(`web 会话启动超时（${REGISTER_TIMEOUT_MS / 1000}s 内未完成网关注册）`))
       }
     }, 300)
@@ -2035,13 +2169,7 @@ function stopWebSession(sessionId: string): boolean {
   if (!p) return false
   webSessions.delete(sessionId)
   const pid = p.pid ?? p.child.pid
-  if (pid && isPidAlive(pid)) {
-    try {
-      spawnSync('taskkill', ['/F', '/T', '/PID', String(pid)], { stdio: 'ignore', windowsHide: true })
-    } catch {
-      /* 忽略 */
-    }
-  }
+  if (pid && isPidAlive(pid)) killTree(pid)
   return true
 }
 
@@ -2060,10 +2188,16 @@ function reclaimIdleWebSessions(): void {
   }
 }
 
-function scheduleWebReclaim(): void {
-  if (!ENABLE_IDLE_RECLAIM || webReclaimTimer) return
-  webReclaimTimer = setInterval(reclaimIdleWebSessions, 60 * 1000)
-  webReclaimTimer.unref?.()
+// P2 收敛（2026-08-27）：backend 与 web 会话原是两套平行 setInterval 回收样板（同 ENABLE_IDLE_RECLAIM
+// 门控、同 60s 步进），合并为单一 interval 依次跑两份清扫；停止时在 stopLocalGateway 统一 clearInterval。
+let reclaimTimer: NodeJS.Timeout | null = null
+function scheduleReclaim(): void {
+  if (!ENABLE_IDLE_RECLAIM || reclaimTimer) return
+  reclaimTimer = setInterval(() => {
+    reclaimIdleBackends()
+    reclaimIdleWebSessions()
+  }, 60 * 1000)
+  reclaimTimer.unref?.()
 }
 
 function scheduleIdleShutdown(): void {
@@ -2105,17 +2239,16 @@ export function startLocalGateway(opts?: { host?: string; port?: number; token?:
   const root = getPortableRoot()
   // 启动即挂上空闲回收计时：此时无任何连接，若后续一直无人使用，到点自动关闭
   scheduleIdleShutdown()
-  // 2026-08-19 Web 容器：backend 进程空闲回收（独立于网关自身，仅 --gateway 独立进程模式）
-  scheduleBackendReclaim()
-  // 2026-08-23 web 独立会话：headless 子进程空闲回收
-  scheduleWebReclaim()
+  // backend（2026-08-19）与 web 会话（2026-08-23）空闲回收合并定时器（P2 收敛，独立于网关自身空闲回收）
+  scheduleReclaim()
 
   server = createServer((req, res) => handleRequest(req, res, root))
   wss = new WebSocketServer({ noServer: true })
   wss.on('connection', (ws) => {
     sockets.add(ws)
     scheduleIdleShutdown()
-    broadcast({ type: 'status', state: 'connected' })
+    // 2026-08-27 移除「connected」状态广播：此前每次 WS 连接 broadcast {type:'status',state:'connected'}，
+    // 前端把它渲染成 chat 区系统行「· connected」；该提示无消费价值（其它 status 状态保留），故根因删除。
     ws.on('message', (data) => {
       handleWsMessage(ws, data.toString())
     })
@@ -2163,6 +2296,7 @@ export function startLocalGateway(opts?: { host?: string; port?: number; token?:
         }
         cliClients.set(sid, ws)
         approvalTrailPush('cli-register', sid)
+        ensureSseWatches(root) // P0：新 CLI 会话上线（web spawn / 终端在全新项目首开会话）→ 补齐其落盘目录 watch
         scheduleIdleShutdown()
         // 2026-08-24 审批双操作（web 与 CLI 均可）：CLI 交互权限弹窗经 /clients 上报审批请求，
         // 网关转 floria 审批卡；本地先操作/请求撤销 → 通知 floria 撤卡。
@@ -2268,17 +2402,12 @@ export function stopLocalGateway(): boolean {
     idleTimer = null
   }
   stopSseWatches()
-  // 2026-08-19 Web 容器：停网关时一并 kill 全部 backend 子进程 + 停回收 timer
-  if (backendReclaimTimer) {
-    clearInterval(backendReclaimTimer)
-    backendReclaimTimer = null
+  // P2 收敛：停单一回收定时器 + 一并 kill 全部 backend 子进程 / 关停全部 web 会话窗口
+  if (reclaimTimer) {
+    clearInterval(reclaimTimer)
+    reclaimTimer = null
   }
   killAllBackends()
-  // 2026-08-23 web 独立会话：停网关时一并关停全部 headless 子进程 + 停回收 timer
-  if (webReclaimTimer) {
-    clearInterval(webReclaimTimer)
-    webReclaimTimer = null
-  }
   killAllWebSessions()
   for (const c of sockets) {
     try {
@@ -2320,13 +2449,4 @@ export function stopLocalGateway(): boolean {
     return true
   }
   return false
-}
-
-export function isLocalGatewayRunning(): boolean {
-  return !!server
-}
-
-/** 当前内置网关 token（未启动时返回空串）。用于 /server 回显已运行网关的访问 URL。 */
-export function getLocalGatewayToken(): string {
-  return currentToken
 }

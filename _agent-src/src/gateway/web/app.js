@@ -535,6 +535,13 @@
       if (!fold.isConnected) { stopLiveFoldTimer(); return }
       const sec = Math.round((Date.now() - t1) / 1000)
       sum.innerHTML = `<span class="d-chev">${CHEV}</span><span class="df-dot"></span>正在处理<span class="d-dur"> ${fmtDur(sec)}</span>`
+      // 思考/压缩态同源跳字（2026-08-27 四轮）：data-ts=真空期起点（末条落盘记录时刻），label 原
+      // 位替换在尾组 tool-fold summary 内、不属于本 summary innerHTML 覆盖范围，可安全原地更新
+      const stEl = fold.querySelector('.think-state[data-ts]')
+      if (stEl) {
+        const dsec = Math.max(0, Math.round((Date.now() - Number(stEl.dataset.ts)) / 1000))
+        stEl.textContent = `${stEl.dataset.mode === 'compact' ? '正在压缩会话中……' : '正在思考'} · ${fmtDur(dsec)}`
+      }
     }
     tick()
     liveFoldTimer = setInterval(tick, 1000)
@@ -558,6 +565,11 @@
     // 任何导航（route 被调用）→ 退出管理视图；管理视图只由 mgr-tab 点击直接 renderMgr 进入，不走 route
     state.mgr = null
     state.preview = null
+    // 离开项目预览时回收 backend 保活心跳（2026-08-27 返回按钮移除后，退出预览全靠导航）
+    if (window.__backendHeartbeat) {
+      clearInterval(window.__backendHeartbeat)
+      window.__backendHeartbeat = null
+    }
     syncMgrTabs()
     // 2026-08-25 会话切换滞后修复：renderRecent() 里 .on 高亮按 state.currentHash 判定，
     // 原先 renderSession() 在 renderRecent() 之后才设 currentHash → 点第一次侧栏高亮停在旧会话，
@@ -814,35 +826,52 @@
   // 实时（处理中）段体（2026-08-26 用户定案：一个工具调用轮次只渲染一个工具折叠行）：
   // 有工具在运行 → summary 显示「正在运行：<当前工具>」+ 光泽扫动，点开看全部工具步明细
   // （已完成行 + 当前运行行）；全部完成（回合间等待回复/思考）→ 折叠概括（与已处理段同形态）。
-  // 思考块 → 只显示一次「正在思考」闪烁状态行（不显示思考内容，多块去重为一个，属实时动态）；
-  // 旁白/提问原位穿插（在其对应工具调用之上）。轮次结束（回复落地）后整段改走 groupTools 折叠概括。
-  function liveFoldBody(items) {
+  // 【思考/压缩态（2026-08-27 二轮修正：均不独立成行）】vacuumState='think'|'compact'|null：
+  // 尾动作为思考间隙/压缩标记（auto-compact 自动摘要）时，「末尾工具组的折叠行 label 原位替换」
+  // 为『正在思考』/『正在压缩会话中……』（复用 tool-running 扫光形态，点开仍有明细；新一轮
+  // 工具开始后恢复「正在运行：Y」——与工具调用等权轮转，用户 08-27 定案）。仅纯空窗（items
+  // 无任何可见步骤，如刚发消息 CLI 首段思考、末条 thinking 经方案B放行到位）无折叠行可替换
+  // 时才退化为折叠体内独立状态行兜底。历史思考抑制：某思考之后还有任何可见步骤项（工具/
+  // 旁白/提问/注释/更新的思考）→ 该思考已过时；同一记录 thinking 在前 tool_use 在后时自动
+  // 只剩「正在运行」。旁白是独立 kind（text），不经 think 分支——思考与旁白严格分流。
+  // 真空期判定见 closeSeg（busyOk/vacuumState；方案B 见 localGateway.ts / server.mjs readSession
+  // 尾部放行）。轮次结束（回复落地）后整段改走 groupTools 折叠概括。
+  function liveFoldBody(items, vacuumState, vacuumStart) {
     let html = ''
     let tools = []
-    let thinkShown = false
-    const flushTools = () => {
+    // 思考/压缩态文本（四轮：带 data-ts 起点，bindLiveFoldTimer 每秒补「· Ns」，对齐 CLI spinner 计时）
+    const stateLabel = (st) => {
+      const verb = st === 'compact' ? '正在压缩会话中……' : '正在思考'
+      const attr = vacuumStart ? ` data-ts="${vacuumStart}" data-mode="${st}"` : ''
+      return `<span class="think-state"${attr}>${verb}</span>`
+    }
+    const flushTools = (tailState) => {
       if (!tools.length) return
       const rows = tools.map((g) => (g.kind === 'tool' && g.done) ? g.html : toolCurHtml(g.block)).join('')
       const running = tools.filter((g) => g.kind === 'tool' && !g.done)
       if (running.length) {
         const cur = toolMeta(running[running.length - 1].block)
         html += `<details class="tool-fold"><summary><span class="tool-line tool-running"><span class="t-ico">${toolIcon(cur.name)}</span><span class="tl-text">正在运行：${esc(cur.zh)}${cur.detail ? ' · ' + esc(cur.detail) : ''}</span></span></summary><div class="tool-fold-body">${rows}</div></details>`
+      } else if (tailState) {
+        // 尾组全部完成 + 真空期（思考/压缩）→ 复用此折叠行的 label 原位替换为状态闪烁文本（保扫光/可展开明细）
+        html += `<details class="tool-fold"><summary><span class="tool-line tool-running"><span class="t-ico">${THINK_ICON}</span><span class="tl-text">${stateLabel(tailState)}</span></span></summary><div class="tool-fold-body">${rows}</div></details>`
       } else {
         html += `<details class="tool-fold"><summary><span class="tf-label">${esc(toolFoldLabel(tools))}</span></summary><div class="tool-fold-body">${rows}</div></details>`
       }
       tools = []
     }
-    for (const it of items) {
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i]
       if (!it || !it.html) continue // 占位/置空的块（reply 占位、被过滤的思考）
-      if (it.kind === 'think') {
-        if (!thinkShown) { html += '<span class="think-state">正在思考…</span>'; thinkShown = true }
-        continue
-      }
+      if (it.kind === 'think') continue // 思考永不独立成行：有尾工具组=label 原位替换；纯空窗=末尾兜底行
       if (it.kind === 'tool') { tools.push(it); continue } // 完成/运行中的工具都进当前组 → 统一成一个折叠行
-      flushTools()
+      flushTools(null) // 中途被旁白/文本打断的工具组按普通折叠收口（状态只在真正的尾组上亮）
       html += it.html
     }
-    flushTools()
+    flushTools(vacuumState || null) // 循环结束后仍挂着的尾组才可能进入思考/压缩态
+    // 纯空窗兜底：没有任何可见输出（无工具组/旁白，items 至多为被抑制的 think 占位）
+    // → 折叠体内独立状态行。真实场景：CLI 高 effort 思考期 web 段内原本全空白。
+    if (vacuumState && !html) html = stateLabel(vacuumState)
     return html
   }
 
@@ -981,8 +1010,10 @@
   // 压缩/自动摘要标记：转录里压缩会把「会话续接」记成 user|text（后端已映射 role:'system'，
   // 标签「会话续接（自动摘要）」）。命中它 = 当前回合被压缩打断，但 agent 仍在干活——
   // 不应把它当成回合结束，否则「正在处理」被强收成「已处理」、后续思考/工具拆成断开的新段。
-  // ⚠️ 仅 server.mjs 离线兜底路径（C 路径）生效：A/B 路径（网关 display/磁盘兜底）的压缩标记
-  // 已被 filterConversationForDisplay('prompt') 剔除，此判定只服务于离线数据。
+  // ⚠️ 存活代码勿删（2026-08-27 P2 复核纠正审查报告§C 结论）：shouldShowUserMessage 只剔 isMeta，
+  // 而 isCompactSummary 续接记录不带 isMeta、conversationDisplay 亦无专门剔除 → 经网关 display /
+  // 磁盘兜底同样以 role:'user' 到达前端；处理中命中即驱动 liveFoldBody「正在压缩会话中……」，
+  // 已收尾时静默吞行。英/中双正则分别兜官方原文与离线标签两种形态。
   const CONTINUED_RE = /This session is being continued from a previous conversation/i
   function isContinuationMsg(m) {
     if (m.role !== 'system' && m.role !== 'user') return false
@@ -1124,14 +1155,6 @@
       if (isFinal) charNote = (!s.finished && s.lastTool) ? toolToChar(s.lastTool) : 1
       // 旁白 text 原位回填（与其后的动作交错，不再统一沉到段尾）；reply 占位置空（回复主内容在折叠外单独渲染）
       for (const t of s.texts) s.items[t.idx].html = (t === reply) ? '' : processTextHtml(t.text)
-      // 思考过滤（2026-08-23 任务 3 收敛：权威在数据层/源码，此处仅按段聚合兜底）：
-      // 网关 prompt 路径 thinking 已被源码 filterConversationForDisplay 全剔除 → s.thinks 恒空、本分支不执行；
-      // server.mjs toBlocks 已下沉「每条记录只留最后一个 thinking」（镜像 CLI hidePastThinking，权威在源码）。
-      // 保留本分支 = 旧数据 / transcript 模式尾巴兜底：同回合多条 assistant 记录时只显示段内最后一个思考块；
-      // 处理中段（!processing 为假）保留全部思考（对齐 CLI 实时可见思考）。
-      if (s.thinks.length > 1 && !processing) {
-        for (let k = 0; k < s.thinks.length - 1; k++) s.items[s.thinks[k]].html = ''
-      }
       // 处理中段末个思考块 → running 态（末行摘要实时跟随 + 扫光，对齐 DSH ReasoningRow 流式尾块）
       if (processing && s.thinks.length) {
         const it = s.items[s.thinks[s.thinks.length - 1]]
@@ -1157,7 +1180,24 @@
       if (s.items.length || processing) {
         // 处理中（实时）段：liveFoldBody 全部工具行原位渲染（已完成=文本行、当前=光泽运行行）；
         // 已处理段保持现状（groupTools 连续工具合并概括折叠 + 思考/旁白原位穿插）
-        const bodyHtml = processing ? liveFoldBody(s.items) : groupTools(s.items)
+        // 「正在思考/正在压缩」真空期占位（2026-08-27 二轮修正；三轮补纯思考开场）：处理中 +
+        // 所有已登记工具均已收到结果 + 无待答提问 + 尾动作（lastStep）——result/thinking→think
+        // 态；compact（续接标记）→压缩态；lastStep=null（段刚开、首条 assistant 记录尚未落盘，
+        // CLI 正在推理的高 effort 思考期）→ 也按思考推断亮态；旁白 text/提问 ask 不亮态。
+        // 下一条 assistant 记录写入前按尾动作推断；真实 thinking 到位（数据层放行）后由 think
+        // 占位接管（liveFoldBody 内不重复渲染）。注意：thinking 流式期间 jsonl 零写入 → SSE
+        // 不触发，web 保持本次渲染的思考态直到落盘轮转（须有本兜底才不空白）。
+        const busyOk = processing && !s.pendingTools.length
+          && !(s.lastAsk && s.lastAsk.answer == null)
+        let vacuumState = null
+        if (busyOk) {
+          if (s.lastStep === 'compact') vacuumState = 'compact'
+          else if (!s.lastStep || s.lastStep === 'result' || s.lastStep === 'thinking') vacuumState = 'think'
+        }
+        // 思考/压缩态计时起点：段内最后一条落盘记录的时刻（真空期从那时开始）；尚无记录（纯思考
+        // 开场）退回段 user 时间。四轮新增，供 bindLiveFoldTimer 每秒补「· Ns」（对齐 CLI spinner 计时）。
+        const vacuumStart = s.lastTs || (s.user && s.user.timestamp) || 0
+        const bodyHtml = processing ? liveFoldBody(s.items, vacuumState, vacuumStart) : groupTools(s.items)
         if (bodyHtml || processing) {
           const endTs = reply ? reply.ts : s.lastTs
           // 处理中：label「正在处理」+ 实时计时（bindLiveFoldTimer 每秒跳字）；回复落地后「已处理 X」
@@ -1190,17 +1230,11 @@
     for (let i = 0; i < messages.length; i++) {
       const m = messages[i]
       if (isContinuationMsg(m)) {
-        // 压缩/自动摘要标记：若当前段仍在处理中（尚无正式回复）→ 不中断，
-        // 把标记作为段内一条浅灰注释吸进同一「已处理/正在处理」折叠，后续 thinking/工具/回复继续追写；
-        // 否则（段间）照旧居中展示为无发布者系统提示。
-        const txt = m.blocks.filter((b) => b.kind === 'text').map((b) => b.text).join('\n').trim()
-        if (seg && !seg.finished) {
-          seg.items.push({ kind: 'note', html: `<div class="done-fold-note">${esc(txt || '会话续接')}</div>` })
-        } else {
-          closeSeg(false)
-          html += `<div class="msg system" data-m="s${i}" data-t="s">${esc(txt || '会话续接')}</div>`
-          lastNode = { key: 's' + i, type: 's' }
-        }
+        // 压缩/自动摘要标记（2026-08-27 二轮修正）：不再产生任何可见行——曾以 note 吸进折叠或
+        // 居中系统提示，都会打断实时工具折叠行的展示（用户实测）。现在处理中段记 lastStep=
+        // 'compact'，由 liveFoldBody 把末尾工具折叠行 label 原位替换为闪烁「正在压缩会话中……」
+        // （与「正在思考」同机制）；段间/已完成则静默吞行——数据层不剔 isCompactSummary 续接记录，拦截必须留。
+        if (seg && !seg.finished) seg.lastStep = 'compact'
         continue
       }
       if (m.role === 'system') {
@@ -1213,20 +1247,22 @@
       }
       if (isRealUser(m)) {
         closeSeg(false)
-        seg = { user: m, items: [], texts: [], lastTs: null, key: i, thinks: [], lastTool: null, lastAsk: null, pendingTools: [], changes: new Map() }
+        seg = { user: m, items: [], texts: [], lastTs: null, key: i, thinks: [], lastTool: null, lastAsk: null, pendingTools: [], changes: new Map(), lastStep: null } // lastStep=段尾最新动作类型（thinking/tool/result/ask/text），真空期「正在思考」占位判定用
         continue
       }
-      if (!seg) seg = { user: null, items: [], texts: [], lastTs: null, key: i, thinks: [], lastTool: null, lastAsk: null, pendingTools: [], changes: new Map() }
+      if (!seg) seg = { user: null, items: [], texts: [], lastTs: null, key: i, thinks: [], lastTool: null, lastAsk: null, pendingTools: [], changes: new Map(), lastStep: null }
       const hasText = m.blocks.some((b) => b.kind === 'text' && b.text && b.text.trim())
       const hasTool = m.blocks.some((b) => b.kind === 'tool_use')
       for (const b of m.blocks) {
-        // 思考块先进 items 占位并记下索引：处理中段保留全部思考；已处理段只留最后一个（对齐 CLI hidePastThinking）
-        if (b.kind === 'thinking') { seg.thinks.push(seg.items.length); seg.items.push({ kind: 'think', text: b.text, html: thinkRowHtml(b.text, false) }) }
+        // 思考块进 items 并记索引（s.thinks 供处理中段 running 态定位）；单块放行由数据层保证
+        //（prompt 全剔/transcript 单全局/prompt-tail-think 尾巴单块），前端不再二次折叠（P2 删留尾兜底）
+        if (b.kind === 'thinking') { seg.thinks.push(seg.items.length); seg.items.push({ kind: 'think', text: b.text, html: thinkRowHtml(b.text, false) }); seg.lastStep = 'thinking' } // 思考块：lastStep='thinking'（旁白走 text 分支，严格分流）
         else if (b.kind === 'text' && hasTool && b.text && b.text.trim()) {
           // 工具消息里的旁白文本：按块原位插入 items（保持 content 数组顺序——旁白在其对应工具调用之上），
           // 不统一沉到段尾；纯文本消息（无 tool_use）仍在循环后整体追加（保持同消息多 text 块拼接为一条的语义）。
           seg.items.push({ kind: 'text', html: '', text: b.text })
           seg.texts.push({ text: b.text, ts: m.timestamp, idx: seg.items.length - 1 })
+          seg.lastStep = 'text' // 工具消息内旁白 ≠ 思考
         }
         else if (b.kind === 'tool_use') {
           if (b.name === 'AskUserQuestion') {
@@ -1234,8 +1270,9 @@
             const it = { kind: 'ask', name: 'AskUserQuestion', zh: '提问', input: b.input, answer: null, html: askLineHtml(false) }
             seg.items.push(it)
             seg.lastAsk = it
+            seg.lastStep = 'ask'
           } else {
-            const t = toolMeta(b); seg.items.push({ kind: 'tool', html: toolLine(b), block: b, name: t.name, zh: t.zh }); seg.lastTool = b.name; seg.pendingTools.push(seg.items.length - 1) // 待完成工具队列（FIFO：连续多个 tool_use 全部登记，tool_result 按序逐个标记 done）
+            const t = toolMeta(b); seg.items.push({ kind: 'tool', html: toolLine(b), block: b, name: t.name, zh: t.zh }); seg.lastTool = b.name; seg.pendingTools.push(seg.items.length - 1); seg.lastStep = 'tool' // 待完成工具队列（FIFO：连续多个 tool_use 全部登记，tool_result 按序逐个标记 done）
           }
         }
         else if (b.kind === 'tool_result') {
@@ -1246,6 +1283,7 @@
           // 2026-08-26 实时折叠：该工具步已收到结果 → 标记 done，liveFoldBody 对完成的工具步
           // 显示为普通文本行（「当这一步工具调用完成后，折叠为文本」，不再显示「正在运行」）
           if (seg.pendingTools.length) { const pi = seg.pendingTools.shift(); seg.items[pi].done = true }
+          seg.lastStep = 'result'
           // AskUserQuestion 答案关联：最近的未回答提问卡吸附该 tool_result 文本并标出所选
           if (seg.lastAsk && seg.lastAsk.answer == null && b.text) {
             seg.lastAsk.answer = String(b.text)
@@ -1259,6 +1297,7 @@
         const text = m.blocks.filter((b) => b.kind === 'text').map((b) => b.text).join('')
         seg.items.push({ kind: 'text', html: '', text })
         seg.texts.push({ text, ts: m.timestamp, idx: seg.items.length - 1 })
+        seg.lastStep = 'text' // 纯文本旁白/回复（无 tool_use 的消息）≠ 思考
       }
       // finished = 段已收尾判定。2026-08-26 起优先用 stopReason（源码 conversationDisplay 新增，
       // 'end_turn' = 正式回复 = 回合结束；'tool_use'/null = 处理中，旁白/工具步保持「正在处理」）——
@@ -1832,7 +1871,7 @@
       toast('设置失败 · 模型不在当前供应商清单或网关未连接')
     }
   }
-  // 项目预览：主聊天区渲染返回栏 + iframe，替换管理/会话界面。
+  // 项目预览：主聊天区渲染 iframe，替换管理/会话界面；退出预览走侧栏导航（route 统一清心跳）。
   // 预览页加载三级策略（2026-08-19 Web 容器）：
   //  ① preview.json 声明 backend → 网关 /api/backend 懒加载 spawn 后端进程，iframe 直连 http://127.0.0.1:<port>/
   //     （并 60s 心跳刷新网关侧 lastActive，防空闲回收误杀）；
@@ -1848,13 +1887,8 @@
     chatArea.classList.add('mgr-on')
     messagesEl.innerHTML =
       '<div class="preview-shell">' +
-      '<div class="preview-bar">' +
-      '<button class="preview-back" id="preview-back">← 返回项目列表</button>' +
-      '</div>' +
       '<div class="preview-body"><div class="preview-loading">正在加载…</div></div>' +
       '</div>'
-    const back = $('preview-back')
-    if (back) back.addEventListener('click', () => closeProjectPreview())
     const mount = (src, name) => {
       const body = document.querySelector('.preview-body')
       if (!body) return
@@ -1893,7 +1927,11 @@
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
       .then((d) => {
         if (!(d && d.url)) throw new Error('no-backend')
-        mount(d.url, d.name)
+        // 2026-08-27 远程端分流：127.0.0.1 直连仅在本机浏览器成立，手机等远程宿主一律改走
+        // 网关同源代理 /bp/<label>/（访问票由上一拍 /api/backend 响应种下的 HttpOnly cookie 提供）
+        const remotePage =
+          location.protocol.startsWith('http') && ['127.0.0.1', 'localhost'].indexOf(location.hostname) < 0
+        mount(remotePage ? `/bp/${encodeURIComponent(label)}/` : d.url, d.name)
         if (window.__backendHeartbeat) clearInterval(window.__backendHeartbeat)
         window.__backendHeartbeat = setInterval(() => {
           fetch(`/api/backend?label=${encodeURIComponent(label)}&token=${encodeURIComponent(gToken || '')}`).catch(() => {})
@@ -1914,14 +1952,6 @@
           mount(defaultSrc)
         }
       })
-  }
-  function closeProjectPreview() {
-    state.preview = null
-    if (window.__backendHeartbeat) {
-      clearInterval(window.__backendHeartbeat)
-      window.__backendHeartbeat = null
-    }
-    navigate('#mgr/projects') // 回到项目管理视图（hash 路由；预览只从项目胶囊进入）
   }
 
   function renderList() {

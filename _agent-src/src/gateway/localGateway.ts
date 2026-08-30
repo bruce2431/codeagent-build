@@ -10,10 +10,10 @@
  * 生命周期（2026-08-17）：网关以独立进程长驻，不随任何 CLI 退出而消失；「无客户端空闲自动回收」
  * ——CLI 注册(cliClients)/遥测 WS(sockets)/SSE(sseClients) 三集合全空持续 GATEWAY_IDLE_MINUTES
  * （默认 10，可用环境变量调）分钟后自动 stopLocalGateway + 清盘 token + 退出，避免孤儿网关占端口。
- * 停止途径：/server off（POST /api/shutdown）、空闲自动回收、SIGINT/SIGTERM、taskkill、系统关机。
+ * 停止途径：/server off（POST /gateway/shutdown）、空闲自动回收、SIGINT/SIGTERM、taskkill、系统关机。
  *
  * 复用已有实现：
- *  - 会话展示由 CLI 侧 conversationDisplay.ts 导出（POST /api/conversation），/api/session
+ *  - 会话展示由 CLI 侧 conversationDisplay.ts 导出（POST /gateway/conversation），/gateway/session
  *    命中时优先返回 display；此处 jsonl 兜底读取仅用于 CLI 未导出的情况。
  *  - 注入路径与 useReplBridge.handleInboundMessage 相同：enqueue({mode:'prompt', bridgeOrigin:true})
  *    —— 现在在 CLI 进程（gatewayClient）内执行，而非本网关进程。
@@ -21,16 +21,17 @@
  * HTTP/WS 用 node:http + ws（已验证可打包进 bun 编译产物），不依赖 Bun.serve。
  */
 import { createServer, request as httpRequest, type Server } from 'node:http'
-import { readFileSync, existsSync, statSync, readdirSync, openSync, closeSync, truncateSync, watch, type FSWatcher } from 'node:fs'
-import { open as fsOpen } from 'node:fs/promises'
+import { readFileSync, writeFileSync, existsSync, statSync, readdirSync, openSync, closeSync, truncateSync, watch, type FSWatcher } from 'node:fs'
+import { open as fsOpen, stat } from 'node:fs/promises'
 import { join, resolve, extname, basename, sep, isAbsolute } from 'node:path'
 import { randomBytes, randomUUID } from 'node:crypto'
 import type { UUID } from 'crypto'
 import { networkInterfaces } from 'node:os'
+import { createSocket, type RemoteInfo } from 'node:dgram'
 import { createServer as netCreateServer, createConnection as netCreateConnection } from 'node:net'
 import { spawn, spawnSync } from 'node:child_process'
 import { WebSocketServer, WebSocket } from 'ws'
-import { getPortableRoot } from '../utils/envUtils.js'
+import { getPortableRoot, getClaudeConfigHomeDir } from '../utils/envUtils.js'
 import { getProjectRoot } from '../bootstrap/state.js'
 import {
   extractJsonStringField,
@@ -39,11 +40,18 @@ import {
 } from '../utils/sessionStoragePortable.js'
 import { parseSessionInfoFromLite } from '../utils/listSessionsImpl.js'
 import { filterConversationForDisplay } from '../utils/conversationDisplay.js'
-import { setGatewayToken, saveGatewayTokenToDisk, clearGatewayTokenFromDisk } from '../utils/gatewayToken.js'
+import {
+  setGatewayToken,
+  saveGatewayTokenToDisk,
+  clearGatewayTokenFromDisk,
+  isGatewayTicket,
+} from '../utils/gatewayToken.js'
+
 // 复用官方凭据池：模型校验与 CLI 同一来源（credentials.json activeProvider.models），
 // 每会话切换不写全局凭据池（不 switchModel）；getActiveModel 与 CLI getUserSpecifiedModelSetting 同源。
 // 设为默认模型 = switchModel 写凭据池 activeModel（全局默认，2026-08-23）。
-import { getActiveModel, getActiveProviderConfig, loadCredentials, switchModel } from '../utils/credentials/pool.js'
+import { ensureProviderForModel, findModelProvider, getActiveModel, getActiveProviderConfig, loadCredentials, switchModelAuto } from '../utils/credentials/pool.js'
+import { modelSupportsVision } from '../utils/model/vision.js'
 // 上下文占用（dsh ContextMeter 数据源）：复用 auto-compact 同源的模型上下文窗口解析，不本地复刻。
 import { getContextWindowForModel } from '../utils/context.js'
 // 会话重命名（2026-08-24 修复）：直接复用 CLI /rename 的落盘函数（saveCustomTitle + saveAgentName），
@@ -86,10 +94,13 @@ const ENABLE_IDLE_RECLAIM = process.argv.includes('--gateway')
 let idleTimer: NodeJS.Timeout | null = null
 
 // ============================================================================
-// Web 容器 backend 进程管理（2026-08-19）
+// Web 容器 backend 进程管理（2026-08-19；2026-08-28 生命周期与网关解耦）
 // preview.json 声明 backend 的项目 → 网关懒加载 spawn 后端进程 + 动态端口分配，
-// 前端 iframe 本机直连 http://127.0.0.1:<port>/；远程宿主走同源代理 /bp/<label>/。生命周期：网关 stop 时全部 kill、
-// 空闲回收（复用 GATEWAY_IDLE_MINUTES 阈值）、后端异常退出自动清理记录。
+// 前端 iframe 本机直连 http://127.0.0.1:<port>/；远程宿主走同源代理 /backend/<label>/。
+// 生命周期（2026-08-28 解耦定案）：后端进程不再随网关关停（/server off/restart、空闲退出、
+// 网关硬杀均不 kill）——注册表落盘 .claude/backend-registry.json，网关重启后 ensureBackend
+// 按注册表收养存活进程（pid 活着 + 端口就绪），预览页刷新/重进秒开不再冷启动；后端仅由
+// 空闲回收（preview.json idleMinutes）与用户手动关闭管理。根治「网关重启 → 后端冷启动 + 孤儿占端口漂移」。
 // ============================================================================
 interface BackendCfg {
   name?: string // 显示名（前端启动覆盖层提示用），缺省 = 项目 label；可插拔：任意后端在 preview.json 声明
@@ -97,29 +108,58 @@ interface BackendCfg {
   cwd?: string // 工作目录，缺省 = 该项目 .claude/preview 目录
   port: number // 0 = 动态分配（网关从 8130 起探测顺延）
   idleMinutes?: number // 空闲回收阈值，缺省继承 GATEWAY_IDLE_MINUTES
-  readyPath?: string // 就绪探测路径，缺省 /api/system_stats
+  readyPath?: string // 就绪探测路径，缺省 /api/system_stats（项目后端自身 API，非网关前缀）
 }
 interface BackendProc {
   pid: number
   port: number
   cfg: BackendCfg
   startedAt: number
-  lastActive: number // 最近一次活跃（/api/backend 被调用/就绪探测），用于空闲回收
-  child: import('node:child_process').ChildProcess
+  lastActive: number // 最近一次活跃（/gateway/backend 被调用/就绪探测），用于空闲回收
+  // 网关亲 spawn 的进程持有句柄；收养的（网关重启后接管现存进程）为 null，存活判定走 isPidAlive(pid)
+  child: import('node:child_process').ChildProcess | null
 }
 const backendProcesses = new Map<string, BackendProc>()
+
+// 后端注册表落盘（2026-08-28 生命周期解耦）：label → {pid, port, startedAt}。
+// 写点 = Map 变化处（spawn 就绪/收养/kill/异常退出）；网关死后记录仍在，重启后收养。
+function backendRegistryPath(): string {
+  return join(getPortableRoot(), '.claude', 'backend-registry.json')
+}
+function readBackendRegistry(): Record<string, { pid: number; port: number; startedAt: number }> {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(backendRegistryPath(), 'utf8'))
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, { pid: number; port: number; startedAt: number }>)
+      : {}
+  } catch {
+    return {}
+  }
+}
+function persistBackendRegistry(): void {
+  try {
+    const reg: Record<string, { pid: number; port: number; startedAt: number }> = {}
+    for (const [label, p] of backendProcesses) reg[label] = { pid: p.pid, port: p.port, startedAt: p.startedAt }
+    writeFileSync(backendRegistryPath(), JSON.stringify(reg, null, 2))
+  } catch {
+    /* 忽略：磁盘瞬时故障由下个写点重试 */
+  }
+}
 const BACKEND_PORT_BASE = 8130
 const BACKEND_PORT_MAX = 8160
 // 网关正在停止标志（O1 修复）：/server off → stopLocalGateway 置位，doSpawnBackend 就绪探测
 // 循环据此提前退出并 kill 已 spawn 的子进程，避免「探测期网关停止 → 孤儿后端进程」竞态。
 let gatewayStopping = false
 
-// 2026-08-27 同源代理 /bp/<label>/：Web 容器 iframe 直连方案写死 http://127.0.0.1:<port>/，
+// 2026-08-27 同源代理 /backend/<label>/（2026-08-29 全称定案，旧 /bp/ 保留解析兼容）：Web 容器 iframe 直连方案写死 http://127.0.0.1:<port>/，
 // 仅在本机浏览器成立——遥测端（手机）打开预览时 127.0.0.1 指向手机自身 → 连接拒绝、页面永远转圈。
-// 解法：后端仍只绑回环（访问面不变），流量经网关主端口转发（/bp/<label>/）。鉴权不靠 query token
+// 解法：后端仍只绑回环（访问面不变），流量经网关主端口转发（/backend/<label>/）。鉴权不靠 query token
 // （页面内相对子请求不带 token，参考 /preview/* 子资源全 401 的教训），改用票证 cookie：
-// /api/backend 本身受 token 校验，成功时种 HttpOnly cookie 作为 /bp/* 凭据（票证内含 label 白名单）。
+// /gateway/backend 本身受 token 校验，成功时种 HttpOnly cookie 作为 /backend/* 凭据（票证内含 label 白名单）。
 const BP_COOKIE_NAME = 'floria_bp'
+// 2026-08-28 floria 设备记忆票证：首链 ?token= 校验通过 → 种 HttpOnly cookie，之后 URL 不再携带 token。
+// 校验二选一（query token 或本 cookie），票证落盘见 gatewayToken.ts；/server off 清盘全设备掉线。
+const AUTH_COOKIE_NAME = 'floria_auth'
 const BP_COOKIE_TTL_MS = 24 * 60 * 60 * 1000
 const BP_COOKIE_KEY_RE = /^[0-9a-f]{32}$/
 interface BpSession {
@@ -159,7 +199,8 @@ function sweepBpSessions(now = Date.now()): void {
 // ============================================================================
 interface WebSessionProc {
   sessionId: string
-  child: import('node:child_process').ChildProcess
+  /** 新 spawn 的会话有 child；网关重启后收养的存活会话无 child（仅凭 pid 管理生命周期） */
+  child?: import('node:child_process').ChildProcess
   /** 真实 CLI 进程 pid（Start-Process -PassThru 输出；powershell 中转已退出，stopWebSession 用它 taskkill） */
   pid?: number
   clients: Set<WebSocket>
@@ -167,6 +208,50 @@ interface WebSessionProc {
   lastActive: number // 最近活跃（消息/审批），用于空闲回收
 }
 const webSessions = new Map<string, WebSessionProc>()
+// ============================================================================
+// web 会话注册表落盘 + 重启收养（2026-08-29）
+// 根因：/server restart → /gateway/shutdown → stopLocalGateway 曾 killAllWebSessions，
+// 把「正在执行 restart 的 web 会话窗口自己」也杀了（CLI 死 → doOn 重拉网关永远不执行，
+// restart 断在半路）。定案：web 会话与普通 CLI 会话同等权重——网关关停/重启一律不杀
+// 存活窗口（gatewayClient 自动重连新网关）。代价是重启后内存注册表丢失 → resume 幂等
+// （spawnWebSession 防双进程写同一 jsonl）失效，故注册表落盘（变更即写，防 kill -9 留脏），
+// 网关启动时收养 pid 仍存活的条目。
+// ============================================================================
+const webSessionsRegistryPath = (): string => join(getPortableRoot(), '.claude', 'gateway-websessions.json')
+function persistWebSessions(): void {
+  const entries: Array<{ sessionId: string; pid: number; startedAt: number }> = []
+  for (const p of webSessions.values()) {
+    if (p.pid) entries.push({ sessionId: p.sessionId, pid: p.pid, startedAt: p.startedAt })
+  }
+  try {
+    writeFileSync(webSessionsRegistryPath(), JSON.stringify(entries), 'utf8')
+  } catch {
+    /* 落盘失败不影响运行：最坏情况重启后收养不到，退化为 resume 重开窗口 */
+  }
+}
+function adoptWebSessions(): void {
+  let entries: Array<{ sessionId: string; pid: number; startedAt: number }>
+  try {
+    const raw: unknown = JSON.parse(readFileSync(webSessionsRegistryPath(), 'utf8'))
+    if (!Array.isArray(raw)) return
+    entries = raw as Array<{ sessionId: string; pid: number; startedAt: number }>
+  } catch {
+    return
+  }
+  for (const e of entries) {
+    if (!e?.sessionId || !Number.isFinite(e.pid) || webSessions.has(e.sessionId)) continue
+    if (!isPidAlive(e.pid)) continue
+    webSessions.set(e.sessionId, {
+      sessionId: e.sessionId,
+      pid: e.pid,
+      clients: new Set(),
+      startedAt: Number(e.startedAt) || Date.now(),
+      lastActive: Date.now(),
+    })
+    console.log(`[gateway] 收养存活 web 会话 ${e.sessionId} (PID ${e.pid})`)
+  }
+  persistWebSessions()
+}
 // 会话 → 项目根定位（2026-08-25 用户定案：resume 不依赖 web 注册表，改按磁盘会话文件定位）。
 // 会话转录在 <项目根>/.claude/projects/<sessionId>.jsonl；扫描 findProjects 各组找该文件 →
 // 项目 scope → {projectLabel}（供 webSessionProjectRoot/webSessionExe 路由 cwd 与 exe），
@@ -228,12 +313,17 @@ const conversationDisplays = new Map<string, { messages: unknown[]; updatedAt: n
 // CLI 侧 sendSessionActivity 上报的活动状态（内存，进程退出即消失）
 const sessionActivity = new Map<string, { status: string; pid: number; cwd?: string; updatedAt: number }>()
 // 2026-08-24 模型 web/CLI 同步：CLI 侧 reportCurrentModel 上报的每会话实际模型（内存，进程退出即消失）。
-// 每会话模型 override 只存在于 CLI 进程内存，web 端 /api/session 据此读取校准模型 seat。
+// 每会话模型 override 只存在于 CLI 进程内存，web 端 /gateway/session 据此读取校准模型 seat。
 const sessionModels = new Map<string, { model: string; updatedAt: number }>()
+// 2026-08-30 共同后端队列快照（接力文档清单#2）：CLI 侧 /clients WS queue-state 上报的当前
+// 排队项（仅用户 prompt）。web 排队区置底数据源：/gateway/session.queued 首载 + SSE queue-state 增量。
+// 纯引擎内存态镜像，CLI 断开即随 detach 删除。
+const sessionQueues = new Map<string, { items: Array<{ content: string; ts: number }>; updatedAt: number }>()
 // C1 修复：两个内存 Map 无上限（只增不删）→ 长跑泄漏。加 TTL + 死进程惰性清扫。
 const DISPLAY_TTL_MS = 10 * 60 * 1000 // conversationDisplays 10 分钟无刷新视为过期
 const ACTIVITY_TTL_MS = 10 * 60 * 1000 // sessionActivity 10 分钟无上报视为过期
 const SESSION_MODEL_TTL_MS = 10 * 60 * 1000 // sessionModels 10 分钟无上报视为过期
+const SESSION_QUEUE_TTL_MS = 10 * 60 * 1000 // sessionQueues 10 分钟无上报视为过期
 const MAX_REPORT_BODY_BYTES = 1024 * 1024
 
 // ============================================================================
@@ -284,6 +374,181 @@ function lanAddress(): string | null {
     addrs[0] ||
     null
   )
+}
+
+// ============================================================================
+// mDNS 应答器（2026-08-29 floria.local 自广播）：网关在 UDP 5353 多播组应答 floria.local
+// 的 A 查询，返回本机全部局域网 IPv4 —— 任何同 WiFi/热点设备打开 http://floria.local:<port>/
+// 即免配置连入（Apple/Windows 原生 mDNS 解析 .local；Android 浏览器支持差，IP 直连兜底）。
+// 地址发现与 HTTP 绑定解耦：HTTP 仍绑 0.0.0.0，mDNS 只解决「设备怎么找到本机 IP」——
+// 应答时实时读网卡，IP/网络变化自动跟随，无需配置路由器 DNS（热点场景同样工作）。
+// 手写最小应答器（查询解析 + A 记录构造），不引 multicast-dns 依赖（bun compile 下
+// dgram 多播 bind/addMembership/send 已实测可用）；5353 被其它 mDNS 服务占用时静默
+// 放弃（自动路径禁抢端口，回落 IP 直连）。
+// ============================================================================
+const MDNS_NAME = 'floria.local'
+const MDNS_PORT = 5353
+const MDNS_GROUP = '224.0.0.251'
+// 120s：IP 变化后旧缓存两分钟过期，设备重新查询即拿新地址
+const MDNS_RECORD_TTL = 120
+let mdnsSocket: ReturnType<typeof createSocket> | null = null
+
+function mdnsLanAddrs(): string[] {
+  const out: string[] = []
+  for (const list of Object.values(networkInterfaces())) {
+    for (const ni of list ?? []) {
+      if (ni.family === 'IPv4' && !ni.internal) out.push(ni.address)
+    }
+  }
+  // 过滤不可用网段（169.254 link-local、198.18 benchmark 段、Tailscale 100.64-127 CGNAT 段），
+  // 避免设备先试到不可达地址拖慢连接
+  return out.filter(
+    (a) => !a.startsWith('169.254.') && !/^198\.18\./.test(a) && !/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(a),
+  )
+}
+
+// 读 DNS 报文 QNAME（标签序列 + 压缩指针防御）：返回点分名与问题段结束所需 next 偏移
+function mdnsReadName(buf: Buffer, offset: number): { name: string; next: number } | null {
+  const labels: string[] = []
+  let ptr = offset
+  let next = -1
+  for (let i = 0; i < 32; i++) {
+    const len = buf[ptr]
+    if (len === undefined) return null
+    if (len === 0) {
+      return { name: labels.join('.'), next: next === -1 ? ptr + 1 : next }
+    }
+    if ((len & 0xc0) === 0xc0) {
+      if (next === -1) next = ptr + 2
+      const target = ((len & 0x3f) << 8) | buf[ptr + 1]
+      if (target === undefined) return null
+      ptr = target
+      continue
+    }
+    labels.push(buf.subarray(ptr + 1, ptr + 1 + len).toString('latin1'))
+    ptr += 1 + len
+  }
+  return null
+}
+
+function mdnsStart(): void {
+  if (mdnsSocket) return
+  const sock = createSocket({ type: 'udp4', reuseAddr: true })
+  sock.on('error', () => {
+    // 5353 被占/防火墙拒绝等：静默放弃（回落 IP 直连），不拖垮网关
+    try {
+      sock.close()
+    } catch {
+      /* 忽略 */
+    }
+    if (mdnsSocket === sock) mdnsSocket = null
+    console.error('[gateway] mDNS 应答器启动失败（floria.local 不可用，回落 IP 直连）')
+  })
+  sock.on('message', (msg: Buffer, rinfo: RemoteInfo) => {
+    try {
+      mdnsHandleQuery(sock, msg, rinfo)
+    } catch {
+      /* 忽略坏包 */
+    }
+  })
+  // 绑定到真实 LAN 地址（2026-08-29 Meta TUN 根修）：Windows 上 socket 绑定特定单播地址时，
+  // 多播默认出接口 = 该地址所属接口，压过 224.0.0.0/4 路由 metric 选择——Meta TUN（198.18.0.1，
+  // metric 0 默认路由 + 多播 256 < WLAN 286）在线时 bind 0.0.0.0 的多播应答整个被吸进隧道，
+  // 查询入站正常、应答从未上 WLAN 空气（受控实验实证：应答 src 变 198.18.0.1 且仅本地回环）。
+  // bun 的 setMulticastInterface 在 Windows 无效（不抛错但不生效），bind 具体地址实测有效。
+  // 无 LAN 地址（DHCP 未就绪等）回退 0.0.0.0（行为同旧版）。
+  const bindAddr = mdnsLanAddrs()[0]
+  const onMdnsBound = () => {
+    try {
+      sock.addMembership(MDNS_GROUP)
+      // 多网卡：每个局域网接口都入组，WiFi/热点并存时任一网段的查询都能收到
+      for (const ip of mdnsLanAddrs()) {
+        try {
+          sock.addMembership(MDNS_GROUP, ip)
+        } catch {
+          /* 单接口失败不致命 */
+        }
+      }
+      mdnsSocket = sock
+      console.log('[gateway] mDNS 应答器就绪：floria.local → 本机局域网地址')
+    } catch (e) {
+      try {
+        sock.close()
+      } catch {
+        /* 忽略 */
+      }
+      if (mdnsSocket === sock) mdnsSocket = null
+      console.error(`[gateway] mDNS 入组失败: ${(e as Error).message}`)
+    }
+  }
+  if (bindAddr) sock.bind(MDNS_PORT, bindAddr, onMdnsBound)
+  else sock.bind(MDNS_PORT, onMdnsBound)
+}
+
+function mdnsHandleQuery(sock: ReturnType<typeof createSocket>, msg: Buffer, rinfo: RemoteInfo): void {
+  if (msg.length < 12 + 5) return
+  // QR=1（应答）不处理：无参 addMembership 落在默认多播接口（Meta TUN 时 = 198.18.0.1），
+  // 本机自发的多播应答经 IP_MULTICAST_LOOP 回环后会被自己收到——无此检查会形成应答→再应答
+  // 的本地反馈循环（2026-08-29 实证：单条查询收到 2 条应答）
+  if (msg.readUInt16BE(2) & 0x8000) return
+  const qdcount = msg.readUInt16BE(4)
+  if (qdcount < 1) return
+  // 逐问题扫描（2026-08-29 打包查询根修）：iOS mDNSResponder 会把 floria.local 与
+  // _companion-link/_rdlink 等系统服务发现打包进同一查询（QD>1），floria.local 常不在首位；
+  // 旧逻辑只读首个 QNAME → 整包忽略 → iPad 侧永不解析成功（现场取证：iPad 5 连查零应答，
+  // 同窗本机单问题查询秒应答）。取首个匹配 floria.local 的问题（A/ANY）作答。
+  let off = 12
+  let hitStart = -1
+  let hitEnd = -1
+  for (let qi = 0; qi < qdcount && off + 1 < msg.length; qi++) {
+    const parsed = mdnsReadName(msg, off)
+    if (!parsed || parsed.next + 4 > msg.length) return
+    const qtype = msg.readUInt16BE(parsed.next)
+    if (hitStart < 0 && parsed.name.toLowerCase() === MDNS_NAME && (qtype === 1 || qtype === 255)) {
+      hitStart = off
+      hitEnd = parsed.next + 4
+    }
+    off = parsed.next + 4
+  }
+  if (hitStart < 0) return
+  const addrs = mdnsLanAddrs()
+  if (!addrs.length) return
+  // 应答：header(QR=1 AA=1) + 原样问题段（仅匹配问题）+ N 条 A 记录（NAME 用压缩指针
+  // 0xc00c 指向应答包内偏移 12 = 问题起始，问题段虽来自打包查询中段，指针仍指向正确）
+  const header = Buffer.alloc(12)
+  header.writeUInt16BE(0x8400, 2)
+  header.writeUInt16BE(1, 4)
+  header.writeUInt16BE(addrs.length, 6)
+  const question = msg.subarray(hitStart, hitEnd)
+  const parts: Buffer[] = [header, question]
+  for (const ip of addrs) {
+    const rec = Buffer.alloc(16)
+    rec.writeUInt16BE(0xc00c, 0)
+    rec.writeUInt16BE(1, 2) // TYPE A
+    rec.writeUInt16BE(1, 4) // CLASS IN
+    rec.writeUInt32BE(MDNS_RECORD_TTL, 6)
+    rec.writeUInt16BE(4, 10) // RDLENGTH
+    const octets = ip.split('.').map(Number)
+    for (let i = 0; i < 4; i++) rec[12 + i] = octets[i] & 0xff
+    parts.push(rec)
+  }
+  const reply = Buffer.concat(parts)
+  // 双发（2026-08-29）：多播应答（组内标准路径）+ 单播回源——iOS 查询（源端口 5353）可达 PC，
+  // 但应答走多播组回程时常被 AP 的 IGMP snooping/多播抑制丢弃（实测设备解析不到 floria.local），
+  // 单播直达查询者穿该抑制；mDNS 应答幂等，设备收两份无害。legacy 查询（随机源端口）本就单播。
+  sock.send(reply, MDNS_PORT, MDNS_GROUP, () => {})
+  sock.send(reply, rinfo.port, rinfo.address, () => {})
+}
+
+function mdnsStop(): void {
+  if (!mdnsSocket) return
+  const sock = mdnsSocket
+  mdnsSocket = null
+  try {
+    sock.close()
+  } catch {
+    /* 忽略 */
+  }
 }
 
 // 静态资源根：SubPj1 前端优先，SubPj2 本地 public 兜底。
@@ -408,7 +673,7 @@ function readBackendCfg(previewDir: string): BackendCfg | undefined {
       cwd: typeof b.cwd === 'string' && b.cwd ? resolve(previewDir, b.cwd) : previewDir,
       port: typeof b.port === 'number' ? b.port : 0,
       idleMinutes: typeof b.idleMinutes === 'number' ? b.idleMinutes : GATEWAY_IDLE_MINUTES,
-      readyPath: typeof b.readyPath === 'string' && b.readyPath ? b.readyPath : '/api/system_stats',
+      readyPath: typeof b.readyPath === 'string' && b.readyPath ? b.readyPath : '/api/system_stats', // 项目后端(如 ComfyUI)自身 API,勿随网关前缀迁移
     }
   } catch {
     return undefined
@@ -510,7 +775,7 @@ async function parseMeta(file: string): Promise<SessionMeta | null> {
   // 尾窗内任意 custom-title 都是文件里最后一条（重命名记录按位置递增，最新一条若已被
   // 推出窗口则更早的也必然在窗外）→ info.summary 的 customTitle 已是正确最新值，无需扫描；
   // 正常退出会话 tail 有 re-append 标题 → 不扫（count_scan 实证 122 个大文件仅 2 个需扫）。
-  // 首版 B2 无条件扫（`tail !== head`）导致 /api/sessions 全量反向扫描所有大文件超时；
+  // 首版 B2 无条件扫（`tail !== head`）导致 /gateway/sessions 全量反向扫描所有大文件超时；
   // 原条件 `&& !info?.customTitle` 会从 head 回退到旧标题（B1 磁盘实证 d95e3566）不触发。
   // 小文件（tail === head，窗口即全文件）tail 提取天然是最新，无需扫描。
   if (tail !== head && extractJsonStringField(tail, 'customTitle') === undefined) {
@@ -518,6 +783,33 @@ async function parseMeta(file: string): Promise<SessionMeta | null> {
     if (last) title = last
   }
   return { title, messageCount, updatedAt: mtime }
+}
+
+// SessionMeta 全量缓存（2026-08-30）：listSessions 原先每次刷新都对所有会话文件重读 head/tail
+// + 全量 countUserAssistant 同步正则扫描（122 文件 ≈ 15MB），而活动会话逐消息触发 SSE → 前端
+// refreshList 风暴 → 网关事件循环被扫描窗口频繁占住 → rename 等 HTTP 请求排队（web 实测「点确定
+// 后弹窗偶发悬挂数秒」）。键 = (size, mtimeMs)：转录只有 append（append 必变 size）→ 无假命中，
+// 键设计与 B2 lastCustomTitleCache 同源（线上实证可靠）。null（读不到）不缓存，保持每次重试语义。
+const sessionMetaCache = new Map<string, { size: number; mtimeMs: number; meta: SessionMeta }>()
+async function parseMetaCached(file: string): Promise<SessionMeta | null> {
+  let st: Awaited<ReturnType<typeof stat>>
+  try {
+    st = await stat(file)
+  } catch {
+    return null
+  }
+  const cached = sessionMetaCache.get(file)
+  if (cached && cached.size === st.size && cached.mtimeMs === st.mtimeMs) return cached.meta
+  const meta = await parseMeta(file)
+  if (meta) {
+    sessionMetaCache.set(file, { size: st.size, mtimeMs: st.mtimeMs, meta })
+    if (sessionMetaCache.size > 500) {
+      // 防无限增长：清掉最旧一半（Map 保持插入序），同 lastCustomTitleCache
+      const keys = [...sessionMetaCache.keys()]
+      for (const k of keys.slice(0, 250)) sessionMetaCache.delete(k)
+    }
+  }
+  return meta
 }
 
 // B 探活收敛（2026-08-27 P2）：与 utils/genericProcessUtils.isProcessRunning 同为 signal-0 探活，
@@ -548,6 +840,9 @@ function sweepStaleMaps(now = Date.now()): void {
   for (const [sid, v] of sessionModels) {
     if (now - v.updatedAt > SESSION_MODEL_TTL_MS) sessionModels.delete(sid)
   }
+  for (const [sid, v] of sessionQueues) {
+    if (now - v.updatedAt > SESSION_QUEUE_TTL_MS) sessionQueues.delete(sid)
+  }
 }
 
 async function listSessions(root: string) {
@@ -562,8 +857,9 @@ async function listSessions(root: string) {
     } catch {
       continue
     }
-    // 并行读各会话 head/tail 元数据（异步 I/O，不再同步阻塞事件循环）
-    const metas = await Promise.all(files.map((f) => parseMeta(join(g.dir, f))))
+    // 并行读各会话 head/tail 元数据（异步 I/O，不再同步阻塞事件循环）；未变文件命中
+    // sessionMetaCache 直接复用，只有真正变化的文件重读+重扫（2026-08-30）
+    const metas = await Promise.all(files.map((f) => parseMetaCached(join(g.dir, f))))
     for (let i = 0; i < files.length; i++) {
       const f = files[i]
       const meta = metas[i]
@@ -626,18 +922,33 @@ function extractContextUsage(records: Record<string, unknown>[]): Record<string,
 function readSession(id: string, root: string) {
   const { path: p } = decodeSessionPath(id, root)
   // 2026-08-23 web 独立会话：新会话进程刚 spawn 时 jsonl 可能尚未落盘 → 返回空消息而非 500
-  if (!existsSync(p) || !statSync(p).isFile()) return { file: basename(p), path: p, messages: [], context: null }
+  if (!existsSync(p) || !statSync(p).isFile()) return { file: basename(p), path: p, messages: [], context: null, cwd: undefined }
   const raw = readFileSync(p, 'utf8')
   const records: Record<string, unknown>[] = []
-  for (const line of raw.split('\n')) {
+  let cwd: string | undefined
+  // 2026-08-30 共同后端定案（接力文档清单#3）：删除 queue-op FIFO 配对补插 + guide 打标
+  // 后置匹配整块（~85 行）。jsonl 的 queue-operation 日志（enqueue/dequeue/remove）无可靠配对
+  // 依据（dequeue/remove 不带 content，FIFO 混序消耗即错位、double 风险），从日志反推渲染事件
+  // 是本链路全部渲染 bug 的总根源。新语义：
+  //  - dequeue 终结 → user 条目天然落盘于消费位置 = CLI 显示位置，前端切段直接消费；
+  //  - 回合中注入 → 实时链路由 filterConversationForDisplay 的 queued_command attachment
+  //    分支输出（injected:true，内存 messages 权威，conversationDisplay.ts）；非 ant 环境
+  //    attachment 不落盘（isLoggableMessage）→ 历史回放无注入引导 = 与 CLI resume 行为同构；
+  //  - 排队中 → 队列快照链（CLI queue-state 上报 → /gateway/session.queued + SSE 群发）。
+  const lines = raw.split('\n')
+  for (const line of lines) {
     const s = line.trim()
     if (!s) continue
     try {
       const r = JSON.parse(s)
+      // 会话启动根（2026-08-29 变更卡相对路径显示）：转录记录自带 cwd（= 进程启动 cwd），
+      // 取首条即得；前端据此把 fileChange 绝对路径剥成相对启动根路径
+      if (!cwd && typeof (r as { cwd?: unknown }).cwd === 'string' && (r as { cwd: string }).cwd) cwd = (r as { cwd: string }).cwd
       // 只保留 normalizeMessages/filterConversationForDisplay 能处理的类型。
       // custom-title/agent-name/file-history-snapshot/queue-operation/last-prompt 等
       // 元记录会让 normalizeMessages 的 switch 无分支返回 undefined → isNotEmptyMessage
       // 崩溃（历史会话全部 500，遥测端看不了）。user/assistant/system 之外的展示不需要。
+      // attachment 保留（落盘例外 hook_additional_context / 未来 ant 环境；filter 新分支可处理）。
       if (
         r &&
         typeof r === 'object' &&
@@ -658,10 +969,10 @@ function readSession(id: string, root: string) {
   // 保留全局最后一个 thinking，遥测端历史会话因此泄露不该出现的思考过程（废弃）。
   const messages = filterConversationForDisplay(records as never, 'prompt-tail-think')
   const context = extractContextUsage(records)
-  return { file: basename(p), path: p, messages, context }
+  return { file: basename(p), path: p, messages, context, cwd }
 }
 
-// 统一时间戳为毫秒（CLI 导出与 /api/session 均用数字；字符串 ISO 兜底解析）。
+// 统一时间戳为毫秒（CLI 导出与 /gateway/session 均用数字；字符串 ISO 兜底解析）。
 function tsMs(ts: unknown): number | undefined {
   if (typeof ts === 'number' && Number.isFinite(ts)) return ts
   if (typeof ts === 'string') {
@@ -671,11 +982,14 @@ function tsMs(ts: unknown): number | undefined {
   return undefined
 }
 
-type MergeMsg = { role: string; blocks: unknown[]; timestamp?: unknown }
+type MergeMsg = { role: string; blocks: unknown[]; timestamp?: unknown; injected?: boolean }
 // 合并展示消息：以磁盘 jsonl 全量历史为基底，把 live（CLI 上报的内存窗口）中比磁盘末尾
 // 更新的消息追加到尾部。原因：CLI 内存窗口在上下文压缩/续接后会缺历史真实用户消息，
 // 直接返回 live 会让遥测端看不到完整历史（前端按真实用户消息切段，历史被折叠成一个 blob）；
 // 磁盘是完整权威。live 未越过磁盘末尾 → 磁盘已覆盖 live 全部，整段丢弃 live 不重复。
+// 2026-08-30 晚：queued_command attachment 已改为落盘（isLoggableMessage 放行，物理位置 =
+// 消费位置 = 感知序）→ 注入引导由磁盘权威提供，此处不再做 live injected 归并
+// （归并会在磁盘已有注入时产生双份；12:54 版归并基于「不落盘」前提，随落盘一并作废）。
 function mergeDisplayMessages(
   disk: MergeMsg[],
   live: MergeMsg[],
@@ -685,12 +999,12 @@ function mergeDisplayMessages(
   const dLast = tsMs(disk[disk.length - 1].timestamp)
   const lLast = tsMs(live[live.length - 1].timestamp)
   if (dLast == null || lLast == null || lLast <= dLast) return disk
-  const tail = live.filter((m) => (tsMs(m.timestamp) ?? 0) > (dLast ?? 0))
+  const tail = live.filter((m) => (tsMs(m.timestamp) ?? 0) > dLast)
   return tail.length ? [...disk, ...tail] : disk
 }
 
 // ============================================================================
-// 默认预览页数据（GET /api/project）：项目无 .claude/preview 时，前端 iframe 加载
+// 默认预览页数据（GET /gateway/project）：项目无 .claude/preview 时，前端 iframe 加载
 // web/default-preview/（GitHub 仓库风格），本函数提供文件树 / README / 会话元信息。
 //  - 文件树：递归扫项目根，跳过重型/隐藏目录（.git/node_modules/.claude/.trash/dist 等），
 //    目录在前、名称字典序；深度 ≤4、条目预算 ≤400（node_modules 等被跳过，正常项目足够）。
@@ -797,7 +1111,7 @@ function deriveProjectDescription(readme: string | null, label: string): string 
 }
 
 // ============================================================================
-// 插件/技能清单（便携根扫描；供 MGR 管理视图 GET /api/plugins）
+// 插件/技能清单（便携根扫描；供 MGR 管理视图 GET /gateway/plugins）
 //  - 已安装插件：.claude/plugins/<name>/.claude-plugin/plugin.json
 //  - 已安装技能：.claude/skills/<name>/SKILL.md 的 frontmatter（name/description）
 //  - 公开市场：.claude/plugins/marketplaces/*/.claude-plugin/marketplace.json 的 plugins[]
@@ -894,7 +1208,7 @@ function listPlugins(root: string): Record<string, unknown> {
 }
 
 // ============================================================================
-// 模型配置（MGR 管理视图 GET /api/models，与 SubPj1 server.mjs 同逻辑）
+// 模型配置（MGR 管理视图 GET /gateway/models，与 SubPj1 server.mjs 同逻辑）
 // 数据源 = 便携根 .claude/credentials.json 凭据池各 provider 的可用模型 +
 //          settings.json 的 model 字段 + env 中模型类环境变量 + 进程实际环境。
 // 只读展示，不改写任何配置。
@@ -944,7 +1258,7 @@ function listModels(root: string): Record<string, unknown> {
   // 凭据池（2026-08-27 P1 修复）：不再手解 credentials.json，复用官方 loadCredentials()
   // （providers[].models[] = 各供应商实际可用的模型清单）
   const creds = loadCredentials()
-  const poolRows: Array<{ k: string; v: string; src: string; vision?: boolean }> = []
+  const poolRows: Array<{ k: string; v: string; src: string; vision?: boolean; provider?: string }> = []
   const poolSet = new Set<string>()
   for (const [name, cfg0] of Object.entries(creds.providers)) {
     const cfg = (cfg0 && typeof cfg0 === 'object' ? cfg0 : {}) as Record<string, unknown>
@@ -955,7 +1269,8 @@ function listModels(root: string): Record<string, unknown> {
     for (const m of models) {
       if (poolSet.has(m)) continue
       poolSet.add(m)
-      poolRows.push({ k: m, v: m, src: `凭据池·${label}`, vision: mv[m] === true })
+      // provider=真实归属供应商标签（2026-08-29 直接切模型自动切供应商：前端据此分组/跨商直选，免启发式前缀判定）
+      poolRows.push({ k: m, v: m, src: `凭据池·${label}`, vision: mv[m] === true, provider: label })
     }
   }
   // 已作为凭据池模型展示的 settings/env 条目不再重复（同一模型只出现一次）
@@ -967,6 +1282,9 @@ function listModels(root: string): Record<string, unknown> {
   return {
     workspace: root,
     model: activeModel ?? (settings.model !== undefined ? String(settings.model) : null),
+    // 2026-08-28 遥测端图片门控：当前生效模型是否识图（凭据池 override，/key vision <model> on；
+    // 默认非识图）→ 前端据此显隐图片上传入口
+    vision: activeModel ? modelSupportsVision(activeModel) : false,
     activeProvider: creds.activeProvider || null,
     activeModel,
     // 当前供应商可切换的模型清单（每会话模型切换的校验集；前端模型浮窗据此渲染）
@@ -1110,25 +1428,45 @@ function sendReportBodyError(res: ServerResponse, error: unknown): void {
 async function handleRequest(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse, root: string): Promise<void> {
   const url = new URL(req.url ?? '/', `http://${req.headers.host || 'localhost'}`)
   // 安全加固（2026-08-15）：HTTP 数据接口与 WS 升级一致要求 token。
-  //  - /api/health 保持公开探活（/server status、前端 detectGateway 只读 mode），响应已精简不含路径泄露；
-  //  - 其余 /api/*（会话/插件/SSE/上报写接口）与 /preview/* 一律校验 query token，失败 401。
+  //  - /gateway/health 保持公开探活（/server status、前端 detectGateway 只读 mode），响应已精简不含路径泄露；
+  //  - 其余 /gateway/*（会话/插件/SSE/上报写接口）与 /preview/* 一律校验「query token 或 cookie 票证」，失败 401。
   //  - /default-preview/* 是网关内置静态页（index.html/default.css/default.js，无敏感数据），
   //    不锁 token（页内相对资源请求不带 token，锁了会 401 致 JS/CSS 加载失败）；敏感数据在
-  //    /api/project（属于 /api/* 已受保护），由页面 JS 从自身 URL query 读 token 附加。
-  // token 通过 URL query 传递：前端从 location.search 提取附加，CLI 侧上报从 gatewayToken.ts 读取附加。
+  //    /gateway/project（属于 /gateway/* 已受保护），由页面 JS 从自身 URL query 读 token 附加。
+  // 2026-08-28 设备认证配对（用户定案：浏览器侧完全删除 token 授权链）：
+  //  - 浏览器授权只走 floria_auth cookie 票证（手动配对：设备门显示请求码 → PC `/server auth add`
+  //    → 设备 GET /gateway/activate?code=<码> 种 cookie）→ 授权设备 URL 干净、永久免认证。
+  //  - query token 仅剩 gateway-token（CLI 上报/内部链路），只放行请求、不种 cookie（浏览器不可用
+  //    它获得授权；浏览器 URL 也不再出现 token）。
+  const qToken = url.searchParams.get('token')
+  const qOk = qToken != null && qToken !== '' && qToken === currentToken
+  const cookieOk = isGatewayTicket(parseCookieHeader(req.headers.cookie)[AUTH_COOKIE_NAME])
   const isProtected =
-    (url.pathname.startsWith('/api/') && url.pathname !== '/api/health') || url.pathname.startsWith('/preview/')
-  if (isProtected && url.searchParams.get('token') !== currentToken) {
+    (url.pathname.startsWith('/gateway/') && url.pathname !== '/gateway/health' && url.pathname !== '/gateway/activate') ||
+    url.pathname.startsWith('/preview/')
+  if (isProtected && !qOk && !cookieOk) {
     sendJson(res, 401, { error: 'unauthorized' })
     return
   }
-  if (req.method === 'GET' && url.pathname === '/api/health') {
+  // 设备配对激活（公开端点，防枚举靠请求码熵）：码在授权名单（/server auth add）→ 种 HttpOnly
+  // floria_auth cookie（票证=码本身，1 年）；不在名单 → 403。前端门态轮询此端点实现「授权后自动进入」。
+  if (req.method === 'GET' && url.pathname === '/gateway/activate') {
+    const code = (url.searchParams.get('code') || '').trim()
+    if (code && isGatewayTicket(code)) {
+      res.setHeader('Set-Cookie', `${AUTH_COOKIE_NAME}=${code}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000`)
+      sendJson(res, 200, { ok: true })
+    } else {
+      sendJson(res, 403, { ok: false, error: 'not authorized' })
+    }
+    return
+  }
+  if (req.method === 'GET' && url.pathname === '/gateway/health') {
     sendJson(res, 200, { ok: true, mode: 'gateway' })
     return
   }
-  // 2026-08-17 独立网关优雅关闭端点（受上方 /api/* token 校验保护）：/server off 调用。
+  // 2026-08-17 独立网关优雅关闭端点（受上方 /gateway/* token 校验保护）：/server off 调用。
   // 先回响应，再 stopLocalGateway + 退出进程（网关是独立 --gateway 进程，exit 即释放端口）。
-  if (req.method === 'POST' && url.pathname === '/api/shutdown') {
+  if (req.method === 'POST' && url.pathname === '/gateway/shutdown') {
     sendJson(res, 200, { ok: true, stopping: true })
     setTimeout(() => {
       stopLocalGateway()
@@ -1136,7 +1474,7 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
     }, 50)
     return
   }
-  if (req.method === 'GET' && url.pathname === '/api/sessions') {
+  if (req.method === 'GET' && url.pathname === '/gateway/sessions') {
     try {
       sendJson(res, 200, await listSessions(root))
     } catch (e) {
@@ -1144,7 +1482,7 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
     }
     return
   }
-  if (req.method === 'GET' && url.pathname === '/api/plugins') {
+  if (req.method === 'GET' && url.pathname === '/gateway/plugins') {
     try {
       sendJson(res, 200, listPlugins(root))
     } catch (e) {
@@ -1152,7 +1490,7 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
     }
     return
   }
-  if (req.method === 'GET' && url.pathname === '/api/models') {
+  if (req.method === 'GET' && url.pathname === '/gateway/models') {
     try {
       sendJson(res, 200, listModels(root))
     } catch (e) {
@@ -1160,12 +1498,13 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
     }
     return
   }
-  // 2026-08-22 模型/思考等级切换（受上方 /api/* token 校验保护）：
-  //   POST /api/model {model?, effortLevel?, sessionId?}
-  //   - model → 每会话切换：不写全局凭据池，校验在 activeProvider.models 内，按 sessionId 精确路由
+  // 2026-08-22 模型/思考等级切换（受上方 /gateway/* token 校验保护）：
+  //   POST /gateway/model {model?, effortLevel?, sessionId?}
+  //   - model → 每会话切换：校验放宽到凭据池全部供应商（findModelProvider），归属其它供应商时
+  //     自动全局切供应商（ensureProviderForModel，2026-08-29）；按 sessionId 精确路由
   //     到对应 CLI 进程（{type:'model'} 实时生效，该进程 STATE 覆盖仅本会话；无 sessionId/未命中广播兜底）。
   //   - effortLevel → 写 settings.json effortLevel（全局持久化）+ 广播 {type:'effort'} 实时生效。
-  if (req.method === 'POST' && url.pathname === '/api/model') {
+  if (req.method === 'POST' && url.pathname === '/gateway/model') {
     try {
       const parsed = await readReportBody(req)
       const model = typeof parsed.model === 'string' && parsed.model.trim() ? parsed.model.trim() : undefined
@@ -1183,17 +1522,20 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
         return
       }
       if (model !== undefined) {
-        const cfg = getActiveProviderConfig()
-        if (!cfg || !Array.isArray(cfg.models) || !cfg.models.includes(model)) {
-          sendJson(res, 400, { error: `model "${model}" 不在当前供应商模型清单中` })
+        // 2026-08-29 直接切模型自动切供应商：校验放宽为凭据池全部供应商（findModelProvider）；
+        // 归属其它供应商 → ensureProviderForModel 全局切 activeProvider + 写该商 activeModel（key/baseUrl 随之生效）
+        if (!findModelProvider(model)) {
+          sendJson(res, 400, { error: `model "${model}" 不在凭据池任何供应商模型清单中` })
           return
         }
+        ensureProviderForModel(model)
       }
       if (defaultModel !== undefined) {
-        // 设为全局默认模型：switchModel 写 credentials.json activeModel（校验在 activeProvider.models 内）；
+        // 设为全局默认模型：2026-08-29 起跨供应商自动切换——switchModelAuto 解析归属供应商、
+        // 切 activeProvider + 写该商 activeModel（原 switchModel 仅限当前供应商清单内）；
         // 仅全局默认、不广播不路由，当前会话不受影响（2026-08-23 用户定案）
-        if (!switchModel(defaultModel)) {
-          sendJson(res, 400, { error: `model "${defaultModel}" 不在当前供应商模型清单中` })
+        if (!switchModelAuto(defaultModel)) {
+          sendJson(res, 400, { error: `model "${defaultModel}" 不在凭据池任何供应商模型清单中` })
           return
         }
       }
@@ -1223,10 +1565,10 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
     }
     return
   }
-  // 2026-08-23 web 独立会话（受上方 /api/* token 校验保护）：
-  //   POST /api/wsession {resume?} → spawn headless CLI 子进程，返回 {id}；resume 恢复已有会话
-  //   POST /api/wsession/stop {id} → 优雅关闭子进程
-  if (req.method === 'POST' && url.pathname === '/api/wsession') {
+  // 2026-08-23 web 独立会话（受上方 /gateway/* token 校验保护）：
+  //   POST /gateway/wsession {resume?} → spawn headless CLI 子进程，返回 {id}；resume 恢复已有会话
+  //   POST /gateway/wsession/stop {id} → 优雅关闭子进程
+  if (req.method === 'POST' && url.pathname === '/gateway/wsession') {
     try {
       const parsed = await readReportBody(req)
       const resume =
@@ -1248,7 +1590,7 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
     }
     return
   }
-  if (req.method === 'POST' && url.pathname === '/api/wsession/stop') {
+  if (req.method === 'POST' && url.pathname === '/gateway/wsession/stop') {
     try {
       const parsed = await readReportBody(req)
       const id = typeof parsed.id === 'string' && parsed.id.trim() ? parsed.id.trim() : ''
@@ -1259,7 +1601,7 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
     return
   }
   // 2026-08-24 审批链路诊断（受 token 保护）：返回最近审批轨迹 + 连接概览，用于调试「审批卡不弹」。
-  if (req.method === 'GET' && url.pathname === '/api/diagnostics') {
+  if (req.method === 'GET' && url.pathname === '/gateway/diagnostics') {
     sendJson(res, 200, {
       trail: approvalTrailSnapshot(),
       cliClients: [...cliClients.keys()],
@@ -1274,7 +1616,7 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
   // entry.sessionId 建索引，缺字段会被 resume 跳过 → 旧标题在退出时 re-append 回退 web 列表）；
   // 若目标会话恰好是网关宿主 CLI 的当前会话，还会同步更新 CLI 内存标题缓存。
   // 对已停止的会话同样生效；正在运行的会话下次列表刷新读盘即见新标题。
-  if (req.method === 'POST' && url.pathname === '/api/session/rename') {
+  if (req.method === 'POST' && url.pathname === '/gateway/session/rename') {
     try {
       const parsed = await readReportBody(req)
       const id = typeof parsed.id === 'string' && parsed.id.trim() ? parsed.id.trim() : ''
@@ -1297,7 +1639,7 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
       // 2026-08-25 web 重命名 → CLI 实时同步：目标会话若有 /clients 注册的在线 CLI 进程
       //（web 独立会话窗口 / 终端 CLI），按会话精确路由 rename 事件，CLI 侧更新内存标题缓存
       // + 输入栏徽标（standaloneAgentContext），无需重启即可看到新名字；未命中静默跳过。
-      // B2（2026-08-26）route 未命中诊断：补 rename 命中/未命中轨迹到 /api/diagnostics，
+      // B2（2026-08-26）route 未命中诊断：补 rename 命中/未命中轨迹到 /gateway/diagnostics，
       // 区分「目标在线已同步缓存」（hit）与「未命中——仅写盘，在线 CLI 缓存未更新，退出可能回退」（miss）。
       const routed = routeToClient(uuid, { type: 'rename', sessionId: uuid, title })
       approvalTrailPush('rename-routed', uuid, undefined, routed ? 'hit' : 'miss')
@@ -1308,10 +1650,10 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
     }
     return
   }
-  // 默认预览页数据：/api/project?label=<项目> → 文件树 + README + 会话元信息（GitHub 仓库风格默认界面）
-  // 2026-08-19 Web 容器：/api/backend?label=<项目> → 懒加载 spawn 该项目 preview.json 声明的后端进程，
-  // 返回 {url}：本机 iframe 直连；远程宿主由前端改走同源代理 /bp/<label>/（受上方 /api/* token 校验保护；后端仅监听 127.0.0.1，访问面可控）。
-  if (req.method === 'GET' && url.pathname === '/api/backend') {
+  // 默认预览页数据：/gateway/project?label=<项目> → 文件树 + README + 会话元信息（GitHub 仓库风格默认界面）
+  // 2026-08-19 Web 容器：/gateway/backend?label=<项目> → 懒加载 spawn 该项目 preview.json 声明的后端进程，
+  // 返回 {url}：本机 iframe 直连；远程宿主由前端改走同源代理 /backend/<label>/（受上方 /gateway/* token 校验保护；后端仅监听 127.0.0.1，访问面可控）。
+  if (req.method === 'GET' && url.pathname === '/gateway/backend') {
     const bLabel = url.searchParams.get('label') || ''
     const bProj = findProjects(root).find((g) => g.scope === 'project' && g.label === bLabel && g.hasBackend)
     if (!bProj || !bProj.backendCfg) {
@@ -1319,8 +1661,11 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
       return
     }
     try {
+      // alreadyRunning：调用前进程已在册且存活（复用/收养，非本次 spawn）→ 前端不渲染「正在启动」覆盖层，iframe 直挂秒开
+      const pre = backendProcesses.get(bLabel)
+      const alreadyRunning = !!(pre && backendProcAlive(pre))
       const proc = await ensureBackend(bLabel, bProj.backendCfg)
-      // 同源代理票证：为该浏览器种/续 HttpOnly cookie，开放 /bp/<label>/ 转发通道；
+      // 同源代理票证：为该浏览器种/续 HttpOnly cookie，开放 /backend/<label>/ 转发通道；
       // 已有票证则追加本 label 并续期（多项目并行预览互不顶掉）。
       sweepBpSessions()
       const ckJar = parseCookieHeader(req.headers.cookie)
@@ -1333,15 +1678,15 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
       }
       bpSess.labels.add(bLabel)
       bpSess.expires = Date.now() + BP_COOKIE_TTL_MS
-      res.setHeader('Set-Cookie', `${BP_COOKIE_NAME}=${ckKey}; Path=/bp; HttpOnly; SameSite=Lax; Max-Age=86400`)
+      res.setHeader('Set-Cookie', `${BP_COOKIE_NAME}=${ckKey}; Path=/backend; HttpOnly; SameSite=Lax; Max-Age=86400`)
       // name：overlay 提示用（preview.json backend.name 或项目 label），前端据此显示「正在启动 <name>…」，可插拔
-      sendJson(res, 200, { url: `http://127.0.0.1:${proc.port}/`, port: proc.port, pid: proc.pid, name: proc.cfg.name || bLabel })
+      sendJson(res, 200, { url: `http://127.0.0.1:${proc.port}/`, port: proc.port, pid: proc.pid, name: proc.cfg.name || bLabel, alreadyRunning })
     } catch (e) {
       sendError(res, e)
     }
     return
   }
-  if (req.method === 'GET' && url.pathname === '/api/project') {
+  if (req.method === 'GET' && url.pathname === '/gateway/project') {
     const pLabel = url.searchParams.get('label') || ''
     const pProj = findProjects(root).find((g) => g.scope === 'project' && g.label === pLabel)
     if (!pProj) {
@@ -1380,9 +1725,9 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
     }
     return
   }
-  // 项目内文件内容读取：/api/file?label=<项目>&path=<项目内相对路径> → 原始字节
-  // （供个性化预览页识图渲染 Obsidian canvas / 加载图片音频视频）。受上方 /api/* token 校验保护。
-  if (req.method === 'GET' && url.pathname === '/api/file') {
+  // 项目内文件内容读取：/gateway/file?label=<项目>&path=<项目内相对路径> → 原始字节
+  // （供个性化预览页识图渲染 Obsidian canvas / 加载图片音频视频）。受上方 /gateway/* token 校验保护。
+  if (req.method === 'GET' && url.pathname === '/gateway/file') {
     const fLabel = url.searchParams.get('label') || ''
     const fPath = url.searchParams.get('path') || ''
     const fProj = findProjects(root).find((g) => g.scope === 'project' && g.label === fLabel)
@@ -1410,10 +1755,11 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
     return
   }
 
-  // 2026-08-27 Web 容器同源反向代理：/bp/<label>/<path>?<query> → http://127.0.0.1:<port>/<path>?<query>
+  // 2026-08-27 Web 容器同源反向代理：/backend/<label>/<path>?<query> → http://127.0.0.1:<port>/<path>?<query>
   // 远程端（手机遥测）无法直连回环后端端口，统一经网关主端口转发；后端仍只绑 127.0.0.1，访问面不变。
-  // 不做 query token 校验（子资源必裸奔）；凭 /api/backend 种下的票证 cookie + label 白名单放行。
-  const bpMatch = /^\/bp\/([^/?]+)(\/[^?]*)?(\?.*)?$/.exec(req.url ?? '')
+  // 不做 query token 校验（子资源必裸奔）；凭 /gateway/backend 种下的票证 cookie + label 白名单放行。
+  // 2026-08-29 全称定案：主前缀 /backend/，旧 /bp/ 保留解析兼容（不再生成）。
+  const bpMatch = /^\/(?:backend|bp)\/([^/?]+)(\/[^?]*)?(\?.*)?$/.exec(req.url ?? '')
   if (bpMatch) {
     let bpLabel = ''
     try {
@@ -1442,7 +1788,7 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
     }
     bpTicket.expires = Date.now() + BP_COOKIE_TTL_MS
     // rest/search 原样透传（保留原始 %xx 编码），不在网关层二次解码重组，防中文路径双重编码错乱
-    proxyBackendRequest(req, res, bpProc, `/bp/${bpMatch[1]}`, bpMatch[2] || '/', bpMatch[3] || '')
+    proxyBackendRequest(req, res, bpProc, `/backend/${bpMatch[1]}`, bpMatch[2] || '/', bpMatch[3] || '')
     return
   }
   // 项目预览页静态托管：/preview/<项目>/* → <root>/<项目>/.claude/preview/*（点击项目胶囊时前端 iframe 加载替换界面）
@@ -1450,7 +1796,15 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
   // 子路径 resolve 后必须落在 preview 目录内（越界防护），默认 index.html。
   const pvMatch = /^\/preview\/([^/]+)((?:\/.*)?)$/.exec(url.pathname)
   if (req.method === 'GET' && pvMatch) {
-    const pvLabel = decodeURIComponent(pvMatch[1])
+    // 畸形 % 序列（如 %ZZ）decode 会抛 URIError——未捕获曾崩掉整个网关进程（2026-08-29 gateway.log
+    // 取证：URIError at handleRequest，反复崩溃重启→遥测端断连/预览打不开）。decode 失败用原文，
+    // 后续 findProjects 不命中自然 404 兜底。
+    let pvLabel = pvMatch[1]
+    try {
+      pvLabel = decodeURIComponent(pvMatch[1])
+    } catch {
+      /* 保留原文 */
+    }
     const pvRel = (pvMatch[2] || '').replace(/^\//, '') || 'index.html'
     const pvProj = findProjects(root).find((g) => g.scope === 'project' && g.label === pvLabel && g.hasPreview)
     if (!pvProj) {
@@ -1481,7 +1835,13 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
   // /default-preview/<项目>/* → 内嵌 web 资源 default-preview/*（label 必须命中 findProjects 防任意路径）。
   const dpMatch = /^\/default-preview\/([^/]+)((?:\/.*)?)$/.exec(url.pathname)
   if (req.method === 'GET' && dpMatch) {
-    const dpLabel = decodeURIComponent(dpMatch[1])
+    // 同 /preview：decode 失败保留原文（不崩进程），后续 404 兜底
+    let dpLabel = dpMatch[1]
+    try {
+      dpLabel = decodeURIComponent(dpMatch[1])
+    } catch {
+      /* 保留原文 */
+    }
     const dpProj = findProjects(root).find((g) => g.scope === 'project' && g.label === dpLabel)
     if (!dpProj) {
       res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' })
@@ -1502,7 +1862,7 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
     res.end(dpBuf)
     return
   }
-  if (req.method === 'GET' && url.pathname === '/api/session') {
+  if (req.method === 'GET' && url.pathname === '/gateway/session') {
     const id = url.searchParams.get('id')
     if (!id) {
       sendJson(res, 400, { error: 'missing id' })
@@ -1524,13 +1884,50 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
       const sm = sessionModels.get(uuid)
       data.model = sm?.model ?? null
       data.modelTs = sm?.updatedAt ?? null
+      // 2026-08-28 遥测端图片门控：该会话模型是否识图（有上报按上报模型，无上报回落全局 activeModel，
+      // 与 model 字段回落同源）→ 前端 renderSession/applySessionModel 据此显隐图片上传入口
+      const visionModel = sm?.model ?? getActiveModel()
+      data.vision = visionModel ? modelSupportsVision(visionModel) : false
+      // 2026-08-30 队列快照（清单#2）：当前排队项（首载/刷新时与 SSE queue-state 增量同构）
+      data.queued = sessionQueues.get(uuid)?.items ?? []
       sendJson(res, 200, data)
     } catch (e) {
       sendError(res, e)
     }
     return
   }
-  if (req.method === 'POST' && url.pathname === '/api/conversation') {
+  // 2026-08-30 web 图片内联渲染：GET /gateway/image-cache/<sessionId>/<imageId>。
+  // 数据源 = CLI processUserInput storeImages 落盘的 image-cache/<sessionId>/<id>.<ext>
+  // （utils/imageStore.ts；id = pastedContents id，与文本 [Image #N] 占位一一对应）。
+  // 扩展名由 mediaType 推导，此处按 <id>. 前缀 readdir 解析，消费端无需知道扩展名。
+  // 已在上方 /gateway/* 统一 token/票证门内；路径两段白名单校验（uuid/纯数字）防穿越。
+  if (req.method === 'GET' && url.pathname.startsWith('/gateway/image-cache/')) {
+    const m = /^\/gateway\/image-cache\/([0-9a-f-]{36})\/(\d+)$/.exec(url.pathname)
+    if (!m) {
+      sendJson(res, 400, { error: 'invalid path' })
+      return
+    }
+    const [, imgSid, imgId] = m
+    const imgDir = join(getClaudeConfigHomeDir(), 'image-cache', imgSid)
+    try {
+      const hit = readdirSync(imgDir).find((f) => /^\d+\./.test(f) && f.startsWith(`${imgId}.`))
+      if (!hit) {
+        sendJson(res, 404, { error: 'not found' })
+        return
+      }
+      const buf = readFileSync(join(imgDir, hit))
+      res.writeHead(200, {
+        'Content-Type': MIME[extname(hit)] || 'application/octet-stream',
+        'Content-Length': buf.length,
+        'Cache-Control': 'private, max-age=86400',
+      })
+      res.end(buf)
+    } catch {
+      sendJson(res, 404, { error: 'not found' })
+    }
+    return
+  }
+  if (req.method === 'POST' && url.pathname === '/gateway/conversation') {
     try {
       const parsed = await readReportBody(req)
       const sid = typeof parsed.sessionId === 'string' ? parsed.sessionId : ''
@@ -1547,7 +1944,7 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
     }
     return
   }
-  if (req.method === 'POST' && url.pathname === '/api/activity') {
+  if (req.method === 'POST' && url.pathname === '/gateway/activity') {
     try {
       const parsed = await readReportBody(req)
       const sid = typeof parsed.sessionId === 'string' ? parsed.sessionId : ''
@@ -1565,6 +1962,13 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
         updatedAt: Date.now(),
       })
       sweepStaleMaps()
+      // 状态点即时性（2026-08-29 状态点偶发观测不到修复）：收到活动上报即群发轻量 SSE activity
+      // 事件 → 前端 refreshList 重拉 /gateway/sessions。busy/waiting 翻转不再等 jsonl 落盘（updated）
+      // 才可见；负载极小，只触发列表刷新、不触发 refreshSession。
+      const s = `data: ${JSON.stringify({ type: 'activity', session: sid, state: status })}\n\n`
+      sendAll(sseClients, (c) => {
+        c.res.write(s)
+      })
       sendJson(res, 200, { ok: true })
     } catch (error) {
       sendReportBodyError(res, error)
@@ -1572,8 +1976,8 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
     return
   }
   // 2026-08-24 模型 web/CLI 同步：CLI 侧 reportCurrentModel 上报每会话实际模型（内存 Map，TTL 清扫）。
-  // 每会话 override 不写凭据池，web 端 /api/session 据此读取校准模型 seat，与 CLI 实际使用一致。
-  if (req.method === 'POST' && url.pathname === '/api/model-report') {
+  // 每会话 override 不写凭据池，web 端 /gateway/session 据此读取校准模型 seat，与 CLI 实际使用一致。
+  if (req.method === 'POST' && url.pathname === '/gateway/model-report') {
     try {
       const parsed = await readReportBody(req)
       const sid = typeof parsed.sessionId === 'string' ? parsed.sessionId : ''
@@ -1590,7 +1994,7 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
     }
     return
   }
-  if (req.method === 'GET' && url.pathname === '/api/events') {
+  if (req.method === 'GET' && url.pathname === '/gateway/events') {
     // SSE：idleTimeout 禁用（长连接保持，避免重连级联）
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -1611,7 +2015,12 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
     return
   }
   // 静态资源：内嵌 web 资源优先（打包进 exe），磁盘 SubPj public 兜底（开发模式）
-  const rel = url.pathname === '/' ? 'index.html' : url.pathname.replace(/^\//, '')
+  // 2026-08-28 SPA 路径路由：/session/<hash>、/manage/…、/project/<label> 非真实文件 → 一律回 index.html，
+  // 由前端 parseRoute 按 location.pathname 解析（pushState 路由）。2026-08-29 全称定案：前端只生成全称前缀
+  // （/session/、/manage/、/project/、/backend/），旧缩写（/s/、/mgr/、/pview/、/bp/）保留解析兼容。
+  // /preview、/default-preview、/backend 等真实路径在前面的分支已消费，不会落到此处。
+  const isSpaRoute = /^\/(?:session\/|s\/|manage\/|mgr(?:\/|$)|project\/|pview\/)/.test(url.pathname)
+  const rel = isSpaRoute || url.pathname === '/' ? 'index.html' : url.pathname.replace(/^\//, '')
   const embedded = readWebAsset(rel)
   if (embedded) {
     res.writeHead(200, {
@@ -1650,11 +2059,42 @@ function detachWebSessionClient(ws: WebSocket): void {
 
 // 2026-08-24 审批链路诊断轨迹：环形日志记录 /clients 注册、approval-request 接收与广播、
 // approve 接收与路由、local-resolved/cancel；2026-08-26 P0 加 approval-processed（CLI 已处理回执）
-// 与 gw-approval-confirmed（确认转发 floria）。GET /api/diagnostics 读取（调试审批「卡片不弹」）。
+// 与 gw-approval-confirmed（确认转发 floria）。GET /gateway/diagnostics 读取（调试审批「卡片不弹」）。
 const approvalTrail: Array<{ ts: number; ev: string; sessionId?: string; requestId?: string; detail?: string }> = []
 function approvalTrailPush(ev: string, sessionId?: string, requestId?: string, detail?: string): void {
   approvalTrail.push({ ts: Date.now(), ev, sessionId, requestId, detail })
   if (approvalTrail.length > 500) approvalTrail.splice(0, approvalTrail.length - 500)
+}
+
+// 2026-08-30 审批/提问 pending 重放（DSH 同款「待答=会话持久状态」语义）：approval-request 是
+// 瞬态广播，前端按 currentHash 过滤丢弃后即永久丢失（提问时页面开着别的会话或没开 → 切回只剩
+// 只读兜底卡「请在 CLI 窗口作答」）。改为网关按 requestId 暂存未决 approval（TTL 30 分钟仅兜底
+// 泄漏；正常路径由 解答回执/取消/本地已解决 显式清除），前端 renderSession/WS 重连发 subscribe
+// 时回放该会话未决项 → 打开会话总能补弹交互卡。
+const pendingApprovals = new Map<string, { sessionId: string; payload: unknown; ts: number }>()
+const PENDING_APPROVAL_TTL_MS = 30 * 60 * 1000
+function pendingApprovalsSet(sessionId: string, requestId: string, payload: unknown): void {
+  const now = Date.now()
+  for (const [k, v] of pendingApprovals) if (now - v.ts > PENDING_APPROVAL_TTL_MS) pendingApprovals.delete(k)
+  pendingApprovals.set(requestId, { sessionId, payload, ts: now })
+}
+function pendingApprovalsDrop(requestId: unknown): void {
+  if (typeof requestId === 'string' && requestId) pendingApprovals.delete(requestId)
+}
+function pendingApprovalsReplay(ws: WebSocket, sessionId: string): void {
+  const now = Date.now()
+  for (const [requestId, e] of pendingApprovals) {
+    if (e.sessionId !== sessionId) continue
+    if (now - e.ts > PENDING_APPROVAL_TTL_MS) {
+      pendingApprovals.delete(requestId)
+      continue
+    }
+    try {
+      ws.send(JSON.stringify(e.payload))
+    } catch {
+      /* 连接已断，忽略 */
+    }
+  }
 }
 function approvalTrailSnapshot(): unknown[] {
   return approvalTrail.slice(-50).reverse()
@@ -1666,7 +2106,12 @@ function approvalTrailSnapshot(): unknown[] {
 // 注册完成后再把消息注入 REPL（cliClients 精确路由，与本地打字同路径）。会话文件不在磁盘 → 拒绝。
 // 同一会话 resume 在途（spawn 最长 20s）→ 复用同一 promise，多消息串行投递，杜绝双 spawn 双写 jsonl。
 const resumingSessions = new Map<string, Promise<void>>()
-function resumeAndDeliver(sessionId: string, text: string, ws: WebSocket): void {
+function resumeAndDeliver(
+  sessionId: string,
+  text: string,
+  images: ReturnType<typeof sanitizeInboundImages>,
+  ws: WebSocket,
+): void {
   const loc = sessionProjectRootOf(sessionId)
   if (!loc) {
     ws.send(JSON.stringify({ type: 'status', state: '目标会话未在线，消息未注入' }))
@@ -1680,15 +2125,38 @@ function resumeAndDeliver(sessionId: string, text: string, ws: WebSocket): void 
   }
   p.then(() => {
     const t = cliClients.get(sessionId)
-    if (t && t.readyState === WebSocket.OPEN) t.send(JSON.stringify({ type: 'send', text }))
+    if (t && t.readyState === WebSocket.OPEN) {
+      t.send(JSON.stringify(images.length ? { type: 'send', text, images } : { type: 'send', text }))
+    }
     else ws.send(JSON.stringify({ type: 'status', state: '会话恢复后仍未连接，消息未注入' }))
   }).catch((e) => {
     ws.send(JSON.stringify({ type: 'status', state: '恢复会话失败：' + (e.message || e) }))
   })
 }
 
+// 2026-08-28 遥测端图片上行校验：前端把图片以 base64（无 data: 前缀）随 'send' 上行，
+// 逐项校验后透传给 CLI（CLI 侧 gatewayClient 构造 pastedContents → 与本地粘贴图片同链路）。
+// 限制：≤4 张/条（API 多图保守上限）、单张 base64 ≤7MB（API 限 5MB 二进制，留编码余量）、
+// mediaType 白名单 image/*（png/jpeg/gif/webp）；不合法项静默丢弃。
+function sanitizeInboundImages(raw: unknown): Array<{ content: string; mediaType: string; filename?: string }> {
+  if (!Array.isArray(raw)) return []
+  const out: Array<{ content: string; mediaType: string; filename?: string }> = []
+  for (const item of raw.slice(0, 4)) {
+    if (!item || typeof item !== 'object') continue
+    const it = item as { content?: unknown; mediaType?: unknown; filename?: unknown }
+    if (typeof it.content !== 'string' || !it.content || it.content.length > 7_000_000) continue
+    if (typeof it.mediaType !== 'string' || !/^image\/(png|jpeg|gif|webp)$/i.test(it.mediaType)) continue
+    out.push({
+      content: it.content,
+      mediaType: it.mediaType.toLowerCase(),
+      ...(typeof it.filename === 'string' && it.filename ? { filename: it.filename.slice(0, 120) } : {}),
+    })
+  }
+  return out
+}
+
 function handleWsMessage(ws: WebSocket, raw: string): void {
-  let data: { type?: string; text?: string; requestId?: string; allowed?: boolean; sessionId?: string; toolUseId?: string; input?: unknown; answers?: Record<string, string>; permissions?: unknown }
+  let data: { type?: string; text?: string; requestId?: string; allowed?: boolean; sessionId?: string; toolUseId?: string; input?: unknown; answers?: Record<string, string>; permissions?: unknown; images?: unknown }
   try {
     data = JSON.parse(raw)
   } catch {
@@ -1701,22 +2169,25 @@ function handleWsMessage(ws: WebSocket, raw: string): void {
       // 2026-08-24 web 会话改造：web 会话 = 本地可见交互 REPL（CLI 自己连 /clients 注册），
       // 消息不再写子进程 stdin（stdin 归本地终端窗口），统一经 cliClients 精确路由 →
       // CLI 侧 gatewayClient enqueue 注入 REPL（与本地打字同路径）。审批也在本地窗口操作。
-      // 会话启动中（/api/wsession 已返回但 CLI 尚未注册 /clients，理论竞态）→ 提示稍后再发。
+      // 会话启动中（/gateway/wsession 已返回但 CLI 尚未注册 /clients，理论竞态）→ 提示稍后再发。
+      // 2026-08-28 遥测端图片：images（base64 数组）校验后随消息透传，CLI 构造 pastedContents 走本地粘贴同链路。
+      const images = sanitizeInboundImages(data.images)
+      const sendPayload = images.length ? { type: 'send', text, images } : { type: 'send', text }
       if (data.sessionId) {
         const target = cliClients.get(data.sessionId)
         if (target && target.readyState === WebSocket.OPEN) {
-          target.send(JSON.stringify({ type: 'send', text }))
+          target.send(JSON.stringify(sendPayload))
         } else if (webSessions.has(data.sessionId)) {
           ws.send(JSON.stringify({ type: 'status', state: 'web 会话启动中，请稍后再发送' }))
         } else {
           // 2026-08-25 发送即 resume：进程未在线 → 按磁盘会话文件定位并先恢复本地 CLI 窗口再投递（web/CLI 一视同仁）
-          resumeAndDeliver(data.sessionId, text, ws)
+          resumeAndDeliver(data.sessionId, text, images, ws)
         }
         break
       }
       // 无 sessionId → 广播全部在线 CLI 客户端；无在线 CLI → status 提示
       if (cliClients.size) {
-        sendAll(cliClients.values(), (c) => c.send(JSON.stringify({ type: 'send', text })))
+        sendAll(cliClients.values(), (c) => c.send(JSON.stringify(sendPayload)))
       } else {
         ws.send(JSON.stringify({ type: 'status', state: '当前无在线 CLI 进程，消息未注入' }))
       }
@@ -1784,6 +2255,9 @@ function handleWsMessage(ws: WebSocket, raw: string): void {
       } else {
         ws.send(JSON.stringify({ type: 'status', state: 'web 会话进程未运行，未订阅' }))
       }
+      // 2026-08-30 pending 重放：切会话/重连订阅时补弹该会话未决审批/提问（瞬态广播被
+      // currentHash 过滤丢弃或页面未开的场景；已解决项不回放）。
+      pendingApprovalsReplay(ws, sid)
       break
     }
     case 'ping':
@@ -1880,14 +2354,33 @@ function rotateBackendLogIfNeeded(p: string): void {
   }
 }
 
-// 懒加载 spawn 后端进程（已运行则复用并刷新活跃时间）
+// 懒加载 spawn 后端进程（已运行则复用并刷新活跃时间；2026-08-28 起支持按注册表收养网关重启后的存活进程）
+function backendProcAlive(p: BackendProc): boolean {
+  return p.child ? p.child.exitCode === null && !p.child.killed : isPidAlive(p.pid)
+}
 async function ensureBackend(label: string, cfg: BackendCfg): Promise<BackendProc> {
   const existing = backendProcesses.get(label)
-  if (existing && existing.child.exitCode === null && !existing.child.killed) {
+  if (existing && backendProcAlive(existing)) {
     existing.lastActive = Date.now()
     return existing
   }
-  if (existing) backendProcesses.delete(label) // 进程已退出，清理后重起
+  if (existing) {
+    backendProcesses.delete(label) // 进程已退出，清理后重起
+    persistBackendRegistry()
+  }
+  // 收养：注册表有存活记录（pid 活着 + 端口就绪）→ 直接接管，不重新 spawn
+  // （网关 stop/restart/硬杀后进程仍在跑；服务 hang 死则杀掉清记录防占端口成孤儿）
+  const rec = readBackendRegistry()[label]
+  if (rec && rec.pid > 0 && rec.port > 0 && isPidAlive(rec.pid)) {
+    if (await backendReady(rec.port, cfg.readyPath)) {
+      const proc: BackendProc = { pid: rec.pid, port: rec.port, cfg, startedAt: rec.startedAt, lastActive: Date.now(), child: null }
+      backendProcesses.set(label, proc)
+      persistBackendRegistry()
+      console.log(`[gateway] backend ${label}: 收养存活进程 pid=${rec.pid} port=${rec.port}（网关重启不重启后端）`)
+      return proc
+    }
+    killTree(rec.pid) // pid 活着但端口不通：服务 hang 死，清掉防占端口（pid 被复用且恰占原端口的双巧合误杀概率可忽略）
+  }
   const pending = backendPending.get(label)
   if (pending) return pending // 探测进行中，等待同一 Promise 结果（不重复 spawn）
   const p = doSpawnBackend(label, cfg)
@@ -1923,7 +2416,10 @@ async function doSpawnBackend(label: string, cfg: BackendCfg): Promise<BackendPr
     } catch {
       /* 忽略 */
     }
-    if (backendProcesses.get(label) === proc) backendProcesses.delete(label)
+    if (backendProcesses.get(label) === proc) {
+      backendProcesses.delete(label)
+      persistBackendRegistry()
+    }
   })
   // 就绪探测：最多 ~24s（冷启动慢的后端如 ComfyUI torch 初始化实测 ~22s）
   let ready = false
@@ -1945,6 +2441,7 @@ async function doSpawnBackend(label: string, cfg: BackendCfg): Promise<BackendPr
     throw new Error(`backend ${label}: 端口 ${port} 就绪探测失败（${cfg.readyPath}），详见日志 ${backendLogPath(label)}`)
   }
   backendProcesses.set(label, proc)
+  persistBackendRegistry()
   return proc
 }
 
@@ -1953,16 +2450,13 @@ function killBackend(label: string): void {
   if (!p) return
   backendProcesses.delete(label)
   try {
-    p.child.kill()
+    p.child?.kill()
   } catch {
     /* 忽略 */
   }
-  // Windows 兜底：child.kill 不杀进程树，taskkill /T 连子进程一起清
+  // Windows 兜底：child.kill 不杀进程树，taskkill /T 连子进程一起清（收养的 child=null 直接走这里）
   if (p.pid) killTree(p.pid)
-}
-
-function killAllBackends(): void {
-  for (const label of [...backendProcesses.keys()]) killBackend(label)
+  persistBackendRegistry()
 }
 
 // ============================================================================
@@ -1979,7 +2473,7 @@ const PROXY_HOP_HEADERS = new Set([
   'upgrade',
 ])
 
-/** 上游 Location 重写：127.0.0.1:<port> 绝对地址或根相对路径改写到 /bp 前缀下；其余原样返回 */
+/** 上游 Location 重写：127.0.0.1:<port> 绝对地址或根相对路径改写到 /backend 前缀下；其余原样返回 */
 function rewriteLocation(loc: string, prefix: string, port: number): string {
   const abs = `http://127.0.0.1:${port}`
   if (loc === abs) return prefix
@@ -1988,7 +2482,22 @@ function rewriteLocation(loc: string, prefix: string, port: number): string {
   return loc
 }
 
-/** 把 /bp/<label>/… 请求原样转发到回环后端 http://127.0.0.1:<port>/…（双向流式管道，媒体大文件不落盘） */
+// per-backend 上传转发串行队列（2026-08-29 Pj15 上传断流接力包取证）：带 body 的请求并发经
+// Bun node:http 兼容层 pipe 泵会卡死（后端日志铁证：同一张图 90s×3 重试全 400，前端降级串行
+// 后 25 张全 200），串行后单路 pipe 通畅。同 key 逐个转发，队列空时自清理防 Map 膨胀。
+const bpForwardQueues = new Map<string, Promise<void>>()
+function enqueueBpForward(key: string, run: () => Promise<void>): void {
+  const prev = bpForwardQueues.get(key) ?? Promise.resolve()
+  const next = prev.then(run).catch((e: unknown) => {
+    console.log(`[gateway] /backend 转发队列异常: ${e instanceof Error ? e.message : String(e)}`)
+  })
+  bpForwardQueues.set(key, next)
+  void next.then(() => {
+    if (bpForwardQueues.get(key) === next) bpForwardQueues.delete(key)
+  })
+}
+
+/** 把 /backend/<label>/… 请求原样转发到回环后端 http://127.0.0.1:<port>/…（双向流式管道，媒体大文件不落盘） */
 function proxyBackendRequest(
   req: import('node:http').IncomingMessage,
   res: import('node:http').ServerResponse,
@@ -2005,29 +2514,84 @@ function proxyBackendRequest(
     upHeaders[k] = v as string | string[] | undefined
   }
   upHeaders.host = `127.0.0.1:${proc.port}`
-  const upReq = httpRequest(
-    { host: '127.0.0.1', port: proc.port, method: req.method, path: rawPath + rawSearch, headers: upHeaders },
-    (upRes) => {
-      const outHeaders: Record<string, string> = {}
-      for (const [k, v] of Object.entries(upRes.headers)) {
-        const lk = k.toLowerCase()
-        // hop-by-hop 与上游 set-cookie 一并剥离（防止上游会话 cookie 泄漏到网关作用域）
-        if (PROXY_HOP_HEADERS.has(lk) || lk === 'set-cookie') continue
-        outHeaders[k] = Array.isArray(v) ? v.join(', ') : String(v ?? '')
-      }
-      const loc = upRes.headers.location
-      if (typeof loc === 'string') outHeaders.location = rewriteLocation(loc, prefix, proc.port)
-      else if (Array.isArray(loc) && loc.length > 0) outHeaders.location = rewriteLocation(loc[0], prefix, proc.port)
-      res.writeHead(upRes.statusCode ?? 502, outHeaders)
-      upRes.pipe(res)
-    },
-  )
-  req.pipe(upReq)
-  req.on('error', () => upReq.destroy())
-  upReq.on('error', () => {
-    if (!res.headersSent) sendJson(res, 502, { error: 'backend unreachable' })
-    else res.destroy()
+  const label = prefix.slice('/backend/'.length)
+  // 断流取证（2026-08-29）：已收/声明字节数，半截体一眼定性（误杀=已收远小于声明；真断开=接近声明）
+  let receivedBytes = 0
+  req.on('data', (c: Buffer) => {
+    receivedBytes += c.length
   })
+  const contentLen = Number(req.headers['content-length']) || -1
+  let upReq: import('node:http').ClientRequest | undefined
+  let killed = false
+  // 僵尸连接根治（2026-08-28 Pj15 上传卡死移交）：客户端断开必须联动中止上游连接。
+  // 此前仅 req 'error' 时 destroy——隧道抖动/刷新页只触发 'aborted'/'close' 不触发 'error'，
+  // pipe 不传播断开 → 上游 socket 永挂（请求头已转发、body 永没送齐）→ 后端线程在
+  // rfile.read 永久阻塞（事发 12 条 ESTABLISHED 僵尸），死连接同时是网关空闲自旋的燃料。
+  const killUpstream = (why: string): void => {
+    if (killed) return
+    killed = true
+    // 请求级断流取证（gateway.log）：来源区分 + 字节计数（upReq 尚未创建的排队期同样可取证）
+    console.log(
+      `[gateway] /backend ${label}${rawPath} 转发中止: ${why} (已收 ${receivedBytes}/${contentLen < 0 ? '?' : contentLen} 字节)`,
+    )
+    upReq?.destroy()
+  }
+  req.on('error', () => killUpstream('客户端请求错误'))
+  // body 未收齐客户端就断开（'aborted' 与 close+complete 双保险，覆盖不同运行时语义；文案区分来源）
+  req.on('aborted', () => killUpstream('客户端断开(aborted,body 未收齐)'))
+  req.on('close', () => {
+    if (req.complete === false) killUpstream('客户端断开(close,body 未收齐)')
+  })
+  // 响应中途客户端消失（刷新/断线）→ 中止上游，后端不再往死管写流
+  res.on('close', () => {
+    if (!res.writableEnded) killUpstream('客户端断开(响应中途)')
+  })
+
+  const forward = async (): Promise<void> => {
+    // 轮到转发时客户端已断开/响应已死 → 放弃（避免向上游白转半截体占后端线程）
+    if (killed || res.destroyed) return
+    const thisReq = httpRequest(
+      { host: '127.0.0.1', port: proc.port, method: req.method, path: rawPath + rawSearch, headers: upHeaders },
+      (upRes) => {
+        const outHeaders: Record<string, string> = {}
+        for (const [k, v] of Object.entries(upRes.headers)) {
+          const lk = k.toLowerCase()
+          // hop-by-hop 与上游 set-cookie 一并剥离（防止上游会话 cookie 泄漏到网关作用域）
+          if (PROXY_HOP_HEADERS.has(lk) || lk === 'set-cookie') continue
+          outHeaders[k] = Array.isArray(v) ? v.join(', ') : String(v ?? '')
+        }
+        const loc = upRes.headers.location
+        if (typeof loc === 'string') outHeaders.location = rewriteLocation(loc, prefix, proc.port)
+        else if (Array.isArray(loc) && loc.length > 0) outHeaders.location = rewriteLocation(loc[0], prefix, proc.port)
+        res.writeHead(upRes.statusCode ?? 502, outHeaders)
+        upRes.pipe(res)
+      },
+    )
+    upReq = thisReq
+    req.pipe(thisReq)
+    // 上游静默超时（180s 无任何数据，与 Pj15 后端 Handler.timeout 对齐）：后端挂死/隧道断流
+    // 不再永久滞留连接；正常流式传输只要数据在流就不会触发（按静默计，非总时长）
+    thisReq.on('socket', (s) => {
+      s.setTimeout(180_000)
+      s.on('timeout', () => {
+        killUpstream('上游 180s 无数据')
+        if (!res.destroyed && !res.headersSent) sendJson(res, 504, { error: 'upstream timeout' })
+      })
+    })
+    thisReq.on('error', () => {
+      if (res.destroyed) return
+      if (!res.headersSent) sendJson(res, 502, { error: 'backend unreachable' })
+      else res.destroy()
+    })
+  }
+
+  // 并发上传根治（2026-08-29 取证）：POST/PUT/PATCH（带 body）按 backend label 排队逐个转发；
+  // GET/HEAD（无 body，媒体大文件下载）直通不受影响。
+  if (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH') {
+    enqueueBpForward(prefix, forward)
+  } else {
+    void forward()
+  }
 }
 
 // 空闲回收：backend 超过 idleMinutes 无活跃 → kill（独立于网关自身空闲回收，
@@ -2056,7 +2620,7 @@ function reclaimIdleBackends(): void {
  *  - 通信不再走 stdin/stdout 管道：交互 REPL 启动后由 CLI 侧 gatewayClient 连 /clients 注册
  *    sessionId（interactiveHelpers.renderAndRun → startGatewayProbeAndConnect），web 消息经
  *    cliClients 精确路由注入 REPL（gatewayClient enqueue，与本地打字同路径）；
- *    展示走 conversationDisplay 上报（/api/conversation）+ jsonl 落盘 + SSE 列表刷新。
+ *    展示走 conversationDisplay 上报（/gateway/conversation）+ jsonl 落盘 + SSE 列表刷新。
  *  - 窗口通过 PowerShell Start-Process -PassThru 弹出（复用 deepLink/terminalLauncher 的
  *    可见终端思路；-PassThru 返回真实 CLI pid 供 stopWebSession taskkill）。
  *
@@ -2134,6 +2698,7 @@ function spawnWebSession(resume?: string, project?: string): Promise<string> {
           lastActive: Date.now(),
         }
         webSessions.set(sid, proc)
+        persistWebSessions()
         resolve(sid)
         return
       }
@@ -2163,29 +2728,33 @@ function spawnWebSession(resume?: string, project?: string): Promise<string> {
 // 2026-08-24 web 会话改造：web 消息经 cliClients 注入（CLI 侧 gatewayClient enqueue），
 // 审批在本地窗口操作 → 原 stdin 管道函数 sendWebSessionMessage/handleWebApproval 已删除。
 
-/** 优雅停 web 会话：关闭本地可见 CLI 窗口（taskkill 真实 CLI pid 树，窗口随之关闭） */
+/**
+ * 优雅停 web 会话：关闭本地可见 CLI 窗口（taskkill 真实 CLI pid 树，窗口随之关闭）。
+ * 仅用于用户显式关闭单个会话/超时清理；网关自身关停（off/restart/空闲/SIGINT）不得走这里——
+ * web 会话与 CLI 会话同等权重，网关不在了窗口照常活着（2026-08-29 重启杀窗根修）。
+ */
 function stopWebSession(sessionId: string): boolean {
   const p = webSessions.get(sessionId)
   if (!p) return false
   webSessions.delete(sessionId)
+  persistWebSessions()
   const pid = p.pid ?? p.child.pid
   if (pid && isPidAlive(pid)) killTree(pid)
   return true
 }
 
-function killAllWebSessions(): void {
-  for (const sid of [...webSessions.keys()]) stopWebSession(sid)
-}
-
 // 空闲回收：web 会话（本地可见交互 CLI 窗口）生命周期由用户本地操作决定——进程活着不回收
 // （lastActive 只是网关侧活跃，本地窗口用户可能正直接操作）；仅清理「进程已死」的残留注册。
 function reclaimIdleWebSessions(): void {
+  let changed = false
   for (const [sid, p] of [...webSessions]) {
     if (p.pid && !isPidAlive(p.pid)) {
       console.log(`[gateway] web 会话 ${sid} CLI 进程已退出，清理运行注册`)
       webSessions.delete(sid)
+      changed = true
     }
   }
+  if (changed) persistWebSessions()
 }
 
 // P2 收敛（2026-08-27）：backend 与 web 会话原是两套平行 setInterval 回收样板（同 ENABLE_IDLE_RECLAIM
@@ -2231,18 +2800,28 @@ export function startLocalGateway(opts?: { host?: string; port?: number; token?:
   currentHost = opts?.host || process.env.GATEWAY_HOST || '0.0.0.0'
   currentPort = Number(opts?.port || process.env.GATEWAY_PORT || 8124)
   currentToken = opts?.token || process.env.SERVER_TOKEN || randomBytes(16).toString('hex')
-  // 共享 token：CLI 侧上报（conversationDisplay.ts /api/conversation、/api/activity）据此附加校验参数。
+  // 共享 token：CLI 侧上报（conversationDisplay.ts /gateway/conversation、/gateway/activity）据此附加校验参数。
   // 2026-08-17 网关独立化：token 落盘（便携根 .claude/gateway-token），供其它 CLI 进程读取后
   // 向本网关上报 / 连接 /clients（否则非网关宿主的 CLI 无 token，上报会被 401 拒绝）。
   setGatewayToken(currentToken)
   saveGatewayTokenToDisk(currentToken)
   const root = getPortableRoot()
+  // 收养上一代网关遗留的存活 web 会话窗口（注册表落盘，重启不杀窗 → 必须收养，否则 resume 幂等失效双开进程）
+  adoptWebSessions()
   // 启动即挂上空闲回收计时：此时无任何连接，若后续一直无人使用，到点自动关闭
   scheduleIdleShutdown()
   // backend（2026-08-19）与 web 会话（2026-08-23）空闲回收合并定时器（P2 收敛，独立于网关自身空闲回收）
   scheduleReclaim()
 
   server = createServer((req, res) => handleRequest(req, res, root))
+  // CLOSE_WAIT 收尸（2026-08-28）：对端半关（发来 FIN、我方一直不关）的 socket 会永久滞留
+  // CLOSE_WAIT——实测网关空闲积压 8+ 条，死连接是事件循环空转烧 CPU 的燃料（事发 0.76 核）。
+  // 对 'end'（对端 FIN 已收）回应自己的 FIN：keep-alive 对端关了就该收，WS 场景对端 FIN 即关闭流程。
+  server.on('connection', (socket) => {
+    socket.on('end', () => {
+      if (!socket.writableEnded) socket.end()
+    })
+  })
   wss = new WebSocketServer({ noServer: true })
   wss.on('connection', (ws) => {
     sockets.add(ws)
@@ -2265,7 +2844,12 @@ export function startLocalGateway(opts?: { host?: string; port?: number; token?:
   })
   server.on('upgrade', (req, socket, head) => {
     const url = new URL(req.url ?? '/', `http://${req.headers.host || 'localhost'}`)
-    if (url.searchParams.get('token') !== currentToken) {
+    // 2026-08-28 与 HTTP 一致：gateway-token（CLI 内部链路）或 floria_auth cookie 票证二选一；
+    // 浏览器授权全靠 cookie（/gateway/activate 配对激活时种下），URL 无 token。
+    const wsToken = url.searchParams.get('token') || ''
+    const qOk = wsToken !== '' && wsToken === currentToken
+    const cOk = isGatewayTicket(parseCookieHeader(req.headers.cookie)[AUTH_COOKIE_NAME])
+    if (!qOk && !cOk) {
       socket.destroy()
       return
     }
@@ -2311,6 +2895,7 @@ export function startLocalGateway(opts?: { host?: string; port?: number; token?:
             suggestions?: unknown
             blockedPath?: string
             response?: unknown
+            items?: unknown
           }
           try {
             m = JSON.parse(data.toString())
@@ -2322,11 +2907,26 @@ export function startLocalGateway(opts?: { host?: string; port?: number; token?:
             approvalTrailPush('cli-hello', sid, undefined, m.relay === true ? 'relay-on' : 'relay-off')
             return
           }
+          // 2026-08-30 队列快照（清单#2）：CLI commandQueue 当前排队项 → 存 per-session +
+          // SSE 群发（事件体直接带 items，前端免拉 /gateway/session 即更新置底排队区）。
+          // items 为全量快照（CLI 侧 enqueue/dequeue 后都重发），网关只做镜像存储+转发。
+          if (m.type === 'queue-state') {
+            const items = Array.isArray(m.items)
+              ? (m.items as Array<{ content?: unknown; ts?: unknown }>)
+                  .filter(it => it && typeof it === 'object' && typeof it.content === 'string')
+                  .map(it => ({ content: (it.content as string).slice(0, 2000), ts: typeof it.ts === 'number' ? it.ts : Date.now() }))
+              : []
+            sessionQueues.set(sid, { items, updatedAt: Date.now() })
+            sweepStaleMaps()
+            const s = `data: ${JSON.stringify({ type: 'queue-state', session: sid, items })}\n\n`
+            sendAll(sseClients, (c) => { c.res.write(s) })
+            return
+          }
           if (m.type === 'approval-request' && m.requestId) {
             approvalTrailPush('cli-approval-request', sid, m.requestId, m.toolName)
             // 2026-08-26 A2：补透传 CLI 侧 sendRequest 已上报的 description/suggestions/blockedPath，
             // 供前端审批卡展示原因说明、可勾选的「记住此规则」与被拒路径（undefined 字段自动省略）。
-            broadcast({
+            const approvalMsg = {
               type: 'approval',
               session_id: sid,
               requestId: m.requestId,
@@ -2336,13 +2936,16 @@ export function startLocalGateway(opts?: { host?: string; port?: number; token?:
               description: m.description,
               suggestions: m.suggestions,
               blockedPath: m.blockedPath,
-            })
+            }
+            pendingApprovalsSet(sid, m.requestId, approvalMsg) // 2026-08-30 pending 重放：暂存未决项
+            broadcast(approvalMsg)
             approvalTrailPush('gw-broadcast-approval', sid, m.requestId, `sockets=${sockets.size}`)
             return
           }
           // 本地（CLI 终端/窗口）已操作（allow/deny/abort）或请求已解决 → floria 撤卡
           if ((m.type === 'approval-local-resolved' || m.type === 'approval-cancel') && m.requestId) {
             approvalTrailPush('cli-local-resolved-or-cancel', sid, m.requestId, m.type)
+            pendingApprovalsDrop(m.requestId) // 2026-08-30 pending 重放：已解决不再回放
             broadcast({ type: 'approval-dismiss', session_id: sid, requestId: m.requestId })
             return
           }
@@ -2351,6 +2954,7 @@ export function startLocalGateway(opts?: { host?: string; port?: number; token?:
           // 目标 CLI 在线但本地已 resolve（竞速输/已撤销）不发本回执——floria 会收到 approval-dismiss 撤卡。
           if (m.type === 'approval-processed' && m.requestId) {
             approvalTrailPush('cli-approval-processed', sid, m.requestId)
+            pendingApprovalsDrop(m.requestId) // 2026-08-30 pending 重放：CLI 已消费不再回放
             broadcast({ type: 'approval-confirmed', session_id: sid, requestId: m.requestId })
             approvalTrailPush('gw-approval-confirmed', sid, m.requestId)
             return
@@ -2358,11 +2962,16 @@ export function startLocalGateway(opts?: { host?: string; port?: number; token?:
         })
         const detach = () => {
           if (cliClients.get(sid) === ws) cliClients.delete(sid)
+          // 2026-08-30 队列快照：队列态只属于在线 CLI 进程，断开即清（重连后 queue-state 补发对齐）
+          sessionQueues.delete(sid)
           // 2026-08-24 web 会话：CLI 窗口被用户关闭 → 进程死亡 → 从运行表移除
           // （会话仍可从磁盘 resume；2026-08-25 起无来源注册表，列表不再区分来源）。
           // 仅进程真死才删（gatewayClient 断线重连期间进程仍活着，不能误删）。
           const wp = webSessions.get(sid)
-          if (wp && wp.pid && !isPidAlive(wp.pid)) webSessions.delete(sid)
+          if (wp && wp.pid && !isPidAlive(wp.pid)) {
+            webSessions.delete(sid)
+            persistWebSessions()
+          }
           scheduleIdleShutdown()
         }
         ws.on('close', detach)
@@ -2373,6 +2982,7 @@ export function startLocalGateway(opts?: { host?: string; port?: number; token?:
     }
     socket.destroy()
   })
+  let gatewayListened = false
   server.on('error', (err) => {
     // 端口被占等错误：关闭对象避免悬挂
     if (server) {
@@ -2380,9 +2990,15 @@ export function startLocalGateway(opts?: { host?: string; port?: number; token?:
       server = null
     }
     console.error(`[gateway] 启动失败: ${(err as Error).message}`)
+    // P5（2026-08-28）：--gateway 独立进程 listen 失败（EADDRINUSE 等）→ 直接退出，
+    // 不留无监听僵尸进程驻留（实测 8199 冲突进程不退，干扰下轮诊断）。
+    if (process.argv.includes('--gateway') && !gatewayListened) process.exit(1)
   })
   server.listen(currentPort, currentHost, () => {
+    gatewayListened = true
     console.log(`[gateway] 内置网关监听 http://${currentHost}:${currentPort} (token=${currentToken})`)
+    // mDNS 应答器只在全网卡监听时有意义；绑 127.0.0.1（调试）时不起
+    if (currentHost === '0.0.0.0') mdnsStart()
   })
 
   const lan = lanAddress()
@@ -2402,13 +3018,15 @@ export function stopLocalGateway(): boolean {
     idleTimer = null
   }
   stopSseWatches()
-  // P2 收敛：停单一回收定时器 + 一并 kill 全部 backend 子进程 / 关停全部 web 会话窗口
+  mdnsStop() // mDNS 应答器随网关关停（floria.local 停止解析，设备回落 IP 直连）
+  // P2 收敛：停单一回收定时器。web 会话窗口不随网关关停（2026-08-29 根修：此前 killAllWebSessions
+  // 把正在执行 /server restart 的 web 会话自己杀掉，restart 断在半路且窗口退出）——web 会话与普通
+  // CLI 会话同等权重，网关 off/restart/空闲退出均只关网关，窗口存活并自动重连新网关（注册表已落盘，
+  // 新网关启动 adoptWebSessions 收养）；backend 同理（2026-08-28 生命周期解耦）。
   if (reclaimTimer) {
     clearInterval(reclaimTimer)
     reclaimTimer = null
   }
-  killAllBackends()
-  killAllWebSessions()
   for (const c of sockets) {
     try {
       c.close()
@@ -2437,6 +3055,9 @@ export function stopLocalGateway(): boolean {
   // 2026-08-17 独立化：同时清盘 token 文件，避免遗留的 token 被误用（新一轮网关会重新生成写盘）。
   setGatewayToken('')
   clearGatewayTokenFromDisk()
+  // 2026-08-28 修订：/server off|restart 不再清设备授权票证（用户实测「重启后授权全没了」）——
+  // 授权名单是手动配对的持久资产，只由 /server auth add / auth off 管理；gateway-token（内部）
+  // 照旧清盘（重启随机新生成）。设备 cookie 的票证在名单里始终有效，跨重启免重配。
   try {
     wss?.close()
   } catch {

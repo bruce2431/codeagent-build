@@ -1185,6 +1185,16 @@ export function REPL({
       pid: process.pid,
       cwd: getOriginalCwd(),
     })
+    // 60s 心跳：状态长期不变（长回合 busy / 挂机 idle）也要续期，防网关 ACTIVITY_TTL_MS
+    // （10 分钟）清扫后状态点消失（2026-08-29 状态点偶发观测不到修复）。状态变化即重建定时器。
+    const heartbeat = setInterval(() => {
+      void sendSessionActivity(activitySessionId, {
+        status: sessionStatus,
+        pid: process.pid,
+        cwd: getOriginalCwd(),
+      })
+    }, 60_000)
+    return () => clearInterval(heartbeat)
   }, [sessionStatus, activitySessionId])
 
   // 3P default: off — OSC 21337 is ant-only while the spec stabilizes.
@@ -1972,6 +1982,10 @@ export function REPL({
         success: true,
         resume_duration_ms: Math.round(performance.now() - resumeStart)
       });
+      // 2026-08-30 网关注册即时刷新：/resume 换了 sessionId，网关 /clients 注册表仍挂启动时的
+      // 旧 sid → web 发送按新 id 路由 miss → 误判离线 → 冷启动弹第二个窗口（同会话双进程）。
+      // 立即重注册使 web 发送直接注入本进程（周期自检 10s 兜底见 gatewayClient）。
+      void import('../utils/gatewayClient.js').then((m) => m.refreshGatewayRegistration());
     } catch (error) {
       logEvent('tengu_session_resumed', {
         entrypoint: entrypoint as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -3312,6 +3326,58 @@ export function REPL({
         };
         void executeImmediateCommand();
         return; // Always return early - don't add to history or queue
+      }
+      // `immediate: true` local commands (e.g. /server) also bypass the queue:
+      // run right away instead of waiting for the current turn to finish.
+      // Text results go into the transcript like the queued path; compact
+      // results can't run mid-turn — re-queue them for the stop point.
+      if (matchingCommand && shouldTreatAsImmediate && matchingCommand.type === 'local') {
+        logEvent('tengu_immediate_command_executed', {
+          commandName: matchingCommand.name as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          fromKeybinding: options?.fromKeybinding ?? false
+        });
+        const executeImmediateLocalCommand = async (): Promise<void> => {
+          try {
+            if (input.trim() === inputValueRef.current.trim()) {
+              setInputValue('');
+              helpers.setCursorOffset(0);
+              helpers.clearBuffer();
+              setPastedContents({});
+            }
+            const context = getToolUseContext(messagesRef.current, [], createAbortController(), mainLoopModel);
+            const mod = await matchingCommand.load();
+            const result = await mod.call(commandArgs, context);
+            if (result.type === 'compact') {
+              enqueue({ value: input.trim(), mode: 'prompt' });
+              return;
+            }
+            const newMessages: MessageType[] = [];
+            if (result.type === 'text' && result.value) {
+              if (isFullscreenEnvEnabled()) {
+                addNotification({
+                  key: `immediate-${matchingCommand.name}`,
+                  text: result.value,
+                  priority: 'immediate'
+                });
+              } else {
+                newMessages.push(createCommandInputMessage(formatCommandInputTags(getCommandName(matchingCommand), commandArgs)), createCommandInputMessage(`<${LOCAL_COMMAND_STDOUT_TAG}>${escapeXml(result.value)}</${LOCAL_COMMAND_STDOUT_TAG}>`));
+              }
+            }
+            if (newMessages.length) {
+              setMessages(prev => [...prev, ...newMessages]);
+            }
+            if (stashedPrompt !== undefined) {
+              setInputValue(stashedPrompt.text);
+              helpers.setCursorOffset(stashedPrompt.cursorOffset);
+              setPastedContents(stashedPrompt.pastedContents);
+              setStashedPrompt(undefined);
+            }
+          } catch (error) {
+            logError(error);
+          }
+        };
+        void executeImmediateLocalCommand();
+        return; // Don't add to history or queue
       }
     }
 

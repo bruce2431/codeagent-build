@@ -176,8 +176,6 @@ import env from './commands/env/index.js'
 import exit from './commands/exit/index.js'
 import exportCommand from './commands/export/index.js'
 import model from './commands/model/index.js'
-import provider from './commands/provider/index.js'
-import keypool from './commands/keypool/index.js'
 import tag from './commands/tag/index.js'
 import outputStyle from './commands/output-style/index.js'
 import remoteEnv from './commands/remote-env/index.js'
@@ -255,8 +253,6 @@ export const INTERNAL_ONLY_COMMANDS = [
   debugToolCall,
   agentsPlatform,
   autofixPr,
-  provider,
-  keypool,
 ].filter(Boolean)
 
 // Declared as a function so that we don't run this until getCommands is called,
@@ -348,8 +344,6 @@ const COMMANDS = memoize((): Command[] => [
   ...(workflowsCmd ? [workflowsCmd] : []),
   ...(torch ? [torch] : []),
   ...(ultraplan ? [ultraplan] : []),
-  provider,
-  keypool,
   ...(process.env.USER_TYPE === 'ant' && !process.env.IS_DEMO
     ? INTERNAL_ONLY_COMMANDS
     : []),

@@ -3,34 +3,36 @@
  * 2026-08-17 网关独立化：网关以「同一 exe 的 --gateway 模式」作为独立进程运行（/server on
  * detached spawn 自身 exe），父 CLI 退出不影响网关；任何 CLI 进程均可连接共用（token 落盘
  * 便携根 .claude/gateway-token，各进程读盘共享）。
- *  on      → spawn 独立网关进程（--gateway，detached + unref），绑定 HOST，等待端口就绪并回显 URL
- *  off     → POST /api/shutdown 优雅关闭独立网关；兜底 netstat + taskkill 清理端口残留
+ *  on      → spawn 独立网关进程（--gateway，detached + unref），绑定 HOST，等待端口就绪并回显统一地址
+ *            （2026-08-28 设备认证配对：浏览器侧完全删除 token 授权链，授权只走 /server auth 手动配对）
+ *  off     → POST /gateway/shutdown 优雅关闭独立网关；兜底 netstat + taskkill 清理端口残留
  *  status  → 端口探测网关状态
  *  restart → 先 off 等端口释放再 on（网关未运行则直接 on）
+ *  auth    → 设备认证（手动，不可自动化）：auth 列出已授权设备；auth add <请求码> 手动授权新设备
+ *            （设备门显示请求码 → add 后设备端 /gateway/activate 自动激活，永久通过 floria.home 连接）；
+ *            auth off <n> 撤销第 n 台设备
  * 空闲回收：网关三集合全空持续 GATEWAY_IDLE_MINUTES(默认10) 分钟自动关闭（见 localGateway.ts）
  * 环境变量：GATEWAY_PORT(默认8124)、GATEWAY_HOST(默认0.0.0.0=局域网)、SERVER_TOKEN(指定 token，默认随机)、GATEWAY_IDLE_MINUTES(空闲回收阈值分钟)
  */
 import { spawnSync, spawn } from 'child_process'
 import { randomBytes } from 'node:crypto'
-import { networkInterfaces } from 'node:os'
+import { existsSync, openSync, closeSync, statSync, truncateSync } from 'node:fs'
+import { join } from 'node:path'
 import type { LocalCommandCall } from '../../types/command.js'
-import { loadGatewayTokenFromDisk } from '../../utils/gatewayToken.js'
+import {
+  loadGatewayTokenFromDisk,
+  listGatewayTickets,
+  addGatewayTicket,
+  removeGatewayTicket,
+} from '../../utils/gatewayToken.js'
+import { getPortableRoot } from '../../utils/envUtils.js'
 
 const PORT = Number(process.env.GATEWAY_PORT || 8124)
-
-function lanAddress(): string | null {
-  for (const list of Object.values(networkInterfaces())) {
-    for (const ni of list ?? []) {
-      if (ni.family === 'IPv4' && !ni.internal) return ni.address
-    }
-  }
-  return null
-}
 
 async function isGatewayUp(port: number = PORT): Promise<boolean> {
   try {
     // 必须带超时：若端口被幽灵进程占用（TCP 可连但 HTTP 永不回），无超时的 fetch 会让 /server status|on 永久卡死
-    const res = await fetch(`http://127.0.0.1:${port}/api/health`, { signal: AbortSignal.timeout(1500) })
+    const res = await fetch(`http://127.0.0.1:${port}/gateway/health`, { signal: AbortSignal.timeout(1500) })
     if (!res.ok) return false
     const d = (await res.json()) as { mode?: string }
     return d.mode === 'gateway'
@@ -59,13 +61,113 @@ function listeningPids(port: number = PORT): string[] {
   }
 }
 
-function describeUrl(token: string, port: number = PORT): string {
-  const lan = lanAddress()
-  const local = `http://127.0.0.1:${port}/?token=${token}`
-  return lan ? `手机/浏览器访问: http://${lan}:${port}/?token=${token}\n本机访问: ${local}` : `访问: ${local}`
+// 2026-08-29 定案（用户）：全设备唯一地址 floria.local（仅考虑 Apple/Windows，原生 mDNS 解析
+// .local；本机 hosts 127.0.0.1 floria.local 同名直达），不再输出 IP 直连行。IP 变动自愈不变：
+// 设备请求码存 localStorage 恒定，授权名单按码匹配，新 IP 下轮询 activate 自动重种 cookie。
+function describeDefaultUrl(port: number = PORT): string {
+  return `统一地址（同 WiFi/热点免配置）: http://floria.local:${port}/\n设备授权: /server auth（add <请求码> / off <n>）`
+}
+
+// /server auth —— 设备认证（手动配对，不可自动化）：
+//   auth            → 列出已授权设备（票证前 8 位 + 授权时间）
+//   auth add <码>   → 把设备门显示的请求码加入授权名单（设备端轮询 /gateway/activate 自动激活）
+//   auth off <n>    → 撤销第 n 台已授权设备（其 cookie 立即失效）
+async function doAuth(rest: string[]): Promise<string> {
+  const sub = (rest[0] || '').toLowerCase()
+  if (!sub || sub === 'list') {
+    const list = listGatewayTickets()
+    if (!list.length) return `暂无已授权设备。新设备授权：设备打开 ${`http://floria.local:${PORT}/`} 显示请求码 → /server auth add <请求码>`
+    const lines = list.map((t, i) => {
+      const when = t.created ? new Date(t.created).toLocaleString('sv-SE').replace('T', ' ') : '（存量）'
+      return `${i + 1}. ${t.id.slice(0, 8)}…  授权于 ${when}`
+    })
+    return `已授权设备 ${list.length} 台：\n${lines.join('\n')}\n撤销: /server auth off <n>`
+  }
+  if (sub === 'add') {
+    const code = (rest[1] || '').trim()
+    if (!/^[a-zA-Z0-9-]{6,64}$/.test(code)) {
+      return `用法: /server auth add <请求码>（设备门上显示的 8 位码）`
+    }
+    const id = code.replace(/-/g, '').toLowerCase()
+    addGatewayTicket(id)
+    return `已授权设备（请求码 ${id.slice(0, 8)}）。设备将在数秒内自动进入（或刷新页面）。`
+  }
+  if (sub === 'off') {
+    const n = Number.parseInt(rest[1] || '', 10)
+    const list = listGatewayTickets()
+    if (!Number.isInteger(n) || n < 1 || n > list.length) return `用法: /server auth off <n>（n 为 /server auth 列表中的编号）`
+    const target = list[n - 1]
+    removeGatewayTicket(target.id)
+    return `已撤销设备 ${target.id.slice(0, 8)}… 的授权（其访问将回到请求码门）`
+  }
+  return `未知参数 "${sub}"。用法: /server auth [add <请求码> | off <n>]`
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
+
+// ============================================================================
+// 网关进程日志落盘 + spawn 共用（2026-08-28）
+// 此前 /server on spawn 独立网关用 stdio:'ignore'，网关 crash（如系统 commit 内存
+// 耗尽连锁崩溃）无任何痕迹可查——2026-08-28 遥测端断连事故的最大取证盲区。
+// 照 backend-<label>.log 先例：stdout/stderr 落盘便携根 .claude/gateway.log，5MB 截断轮转。
+// ============================================================================
+const GATEWAY_LOG_MAX_BYTES = 5 * 1024 * 1024
+function gatewayLogPath(): string {
+  return join(getPortableRoot(), '.claude', 'gateway.log')
+}
+
+function openGatewayLogFd(): number | null {
+  const p = gatewayLogPath()
+  try {
+    if (existsSync(p) && statSync(p).size > GATEWAY_LOG_MAX_BYTES) truncateSync(p, 0)
+  } catch {
+    /* 忽略 */
+  }
+  try {
+    return openSync(p, 'a')
+  } catch {
+    return null
+  }
+}
+
+// spawn 独立网关进程（--gateway 模式，detached + unref）。/server on 与 CLI 自动拉起共用。
+// token/端口经环境变量传给子进程；日志 fd 子进程持有独立句柄，父进程 spawn 后即关。
+function spawnGatewayProcess(token: string, port: number): number | undefined {
+  const logFd = openGatewayLogFd()
+  const child = spawn(process.execPath, ['--gateway'], {
+    detached: true,
+    stdio: ['ignore', logFd ?? 'ignore', logFd ?? 'ignore'],
+    windowsHide: true, // exe 是 console 子系统，不加会弹命令行窗口（2026-08-20 黑框根因修复）
+    env: {
+      ...process.env,
+      GATEWAY_PORT: String(port),
+      GATEWAY_HOST: '0.0.0.0',
+      SERVER_TOKEN: token,
+    },
+  })
+  child.unref()
+  if (logFd !== null) {
+    try {
+      closeSync(logFd)
+    } catch {
+      /* 忽略 */
+    }
+  }
+  return child.pid
+}
+
+// CLI 自动拉起（网关缺失自愈）：gatewayClient 探测网关不在时调用。
+// 与 doOn 的差异：绝不做 taskkill 端口清理（自动路径禁杀进程，红线），端口被非网关
+// 占用时静默放弃留给用户手动 /server on；spawn 后不等待就绪（gatewayClient 周期探测自然接续）。
+let lastAutoStartAt = 0
+export async function ensureGatewayAutoStart(): Promise<boolean> {
+  if (Date.now() - lastAutoStartAt < 60_000) return false // 节流：60s 内不重复尝试
+  lastAutoStartAt = Date.now()
+  if (await isGatewayUp()) return false
+  if (listeningPids(PORT).length) return false
+  const token = loadGatewayTokenFromDisk() || randomBytes(16).toString('hex')
+  return spawnGatewayProcess(token, PORT) !== undefined
+}
 
 // 探测实际网关端口：默认 PORT，可能因端口占用被自动顺延换端口
 async function findGatewayPort(): Promise<number | null> {
@@ -78,20 +180,18 @@ async function findGatewayPort(): Promise<number | null> {
 async function doStatus(): Promise<string> {
   const gwPort = await findGatewayPort()
   if (gwPort !== null) {
-    const token = loadGatewayTokenFromDisk()
-    return `内置网关运行中（独立进程） · ${describeUrl(token, gwPort)}`
+    return `内置网关运行中（独立进程） · ${describeDefaultUrl(gwPort)}`
   }
   const pids = listeningPids(PORT)
   if (pids.length) {
-    return `端口 ${PORT} 被进程 ${pids.join(', ')} 占用，但 /api/health 非网关（可能是其它程序）`
+    return `端口 ${PORT} 被进程 ${pids.join(', ')} 占用，但 /gateway/health 非网关（可能是其它程序）`
   }
   return `内置网关未运行（端口 ${PORT} 空闲）`
 }
 
 async function doOn(tokenOverride?: string): Promise<string> {
   if (await isGatewayUp()) {
-    const token = loadGatewayTokenFromDisk()
-    return `内置网关已在运行（独立进程）\n${describeUrl(token, PORT)}\n停止: /server off`
+    return `内置网关已在运行（独立进程）\n${describeDefaultUrl(PORT)}\n停止: /server off`
   }
   // 端口被占用时自动清理：能杀则 taskkill 释放；杀不掉（幽灵 socket 残留，进程表查不到）则自动顺延换端口，
   // 保证每次 /server on 都能把网关起起来，不再卡在「端口被占用」手动处理上
@@ -125,19 +225,9 @@ async function doOn(tokenOverride?: string): Promise<string> {
   }
   // 2026-08-17 独立化：detached spawn 自身 exe（--gateway 模式），父 CLI 退出不影响网关。
   // token 显式传入子进程（restart 继承旧 token，否则用户设了 SERVER_TOKEN 则沿用，最后随机），网关启动时写盘共享。
+  // 2026-08-28 改走 spawnGatewayProcess 共用函数：stdout/stderr 落盘 gateway.log（crash 可取证）。
   const token = tokenOverride || process.env.SERVER_TOKEN || randomBytes(16).toString('hex')
-  const child = spawn(process.execPath, ['--gateway'], {
-    detached: true,
-    stdio: 'ignore',
-    windowsHide: true, // 2026-08-20 黑框根因修复：exe 是 console 子系统，不加会在 spawn 网关进程时弹命令行窗口
-    env: {
-      ...process.env,
-      GATEWAY_PORT: String(target),
-      GATEWAY_HOST: '0.0.0.0',
-      SERVER_TOKEN: token,
-    },
-  })
-  child.unref()
+  const childPid = spawnGatewayProcess(token, target)
   // 等待端口就绪（最多 ~6s）
   let up = false
   for (let i = 0; i < 30; i++) {
@@ -148,22 +238,22 @@ async function doOn(tokenOverride?: string): Promise<string> {
     }
   }
   if (!up) {
-    return `网关进程已 spawn (PID ${child.pid})，但端口 ${target} 未就绪，稍后用 /server status 查看${notes.length ? `\n${notes.join('\n')}` : ''}`
+    return `网关进程已 spawn (PID ${childPid})，但端口 ${target} 未就绪，稍后用 /server status 查看（日志: ${gatewayLogPath()}）${notes.length ? `\n${notes.join('\n')}` : ''}`
   }
   const note = notes.length ? `\n${notes.join('\n')}` : ''
   const idleMin = Number(process.env.GATEWAY_IDLE_MINUTES || 10)
-  return `内置网关已启动（独立进程，PID ${child.pid}）${note}\n${describeUrl(token, target)}\n停止: /server off\n空闲 ${idleMin} 分钟无连接将自动关闭`
+  return `内置网关已启动（独立进程，PID ${childPid}）${note}\n${describeDefaultUrl(target)}\n停止: /server off\n空闲 ${idleMin} 分钟无连接将自动关闭`
 }
 
 async function doOff(): Promise<string> {
   let out = ''
   // 探测实际网关端口（可能被自动换端口），否则 shutdown/taskkill 会打错端口
   const gwPort = await findGatewayPort()
-  // 优雅关闭独立网关：POST /api/shutdown（带 token，受网关 token 校验保护）
+  // 优雅关闭独立网关：POST /gateway/shutdown（带 token，受网关 token 校验保护）
   const token = loadGatewayTokenFromDisk()
   if (token && gwPort !== null) {
     try {
-      await fetch(`http://127.0.0.1:${gwPort}/api/shutdown?token=${encodeURIComponent(token)}`, {
+      await fetch(`http://127.0.0.1:${gwPort}/gateway/shutdown?token=${encodeURIComponent(token)}`, {
         method: 'POST',
         signal: AbortSignal.timeout(1500),
       })
@@ -212,12 +302,14 @@ async function doRestart(): Promise<string> {
 }
 
 export const call: LocalCommandCall = async (args) => {
-  const cmd = args.trim().split(/\s+/)[0]?.toLowerCase() || 'status'
+  const parts = args.trim().split(/\s+/).filter(Boolean)
+  const cmd = (parts[0] || 'status').toLowerCase()
   let value: string
-  if (cmd === 'on') value = await doOn()
+  if (cmd === 'on') value = await doOn(parts[1])
   else if (cmd === 'off') value = await doOff()
   else if (cmd === 'status') value = await doStatus()
   else if (cmd === 'restart') value = await doRestart()
-  else value = `未知参数 "${cmd}"。用法: /server on | off | status | restart`
+  else if (cmd === 'auth') value = await doAuth(parts.slice(1))
+  else value = `未知参数 "${cmd}"。用法: /server on | off | status | restart | auth [add <请求码> | off <n>]`
   return { type: 'text', value }
 }

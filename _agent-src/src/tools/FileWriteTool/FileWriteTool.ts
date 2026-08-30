@@ -98,6 +98,9 @@ export type FileWriteToolInput = InputSchema
 export const FileWriteTool = buildTool({
   name: FILE_WRITE_TOOL_NAME,
   searchHint: 'create or overwrite files',
+  // Fork: defer core tool — GLM-compatible upstreams drop undiscovered inline
+  // core tools; ToolSearch (select:) is the reliable fetch path.
+  shouldDefer: true,
   maxResultSizeChars: 100_000,
   strict: true,
   async description() {

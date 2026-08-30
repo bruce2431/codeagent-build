@@ -87,6 +87,17 @@ a { text-decoration: none; color: inherit; }
 .msg.user .who { align-self: flex-start; }
 .msg .body { max-width: 85%; padding: 10px 14px; font-size: 14px; line-height: 1.7; white-space: normal; word-break: break-word; }
 .msg.user .body { background: #f2f2f3; color: var(--text); border-radius: 16px 16px 4px 16px; }
+/* 用户消息图片（2026-08-30 定案：渲染在气泡外）——.msg-imgs 在 .body 之后，
+   .msg 本身无背景 → 视觉即气泡框正下方右对齐；缩略图上限 240px（二轮缩小，用户定案）；
+   多图横向排列（2026-08-30 三轮定案对齐 DSH MessageImages，单图不变）+ 6px 间距、右对齐换行；
+   单击看大图（lightbox）→ zoom-in 光标。
+   图未落盘（404）→ onerror 替换为 [Image #N] 裸文本节点（淡色小字），不出破图 */
+.msg .msg-imgs { display: flex; flex-direction: row; flex-wrap: wrap; justify-content: flex-end; align-items: flex-start; gap: 6px; margin-top: 5px; font-size: 12px; color: var(--text-3); }
+.msg .msg-imgs .msg-img { display: block; max-width: min(240px, 100%); max-height: 240px; width: auto; height: auto; border-radius: 10px; margin: 0; cursor: zoom-in; }
+/* 大图预览 lightbox：全屏黑底居中原图（92vw/92vh 上限），点击任意处/Esc 关闭 */
+#img-lightbox { position: fixed; inset: 0; z-index: 1200; background: rgba(0, 0, 0, 0.72); display: none; align-items: center; justify-content: center; cursor: zoom-out; }
+#img-lightbox.on { display: flex; }
+#img-lightbox img { max-width: 92vw; max-height: 92vh; width: auto; height: auto; border-radius: 8px; box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5); }
 /* 钉顶：最新用户消息吸附在视口顶部（下方预留空间给回复滚动），
    白底 + 底部细线分隔，滚动时挡住下方滑过的内容；上滑越过它即自然解除 */
 .msg.user.msg-pin { position: sticky; top: 0; z-index: 5; background: var(--chat-bg); box-shadow: 0 1px 0 var(--border); padding-bottom: 6px; margin-bottom: -6px; }
@@ -144,7 +155,9 @@ a { text-decoration: none; color: inherit; }
 /* 已处理折叠：思考 + 阅读/编辑/搜索等 AI 处理过程
    全部收进一个可展开容器，位于用户气泡与回复之间。浅灰小字标题 + V 形箭头（展开旋转 90°），
    展开显示与消息左对齐的浅灰过程区（思考文本无气泡框、浅灰色，2026-08-25 去嵌套缩进全对齐）。 */
-.done-fold { margin: 8px 0 2px; }
+/* 2026-08-30 间距定案：margin 归零——折叠与开启消息/回复的间距全部交给 #messages 的 18px
+   flex gap（与所有气泡一致，消除 8px/2px 造成的 26px vs 20px 不对称 + 回复落地瞬间上边距跳变） */
+.done-fold { margin: 0; }
 /* 网关实时流式：独立成行的处理折叠（在 #messages 里 18px 间距基础上收小边距） */
 .done-live { margin: 2px 0; }
 .done-result {
@@ -168,6 +181,10 @@ a { text-decoration: none; color: inherit; }
   margin: 2px 0; padding: 2px 0;
   display: flex; flex-direction: column; gap: 2px;
 }
+/* 折叠体内的引导消息气泡（2026-08-29 最终定案：引导消息是折叠体内部元素，与旁白/工具行
+   按先后顺序独立堆叠）：收紧间距，保持用户气泡形态 */
+.done-body .msg.user { margin: 3px 0; }
+.done-body .msg.user .body { padding: 7px 12px; }
 .done-think { color: var(--text); font-size: 14px; line-height: 1.65; word-break: break-word; }
 .done-think p, .done-think .p { margin: 2px 0; }
 
@@ -388,6 +405,8 @@ a { text-decoration: none; color: inherit; }
 .change-card.collapsed .ch-list { display: none; }
 .change-card .ch-file {
   flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  /* 相对路径显示（2026-08-29）：路径较长溢出时省略头部、保留尾部（文件名端）可见（rtl 方向技巧） */
+  direction: rtl; text-align: left;
   font-family: var(--mono); font-size: 12px; color: var(--text-2);
 }
 .change-card .ch-add { color: #16a34a; font-weight: 600; font-variant-numeric: tabular-nums; }
@@ -556,7 +575,8 @@ a { text-decoration: none; color: inherit; }
 #input-bar .tools { gap: 16px; }
 #input-bar .modes { display: flex; align-items: center; gap: 12px; min-width: 0; }
 #input-bar .trailing { flex: none; margin-left: auto; gap: 12px; }
-/* dsh .add —— 28px 圆、selector 底(#F5F6F7)、primary 字形；IconPlusOutline16(14) */
+/* dsh .add —— 28px 圆、selector 底(#F5F6F7)、primary 字形；IconPlusOutline16(14)
+   （2026-08-28 v137：图片上传独立按钮移除，入口改 + 浮窗「图片」tab，.add 恢复仅 #cmd-btn） */
 #cmd-btn.add {
   display: grid; place-items: center; flex: none;
   width: 28px; height: 28px;
@@ -566,6 +586,42 @@ a { text-decoration: none; color: inherit; }
 #cmd-btn.add:hover:not(:disabled) { background: #f1f3f5; }
 #cmd-btn.add:disabled { opacity: 0.5; cursor: default; }
 #cmd-btn.add svg { width: 14px; height: 14px; display: block; }
+/* 图片附件胶囊（2026-08-28；2026-08-30 对齐 dsh InputBar 附件行）：#input 上方缩略图行，
+   64px 圆角缩略图（dsh 同级尺寸）+ 悬浮右上 × 移除 + 横排 10px 间距、与文本行 12px 呼吸感。
+   默认 display:none、:not([hidden]) 才 flex（同 #new-proj-chip 定案）——否则作者 display:flex
+   覆盖 UA [hidden]{display:none}，无图时 hidden 失效，8px margin + 12px flex gap 凭空撑高输入栏。
+   2026-08-30 三轮间距对称：原 margin-bottom:12px 与 #input-bar flex gap:12px 叠加成下方 24px、
+   上方仅 bar padding-top 10px（缩略图贴顶）。改 margin-top 2px（上间距=10+2=12px）+ 删
+   margin-bottom（下间距=flex gap 12px），上下均 12px 对称；X 按钮 top:-6px 落在 12px 间隙内不裁。 */
+#img-pills {
+  display: none; flex-wrap: wrap; gap: 10px;
+  /* 2026-08-30 水平缩进对齐 DSH 附件 rail（ui-attachment/ComposerAttachments.module.css .rail
+     = padding 4px 12px 0，左对齐 + 左右各 12px；内层 AttachmentRail flex gap 10px 同款）：
+     原 2px 致缩略图贴左缘（用户实测「距离左侧特别近，距离右侧特别远」） */
+  padding: 0 12px; margin: 2px 0 0;
+}
+#img-pills:not([hidden]) { display: flex; }
+#img-pills .img-pill {
+  position: relative; flex: none;
+  width: 64px; height: 64px;
+  border-radius: 12px; overflow: visible;
+}
+#img-pills .img-pill img {
+  width: 100%; height: 100%;
+  object-fit: cover;
+  border-radius: 12px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  display: block; pointer-events: none;
+}
+#img-pills .img-pill .img-x {
+  position: absolute; top: -6px; right: -6px;
+  width: 18px; height: 18px;
+  border: none; border-radius: 999px;
+  background: #0f1115; color: #fff;
+  font-size: 12px; line-height: 18px; padding: 0;
+  cursor: pointer; display: grid; place-items: center;
+}
+#img-pills .img-pill .img-x:hover { background: #2c3138; }
 /* dsh ModelSelect .trigger —— 28px chip、透明无边框、24px 圆角、13/20/500 secondary 字、
    4px gap、caption 色 14px chevron；max-width 跟随容器 45cqw */
 #model-seat.trigger {
@@ -722,6 +778,40 @@ a { text-decoration: none; color: inherit; }
 #cmd-pop .detail { font-size: 12px; color: #81858c; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #cmd-pop .check { display: inline-flex; flex: none; color: #0f1115; }
 #cmd-pop .check svg { width: 16px; height: 16px; }
+/* 浮窗顶部 tab 行（2026-08-28 v137：图片入口入浮窗，「图片」tab 在最上、仅识图模型渲染；分段控件风格） */
+#cmd-pop .tabs {
+  display: flex; gap: 2px; margin: 2px 2px 4px; padding: 2px;
+  background: #f2f3f5; border-radius: 8px;
+}
+#cmd-pop .tab {
+  flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+  padding: 5px 8px; border: none; border-radius: 6px;
+  background: transparent; font-size: 12px; color: #6b7076; cursor: pointer;
+}
+#cmd-pop .tab:hover { color: #0f1115; }
+#cmd-pop .tab.tabActive { background: #fff; color: #0f1115; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06); }
+#cmd-pop .tab .tabIco { display: inline-flex; }
+#cmd-pop .tab .tabIco svg { width: 13px; height: 13px; }
+/* 图片 tab 面板：已选缩略图 + 选择按钮 + 粘贴提示 */
+#cmd-pop .imgpane { display: flex; flex-direction: column; gap: 6px; padding: 2px; overflow-y: auto; }
+#cmd-pop .imggrid { display: flex; flex-wrap: wrap; gap: 8px; }
+#cmd-pop .imgpill { position: relative; width: 44px; height: 44px; flex: none; }
+#cmd-pop .imgpill img { display: block; width: 100%; height: 100%; object-fit: cover; border-radius: 10px; border: 1px solid rgba(0, 0, 0, 0.08); }
+#cmd-pop .imgpill .img-x {
+  position: absolute; top: -5px; right: -5px; width: 16px; height: 16px; padding: 0;
+  border: none; border-radius: 999px; background: #0f1115; color: #fff;
+  font-size: 11px; line-height: 16px; text-align: center; cursor: pointer;
+}
+#cmd-pop .imgpill .img-x:hover { background: #2c3138; }
+#cmd-pop .imgempty { padding: 10px 6px; font-size: 12px; color: #81858c; }
+#cmd-pop .imgpick {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 7px 8px; border: none; border-radius: 8px;
+  background: #f5f6f7; font-size: 13px; color: #0f1115; cursor: pointer;
+}
+#cmd-pop .imgpick:hover { background: #f1f3f5; }
+#cmd-pop .imgpick svg { width: 14px; height: 14px; }
+#cmd-pop .imghint { font-size: 11px; color: #adb2b8; padding: 0 2px; }
 
 /* 风险确认门（dsh RiskConfirmation + Modal 完全移植：全屏遮罩 + 居中 r24 对话框，
    warning 行 + checkbox 认可 + footer[outline 取消 / primary 确认]） */
@@ -905,6 +995,14 @@ body.token-gate #input-wrap { display: none; }
 #g-card input::placeholder { color: var(--text-3); }
 #g-card.shake { animation: gShakeX 0.4s ease; }
 @keyframes gShakeX { 0%,100%{transform:translateX(0)} 20%{transform:translateX(-7px)} 40%{transform:translateX(7px)} 60%{transform:translateX(-5px)} 80%{transform:translateX(5px)} }
+/* 2026-08-28 设备认证配对：门内不再输入 token，显示请求码 + 提示（PC /server auth add 后自动进入） */
+#g-card #g-pair { flex: 1; min-width: 0; text-align: center; }
+#g-card #g-pair-code {
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  font-size: clamp(15px, 2.2vw, 22px); font-weight: 600; letter-spacing: 2px;
+  color: var(--text); user-select: all;
+}
+#g-card .g-pair-hint { margin-top: 4px; font-size: 11px; color: var(--text-3); line-height: 1.5; }
 
 /* 阶段2：过渡视频（验证提示已按用户要求移除 2026-08-18） */
 
@@ -919,7 +1017,7 @@ body.token-gate #input-wrap { display: none; }
 #sidebar {
   display: flex; height: 100%; position: relative; z-index: 10;
   width: var(--rail-w);
-  transition: transform 0.35s cubic-bezier(0.22, 0.61, 0.36, 1), opacity 0.3s ease, visibility 0.3s;
+  transition: width 0.28s cubic-bezier(0.22, 0.61, 0.36, 1), transform 0.35s cubic-bezier(0.22, 0.61, 0.36, 1), opacity 0.3s ease, visibility 0.3s;
 }
 #sidebar.open { width: var(--panel-w); }
 #sidebar.open #rail { display: none; }
@@ -980,6 +1078,24 @@ body.token-gate #input-wrap { display: none; }
 /* 边框只画在展开态：折叠时 panel 无宽无边框，侧栏总宽正好 6px（rail） */
 #sidebar.open #panel { width: var(--panel-w); border-right: 1px solid var(--border); }
 .panel-inner { width: var(--panel-w); flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+/* 桌面丝滑展开/折叠（2026-08-30）：sidebar 宽度 64↔280 平滑过渡（与主区避让 padding-left
+   0.28s 同曲线同步）；rail 改左侧绝对定位覆盖层 + 0.15s 快速交叉淡出（替换原 display:none
+   瞬隐）；panel 常态 flex:1 占满 sidebar（宽度由 sidebar 动画驱动、内容靠定宽 inner 逐帧揭示），
+   右边框颜色过渡淡入淡出（替换原 border 开关瞬跳）。手机抽屉（≤720px）不受影响。 */
+@media (min-width: 721px) {
+  #rail {
+    position: absolute; top: 0; left: 0; bottom: 0; width: var(--rail-w); z-index: 2;
+    transition: opacity 0.15s ease, visibility 0.15s;
+  }
+  #sidebar.open #rail { display: flex; opacity: 0; visibility: hidden; pointer-events: none; }
+  #panel {
+    width: auto; flex: 1 1 auto; min-width: 0;
+    border-right: 1px solid transparent;
+    transition: border-color 0.28s cubic-bezier(0.22, 0.61, 0.36, 1);
+  }
+  #sidebar.open #panel { width: auto; border-right-color: var(--border); }
+}
 
 .panel-header { display: flex; align-items: center; justify-content: space-between; padding: 14px 12px 10px 16px; }
 .floria-logo { display: flex; align-items: center; gap: 7px; font-size: 19px; font-weight: 800; letter-spacing: -0.3px; color: var(--text); }
@@ -1145,6 +1261,7 @@ body.token-gate #input-wrap { display: none; }
 .sess-item .dot { flex: 0 0 5px; width: 5px; height: 5px; border-radius: 50%; background: transparent; }
 .sess-item .dot.st-busy { background: #22c55e; }
 .sess-item .dot.st-wait { background: #ef4444; }
+.sess-item .dot.st-ask { background: #f59e0b; }
 .sess-item .title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sess-item .time { flex: 0 0 auto; font-size: 11px; color: var(--text-3); }
 .sess-item .cnt { flex: 0 0 auto; font-size: 10px; color: var(--text-3); margin-right: 2px; }
@@ -1406,3 +1523,20 @@ body.token-gate #input-wrap { display: none; }
 #rename-modal .button.primary:hover:not(:disabled) { background: #43454a; }
 
 /* 矮屏桌面（≤779px 高，非手机）：stage = 100vh-160px 主导，输入栏在 stage 内相对定位自动适配（无需覆盖） */
+
+/* 置底排队区（2026-08-30 共同后端定案：排队中消息独立小气泡列表，消息流最末尾、
+   最后一个折叠体「正在思考」状态行之下；注入后转入折叠体，dequeue 落盘后变开启气泡） */
+.queue-dock { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; padding: 4px 0 8px; }
+.queue-dock .q-item {
+  display: flex; align-items: center; gap: 8px;
+  max-width: 78%; box-sizing: border-box;
+  padding: 7px 12px; border-radius: 12px;
+  background: rgba(38, 49, 72, 0.05); border: 1px dashed rgba(38, 49, 72, 0.18);
+  font-size: 13px; line-height: 20px; color: #43454a;
+}
+.queue-dock .q-body { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.queue-dock .q-body p { margin: 0; }
+.queue-dock .q-tag { flex: none; font-size: 11px; line-height: 16px; color: rgba(38, 49, 72, 0.45); }
+/* 排队项图片缩略图（2026-08-30）：48px 小图随文本行堆叠（q-body 内），object-fit cover 同输入栏胶囊 */
+.queue-dock .q-imgs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.queue-dock .q-imgs .q-img { display: block; width: 48px; height: 48px; object-fit: cover; border-radius: 8px; border: 1px solid rgba(0, 0, 0, 0.08); }

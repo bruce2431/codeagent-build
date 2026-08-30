@@ -15,6 +15,7 @@ import { checkOpus1mAccess, checkSonnet1mAccess } from '../../utils/model/check1
 import { getDefaultMainLoopModelSetting, isOpus1mMergeEnabled, renderDefaultModelSetting } from '../../utils/model/model.js';
 import { isModelAllowed } from '../../utils/model/modelAllowlist.js';
 import { validateModel } from '../../utils/model/validateModel.js';
+import { ensureProviderForModel, findModelProvider, loadCredentials } from '../../utils/credentials/pool.js';
 import { reportCurrentModel } from '../../utils/gatewayClient.js';
 function ModelPickerWrapper(t0) {
   const $ = _c(17);
@@ -51,6 +52,8 @@ function ModelPickerWrapper(t0) {
         from_model: mainLoopModel as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
         to_model: model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
       });
+      // 2026-08-29 直接切模型自动切供应商：选中的模型属其它供应商 → 全局切供应商（池外模型原样放行）
+      if (model) ensureProviderForModel(model);
       setAppState(prev => ({
         ...prev,
         mainLoopModel: model,
@@ -175,6 +178,16 @@ function SetModelAndClose({
         return;
       }
 
+      // 2026-08-29 直接切模型自动切供应商：模型在凭据池内 → 池为权威（跳过 API 试呼验证）；
+      // 属其它供应商 → 全局切供应商（写 activeProvider + 该供应商 activeModel，key/baseUrl 随之生效）
+      const poolOwner = findModelProvider(model);
+      if (poolOwner) {
+        const prevProvider = loadCredentials().activeProvider;
+        ensureProviderForModel(model);
+        setModel(model, poolOwner !== prevProvider ? poolOwner : undefined);
+        return;
+      }
+
       // Validate and set custom model
       try {
         // Don't use parseUserSpecifiedModel for non-aliases since it lowercases the input
@@ -196,7 +209,7 @@ function SetModelAndClose({
         });
       }
     }
-    function setModel(modelValue: string | null): void {
+    function setModel(modelValue: string | null, switchedProvider?: string): void {
       setAppState(prev => ({
         ...prev,
         mainLoopModel: modelValue,
@@ -205,6 +218,9 @@ function SetModelAndClose({
       // 2026-08-24 模型 web/CLI 同步：/model 切换后上报实际模型给网关
       reportCurrentModel();
       let message = `Set model to ${chalk.bold(renderModelLabel(modelValue))}`;
+      if (switchedProvider) {
+        message = message + ` (provider: ${chalk.bold(switchedProvider)})`;
+      }
       let wasFastModeToggledOn = undefined;
       if (isFastModeEnabled()) {
         clearFastModeCooldown();

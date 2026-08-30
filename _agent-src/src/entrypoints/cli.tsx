@@ -117,7 +117,7 @@ async function main(): Promise<void> {
 
   // Fast-path for `--gateway`（2026-08-17 网关独立化）：同一 exe 以「独立网关进程」模式运行。
   // 只加载内置网关（src/gateway/localGateway.ts），不初始化 REPL/React/上报——进程长驻提供
-  // HTTP/WS 服务，退出即网关关闭（/server off 经 POST /api/shutdown 优雅关闭）。
+  // HTTP/WS 服务，退出即网关关闭（/server off 经 POST /gateway/shutdown 优雅关闭）。
   // 由 /server on detached spawn（args = ['--gateway']）或手动启动；端口/host/token 走环境变量，
   // token 写盘由 startLocalGateway 内部完成（供其它 CLI 进程读取后上报/连接）。
   if (args[0] === '--gateway') {

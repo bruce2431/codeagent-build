@@ -116,6 +116,7 @@ import { safeParseJSON } from './utils/json.js';
 import { logError } from './utils/log.js';
 import { getModelDeprecationWarning } from './utils/model/deprecation.js';
 import { getDefaultMainLoopModel, getUserSpecifiedModelSetting, normalizeModelStringForAPI, parseUserSpecifiedModel } from './utils/model/model.js';
+import { getActiveModel } from './utils/credentials/pool.js';
 import { ensureModelStringsInitialized } from './utils/model/modelStrings.js';
 import { PERMISSION_MODES } from './utils/permissions/PermissionMode.js';
 import { checkAndDisableBypassPermissions, getAutoModeEnabledStateIfCached, initializeToolPermissionContext, initialPermissionModeFromCLI, isDefaultPermissionModeAuto, parseToolListFromCLI, removeDangerousPermissions, stripDangerousPermissionsForAutoMode, verifyAutoModeGateAccess } from './utils/permissions/permissionSetup.js';
@@ -2107,6 +2108,13 @@ async function run(): Promise<CommanderCommand> {
     let effectiveModel = userSpecifiedModel;
     if (!effectiveModel && mainThreadAgentDefinition?.model && mainThreadAgentDefinition.model !== 'inherit') {
       effectiveModel = parseUserSpecifiedModel(mainThreadAgentDefinition.model);
+    }
+    // Pj16 2026-08-30 会话模型严格隔离（用户定案）：未显式指定模型时把凭据池 activeModel 固化为
+    // 本会话覆盖——全局默认（模型 tab switchModelAuto）此后切换仅对之后新启动的会话生效，
+    // 运行中会话不再被「每轮实时读池」带走。会话内显式切模型（/model / 弹层路由 'default' 清覆盖）
+    // 仍走 GatewayControlBridge 语义不变。
+    if (!effectiveModel) {
+      effectiveModel = getActiveModel() ?? undefined;
     }
     setMainLoopModelOverride(effectiveModel);
 

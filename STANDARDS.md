@@ -156,7 +156,7 @@ description: <何时用/怎么用，一句话，供 Skill 工具自动命中>
 - `neturon/`（name=`neturon-rag`）— RAG 引擎：`mcp/` 引擎 + `brain/` 活数据 + `Neturon-Template/` 模板 + `docs/`
 - `codegraph/`（name=`codegraph`）— 代码知识图谱 MCP，索引 `Pj16-CodeAgent构建/_agent-src/src/.codegraph/`
 - ~~`qwen-mm/`~~（已移除 2026-08-24 → `.trash/2026-08-24/qwen-mm/`）— Qwen-MM-Plugins 便携版（2026-08-14）：core（本地多模态读取/可视化 MCP + skill）+ api（云端 Qwen VL/Omni/ASR，需 DashScope key）。引擎 `src/`（精简 pyproject：core viz 全依赖 + api 依赖并入 `[project].dependencies`，entry `qwen-mm-plugins-core`/`qwen-mm-plugins-api`）+ `skills/qwen-mm-plugins-core/`、`skills/qwen-mm-plugins-api/` + `config/config` 活数据。`.mcp.json` 两个 server，均 `uvx --from ${CLAUDE_PLUGIN_ROOT}`（本地构建，不联网）：`qwen-mm-plugins-core` / `qwen-mm-plugins-api`，env `PYTHONUTF8=1`（防 Windows GBK `UnicodeEncodeError`）+ `QWEN_MM_CONFIG_DIR=${CLAUDE_PLUGIN_ROOT}/config`（便携）。config 写 `DASHSCOPE_API_KEY` + `DASHSCOPE_BASE_URL`（用户百炼专属网关 `…maas.aliyuncs.com/compatible-mode/v1`，可覆盖默认 dashscope 地址）。MCP 工具命名空间 `mcp__plugin_qwen-mm_qwen-mm-plugins-core__*` / `mcp__plugin_qwen-mm_qwen-mm-plugins-api__*`。移除原因：用户主动移除视觉插件；config 内 `DASHSCOPE_API_KEY` 已随目录进 `.trash` 未删除。MCP 工具下次重启会话后消失。
-- ~~`telemetry-monitor/`~~（已移除 2026-08-14 → `.trash/2026-08-14/telemetry-monitor/`）：会话遥测 MCP（notify_progress 推飞书 / get_session_status 读会话摘要）。`get_session_status` 用的旧桶 glob（`projects/*/*.jsonl`）与平铺会话存储不兼容已失效，功能被 SubPj1/SubPj2 `/api/sessions` 覆盖；`notify_progress` 飞书推送能力随 SubPj2 网关接管。MCP 工具下次重启会话后消失。
+- ~~`telemetry-monitor/`~~（已移除 2026-08-14 → `.trash/2026-08-14/telemetry-monitor/`）：会话遥测 MCP（notify_progress 推飞书 / get_session_status 读会话摘要）。`get_session_status` 用的旧桶 glob（`projects/*/*.jsonl`）与平铺会话存储不兼容已失效，功能被 SubPj1/SubPj2 `/gateway/sessions` 覆盖；`notify_progress` 飞书推送能力随 SubPj2 网关接管。MCP 工具下次重启会话后消失。
 
 ## 6. MCP 服务器标准
 
@@ -257,26 +257,26 @@ description: <何时用/怎么用，一句话，供 Skill 工具自动命中>
 - `cwd`：相对 preview.json 所在目录（`../../comfyui-backend` → 项目根下 comfyui-backend）。
 - `port`：`0` = 网关从 8130 起探测顺延（上限 8160）；显式端口则固定。
 - `idleMinutes`：后端无活跃持续该时长被空闲回收（默认继承 `GATEWAY_IDLE_MINUTES`=10 分钟）。
-- `readyPath`：就绪探测路径（默认 `/api/system_stats`）。
+- `readyPath`：就绪探测路径（默认 `/api/system_stats`，项目后端自身 API，非网关前缀）。
 
 ### 13.2 网关机制（localGateway.ts，已实现）
 
 - `findProjects` 读 `<项目>/.claude/preview/preview.json`，有 `backend` → 项目附 `hasBackend` + `backendCfg`。
-- `GET /api/backend?label=`（受 token 保护）：ensureBackend（未起则 spawn）→ `{url, port, pid}`；无 backend → 404。
+- `GET /gateway/backend?label=`（受 token 保护）：ensureBackend（未起则 spawn）→ `{url, port, pid}`；无 backend → 404。
 - spawn：`{port}` 替换 → cmd[0] resolve 到 cwd → `spawn`（env 加 PORT，日志落盘 `便携根/.claude/backend-<safeLabel>.log`）；就绪探测窗口 120×200ms（容忍 ~22s 冷启动）。
 - **就绪探测用原生 net socket**（`backendReady`）：编译产物 node:http 的 request 对 aiohttp/Python 后端会挂起，net 直连写 HTTP 头读响应状态（200/404 即就绪）。
 - 生命周期：`stopLocalGateway` 遍历 killAllBackends（child.kill + taskkill /F /T /PID 兜底）+ 停回收 timer；空闲回收每 60s（仅 `--gateway` 模式）。
-- 前端三级加载：① `/api/backend` 命中 → iframe 直连 + 60s 心跳防误回收；② 静态 preview；③ 默认项目主页兜底。
+- 前端三级加载：① `/gateway/backend` 命中 → iframe 直连 + 60s 心跳防误回收；② 静态 preview；③ 默认项目主页兜底。
 
 ### 13.3 安全
 
-- 后端只监听 `127.0.0.1`（ComfyUI `--listen` 默认）；后端 URL 获取须过网关 token（`/api/backend` 属 `/api/*` 自动受保护）。
+- 后端只监听 `127.0.0.1`（ComfyUI `--listen` 默认）；后端 URL 获取须过网关 token（`/gateway/backend` 属 `/gateway/*` 自动受保护）。
 - 后端文件写路径由后端自身约束（如 ComfyUI `--input-directory`/`--output-directory`），粘贴图片落到项目内目录。
 
 ### 13.4 远程端同源反代 /bp/<label>/（2026-08-27）
 
 - 背景：iframe 直连 `http://127.0.0.1:<port>/` 只在本机浏览器成立——手机/平板等远程宿主上 127.0.0.1 指向设备自身 → 连接拒绝、预览覆盖层永转圈；`/preview/*` 静态兜底因子资源不带 query token 全 401，不可用。
 - 路由：`/bp/<label>/<path>?<query>` → `http://127.0.0.1:<port>/<path>?<query>`。rest/search 原样透传（保留原始 %xx 编码，不二次解码重组，防中文路径双重编码错乱）；`proxyBackendRequest` 双向流式管道（媒体大文件不落盘），请求侧剥 hop-by-hop + host + cookie（不向项目后端泄露 floria_bp 票证），响应侧剥 hop-by-hop + 上游 set-cookie（防作用域泄漏），Location 改写回 `/bp` 前缀。后端仍只绑回环，访问面不变。
-- 鉴权：不靠 query token（页面内相对子请求必裸奔）。`/api/backend` 成功响应种 `HttpOnly` cookie `floria_bp`（Path=/bp、SameSite=Lax、24h）；票证存网关内存 Map（含 label 白名单，多项目并行预览互不顶掉，sweep 过期）。`/bp/*` 凭 cookie + 白名单放行，否则 401；label 须命中 findProjects 且 hasBackend，否则 404。
-- 前端分流：`openProjectPreview` 按 `location.hostname ∉ {127.0.0.1, localhost}` 判远程宿主 → iframe 用 `/bp/<label>/`（cookie 由上一拍 `/api/backend` 响应种下，子请求自动携带）；本机保持直连 `d.url` 零开销。心跳 60s `GET /api/backend` 不变（保 lastActive + 续票证）。
+- 鉴权：不靠 query token（页面内相对子请求必裸奔）。`/gateway/backend` 成功响应种 `HttpOnly` cookie `floria_bp`（Path=/bp、SameSite=Lax、24h）；票证存网关内存 Map（含 label 白名单，多项目并行预览互不顶掉，sweep 过期）。`/bp/*` 凭 cookie + 白名单放行，否则 401；label 须命中 findProjects 且 hasBackend，否则 404。
+- 前端分流：`openProjectPreview` 按 `location.hostname ∉ {127.0.0.1, localhost}` 判远程宿主 → iframe 用 `/bp/<label>/`（cookie 由上一拍 `/gateway/backend` 响应种下，子请求自动携带）；本机保持直连 `d.url` 零开销。心跳 60s `GET /gateway/backend` 不变（保 lastActive + 续票证）。
 - 配套约束：**经 /bp 代理的项目前端 API 一律相对路径**（根绝对路径 `/delete` 等在 /bp 前缀下会指回网关根 404）——Pj15 已清理全部根绝对 API 路径（2026-08-27 21:18）。

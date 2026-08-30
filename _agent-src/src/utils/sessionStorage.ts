@@ -2306,6 +2306,8 @@ export async function loadTranscriptFromFile(
       summaries,
       customTitles,
       tags,
+      agentNames,
+      agentColors,
       fileHistorySnapshots,
       attributionSnapshots,
       contextCollapseCommits,
@@ -2355,6 +2357,10 @@ export async function loadTranscriptFromFile(
         contextCollapseSnapshot?.sessionId === sessionId
           ? contextCollapseSnapshot
           : undefined,
+      // 2026-08-30 同 getLastSessionLog：补 agent-name/agent-color 元数据条目，
+      // 否则 --resume <文件路径> 冷启动恢复不出输入栏徽标
+      agentName: agentNames.get(sessionId),
+      agentColor: agentColors.get(sessionId),
       worktreeSession: worktreeStates.has(sessionId)
         ? worktreeStates.get(sessionId)
         : undefined,
@@ -3843,6 +3849,8 @@ async function loadSessionFile(sessionId: UUID): Promise<{
   summaries: Map<UUID, string>
   customTitles: Map<UUID, string>
   tags: Map<UUID, string>
+  agentNames: Map<UUID, string>
+  agentColors: Map<UUID, string>
   agentSettings: Map<UUID, string>
   worktreeStates: Map<UUID, PersistedWorktreeSession | null>
   fileHistorySnapshots: Map<UUID, FileHistorySnapshotMessage>
@@ -3898,6 +3906,8 @@ export async function getLastSessionLog(
     summaries,
     customTitles,
     tags,
+    agentNames,
+    agentColors,
     agentSettings,
     worktreeStates,
     fileHistorySnapshots,
@@ -3943,6 +3953,12 @@ export async function getLastSessionLog(
       agentSetting,
       contentReplacements.get(sessionId) ?? [],
     ),
+    // 2026-08-30 冷启动 --resume 徽标修复：agent-name/agent-color 是独立元数据条目，
+    // 消息内嵌字段（convertToLogOption 的 firstMessage.agentName）恒为 undefined →
+    // processResumedConversation 恢复不出 standaloneAgentContext → 输入栏右上角徽标空。
+    // 与列表路径（enrichLogs / loadAllLogsFromSessionFile 的 agentNames.get）对齐。
+    agentName: agentNames.get(sessionId),
+    agentColor: agentColors.get(sessionId),
     worktreeSession: worktreeStates.get(sessionId),
     contextCollapseCommits: contextCollapseCommits.filter(
       e => e.sessionId === sessionId,
@@ -4332,6 +4348,18 @@ export function isLoggableMessage(m: Message): boolean {
     if (
       m.attachment.type === 'hook_additional_context' &&
       isEnvTruthy(process.env.CLAUDE_CODE_SAVE_HOOK_ADDITIONAL_CONTEXT)
+    ) {
+      return true
+    }
+    // 2026-08-30 引导注入落盘：人发的 queued_command（回合中注入消费、CLI 终端实际渲染为
+    // 用户消息）必须落盘——否则已完成回合的引导消息在 web 回放/CLI 压缩后完全消失
+    // （attachment 只存在于 CLI 内存流，上下文压缩/进程退出即失）。落盘物理位置 = 消费位置
+    // = 感知序，回放/实时/压缩后三态一致。系统生成（origin/isMeta）与其它类型维持不落盘
+    // （对齐 conversationDisplay 显示可见性判据）。
+    if (
+      m.attachment.type === 'queued_command' &&
+      !m.attachment.origin &&
+      !m.attachment.isMeta
     ) {
       return true
     }

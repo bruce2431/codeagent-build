@@ -207,6 +207,10 @@ export async function clearConversation({
   }
   await resetSessionFilePointer()
 
+  // 2026-08-30 /clear 换新 sessionId → 立即刷新网关 /clients 注册（同 REPL /resume 自愈：
+  // 注册表挂旧 sid 会让 web 发送路由 miss → 误判离线 → 冷启动弹第二个窗口）
+  void import('../../utils/gatewayClient.js').then((m) => m.refreshGatewayRegistration())
+
   // Preserved local_agent tasks had their TaskOutput symlink baked against the
   // old session ID at spawn time, but post-clear transcript writes land under
   // the new session directory (appendEntry re-reads getSessionId()). Re-point

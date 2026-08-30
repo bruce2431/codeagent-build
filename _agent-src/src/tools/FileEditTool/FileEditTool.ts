@@ -86,6 +86,9 @@ const MAX_EDIT_FILE_SIZE = 1024 * 1024 * 1024 // 1 GiB (stat bytes)
 export const FileEditTool = buildTool({
   name: FILE_EDIT_TOOL_NAME,
   searchHint: 'modify file contents in place',
+  // Fork: defer core tool — GLM-compatible upstreams drop undiscovered inline
+  // core tools; ToolSearch (select:) is the reliable fetch path.
+  shouldDefer: true,
   maxResultSizeChars: 100_000,
   strict: true,
   async description() {

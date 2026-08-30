@@ -2256,7 +2256,7 @@ function runHeadlessStreaming(
 
           // 遥测展示上报（2026-08-14）：headless 子进程（遥测端）也导出会话展示，
           // 与 REPL 同等效果——复用 conversationDisplay.ts 过滤，POST 到 FLOIRA_GATEWAY 网关。
-          // 网关 /api/conversation 内存 Map 按 sessionId 存，floria /api/session 附 display 消费。
+          // 网关 /gateway/conversation 内存 Map 按 sessionId 存，floria /gateway/session 附 display 消费。
           // fire-and-forget，网关未启动时静默失败（sendConversationToServer 内部 catch）。
           // mode 用 'prompt'（对齐 REPL 默认屏幕）：thinking 全隐藏，避免遥测端显示无效思考过程。
           void exportConversationToServer(mutableMessages, getSessionId(), 'prompt')

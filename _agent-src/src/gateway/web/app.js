@@ -3,7 +3,7 @@
      #/          → 主界面（空态，输入栏居中）
      #/<会话哈希> → 会话转录（输入栏 docked 底部）
    「会话哈希」= 转录文件名去掉 .jsonl（Claude Code 会话 UUID）。
-   数据来自后端：/api/sessions 列表、/api/session?id= 单会话。
+   数据来自后端：/gateway/sessions 列表、/gateway/session?id= 单会话。
    只读查看：composer 不可发送。 */
 (() => {
   'use strict'
@@ -12,7 +12,7 @@
 
   // ---------- SVG 图标 ----------
   const I = {
-    logo: '<img class="logo-mark" src="icon.ico" alt="floria">',
+    logo: '<img class="logo-mark" src="/icon.ico" alt="floria">',
     pen: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20l1.2-4.6L16.5 4.1a1.9 1.9 0 0 1 2.7 0l.7.7a1.9 1.9 0 0 1 0 2.7L8.6 18.8 4 20z"/><path d="M13.5 6.5l4 4"/></svg>',
     mag: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="10.8" cy="10.8" r="6.3"/><path d="M15.6 15.6 20 20"/></svg>',
     bubble: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M4 5h16a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-8l-5 3.5v-3.5H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z"/></svg>',
@@ -27,6 +27,7 @@
     whale: '<svg class="whale" viewBox="0 0 23.16 17.04" fill="none" aria-hidden="true"><path d="M22.9168 1.43018C22.6713 1.31018 22.5658 1.53918 22.4223 1.65519C22.3733 1.69269 22.3318 1.74169 22.2903 1.78669C21.9317 2.1697 21.5127 2.42121 20.9657 2.39121C20.1657 2.34621 19.4827 2.59771 18.8787 3.20973C18.7502 2.45521 18.3236 2.0047 17.6746 1.71569C17.3351 1.56568 16.9916 1.41518 16.7536 1.08867C16.5876 0.856163 16.5421 0.597155 16.4591 0.341647C16.4061 0.187643 16.3536 0.0301382 16.1761 0.00363739C15.9836 -0.0263635 15.9081 0.135141 15.8326 0.270145C15.5306 0.822162 15.4136 1.43018 15.4251 2.0462C15.4516 3.43174 16.0366 4.53527 17.1991 5.3203C17.3311 5.4103 17.3651 5.5003 17.3236 5.63181C17.2441 5.90231 17.1501 6.16482 17.0671 6.43533C17.0141 6.60784 16.9351 6.64584 16.7501 6.57033C16.1121 6.30383 15.5611 5.90931 15.074 5.4328C14.2475 4.63328 13.5 3.75075 12.568 3.05973C12.349 2.89822 12.13 2.74822 11.9034 2.60522C10.9524 1.68169 12.028 0.923165 12.277 0.833162C12.5375 0.739159 12.3675 0.41615 11.5259 0.42015C10.6844 0.42365 9.91439 0.705658 8.93286 1.08117C8.78935 1.13767 8.63835 1.17867 8.48384 1.21267C7.59332 1.04367 6.66829 1.00617 5.70226 1.11517C3.88321 1.31768 2.43016 2.1777 1.36213 3.64575C0.0790928 5.4103 -0.222916 7.41536 0.146595 9.50642C0.535106 11.7105 1.66014 13.535 3.38869 14.9616C5.18125 16.4406 7.24581 17.1657 9.60138 17.0266C11.0319 16.9441 12.6245 16.7526 14.421 15.2321C14.874 15.4576 15.3496 15.5476 16.1381 15.6151C16.7456 15.6716 17.3306 15.5851 17.7836 15.4911C18.4931 15.3411 18.4441 14.6841 18.1876 14.5636C16.1081 13.595 16.5646 13.9891 16.1496 13.67C17.2061 12.42 18.8202 10.1979 19.3182 7.17235C19.3672 6.83834 19.4297 6.36783 19.4222 6.09732C19.4182 5.93231 19.4562 5.86831 19.6447 5.84931C20.1657 5.78931 20.6712 5.64681 21.1357 5.3913C22.4833 4.65528 23.0268 3.44624 23.1548 1.9972C23.1738 1.77569 23.1508 1.54668 22.9168 1.43018ZM11.1749 14.4736C9.15936 12.889 8.18184 12.3675 7.77832 12.39C7.40081 12.4125 7.46881 12.8445 7.55182 13.126C7.63882 13.404 7.75182 13.5955 7.91033 13.8396C8.01983 14.0011 8.09533 14.2411 7.80083 14.4216C7.15181 14.8231 6.02327 14.2866 5.97027 14.2601C4.65673 13.4865 3.5587 12.4655 2.78467 11.069C2.03715 9.72493 1.60314 8.28289 1.53164 6.74384C1.51264 6.37233 1.62214 6.24082 1.99215 6.17332C2.47916 6.08332 2.98118 6.06432 3.46769 6.13582C5.52476 6.43633 7.27581 7.35586 8.74385 8.8129C9.58188 9.64243 10.2159 10.634 10.8689 11.6025C11.5634 12.631 12.3105 13.611 13.262 14.4146C13.598 14.6961 13.866 14.9101 14.1225 15.0681C13.349 15.1546 12.058 15.1731 11.1749 14.4746L11.1749 14.4736ZM12.141 8.25988C12.141 8.09488 12.273 7.96338 12.439 7.96338C12.4765 7.96338 12.5105 7.97088 12.541 7.98188C12.5825 7.99688 12.6205 8.01938 12.6505 8.05338C12.7035 8.10588 12.7335 8.18088 12.7335 8.25988C12.7335 8.42489 12.6015 8.55639 12.4355 8.55639C12.2695 8.55639 12.141 8.42489 12.141 8.25988ZM15.1415 9.79893C14.949 9.87793 14.7565 9.94544 14.5715 9.95294C14.2845 9.96794 13.9715 9.85143 13.8015 9.70893C13.5375 9.48742 13.3485 9.36342 13.2695 8.97691C13.2355 8.8119 13.2545 8.55639 13.2845 8.40989C13.3525 8.09438 13.277 7.89187 13.0545 7.70787C12.8735 7.55786 12.643 7.51636 12.39 7.51636C12.2955 7.51636 12.209 7.47486 12.1445 7.44136C12.039 7.38886 11.9519 7.25735 12.035 7.09585C12.0615 7.04335 12.19 6.91584 12.22 6.89334C12.5635 6.69784 12.9595 6.76184 13.326 6.90834C13.6655 7.04735 13.9225 7.30236 14.292 7.66287C14.6695 8.09838 14.7375 8.21838 14.9525 8.54539C15.1225 8.8009 15.277 9.06341 15.3831 9.36392C15.4471 9.55142 15.3641 9.70493 15.1415 9.79893Z" fill="currentColor"/></svg>',
     // ---- dsh 输入栏图标（2026-08-21 完全移植：deepseek-harness ui-primitives/icons 精确 path，fill=currentColor）----
     dshPlus: '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M8.64453 1.5V7.34961H14.5V8.65039H8.64453V14.5H7.34473V8.65039H1.5V7.34961H7.34473V1.5H8.64453Z"/></svg>',
+    dshImage: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="1.9" y="2.9" width="12.2" height="10.2" rx="1.6"/><circle cx="5.7" cy="6.7" r="1.15" fill="currentColor" stroke="none"/><path d="M2.5 11.6l3.4-3.2a1 1 0 0 1 1.38 0l2.1 2 1.5-1.4a1 1 0 0 1 1.36-.02l3.26 2.9"/></svg>',
     dshSend: '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M8.3125 0.980183C8.66767 1.0531 8.97902 1.20418 9.2627 1.43233C9.48724 1.61297 9.73029 1.85793 9.97949 2.10714L14.707 6.83468L13.293 8.24874L9 3.95577V15.0417H7V3.95577L2.70703 8.24874L1.29297 6.83468L6.02051 2.10714C6.26971 1.85793 6.51277 1.61297 6.7373 1.43233C6.97662 1.23986 7.28445 1.04402 7.6875 0.980183C7.8973 0.947006 8.1031 0.95516 8.3125 0.980183Z"/></svg>',
     dshChevDown: '<svg viewBox="0 0 14 14" fill="currentColor"><path d="M11.8486 5.5L11.4238 5.92383L8.69727 8.65137C8.44157 8.90706 8.21562 9.13382 8.01172 9.29785C7.79912 9.46883 7.55595 9.61756 7.25 9.66602C7.08435 9.69222 6.91565 9.69222 6.75 9.66602C6.44405 9.61756 6.20088 9.46883 5.98828 9.29785C5.78438 9.13382 5.55843 8.90706 5.30273 8.65137L2.57617 5.92383L2.15137 5.5L3 4.65137L3.42383 5.07617L6.15137 7.80273C6.42595 8.07732 6.59876 8.24849 6.74023 8.3623C6.87291 8.46904 6.92272 8.47813 6.9375 8.48047C6.97895 8.48703 7.02105 8.48703 7.0625 8.48047C7.07728 8.47813 7.12709 8.46904 7.25977 8.3623C7.40124 8.24849 7.57405 8.07732 7.84863 7.80273L10.5762 5.07617L11 4.65137L11.8486 5.5Z"/></svg>',
     dshChevRight: '<svg viewBox="0 0 14 14" fill="currentColor"><path d="M5.5 2.15137L5.92383 2.57617L8.65137 5.30273C8.90706 5.55843 9.13382 5.78438 9.29785 5.98828C9.46883 6.20088 9.61756 6.44405 9.66602 6.75C9.69222 6.91565 9.69222 7.08435 9.66602 7.25C9.61756 7.55595 9.46883 7.79912 9.29785 8.01172C9.13382 8.21561 8.90706 8.44157 8.65137 8.69727L5.92383 11.4238L5.5 11.8486L4.65137 11L5.07617 10.5762L7.80273 7.84863C8.07732 7.57405 8.24849 7.40124 8.3623 7.25977C8.46904 7.12709 8.47813 7.07728 8.48047 7.0625C8.48703 7.02105 8.48703 6.97895 8.48047 6.9375C8.47813 6.92272 8.46904 6.87291 8.3623 6.74023C8.24848 6.59876 8.07732 6.42595 7.80273 6.15137L5.07617 3.42383L4.65137 3L5.5 2.15137Z"/></svg>',
@@ -40,7 +41,7 @@
     web: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="M7 9l2.5 2.5L7 14"/><path d="M12.5 14h4"/></svg>',
   }
 
-  // ---------- 管理视图数据源（2026-08-15 起接后端 /api/plugins：真实已安装插件/技能 + 官方市场） ----------
+  // ---------- 管理视图数据源（2026-08-15 起接后端 /gateway/plugins：真实已安装插件/技能 + 官方市场） ----------
   // 结构镜像后端返回：{ plugins:{personal,public}, skills:{personal,public} }，每项 {n, d, v, inst}。
   // 首次进入管理视图 fetch，刷新按钮 force 重新拉取；失败显示错误 + 重试（不回落假数据）。
   let MGR = null
@@ -53,7 +54,7 @@
     MGR_ERR = ''
     renderMgrGrid()
     try {
-      const res = await fetch(apiUrl('/api/plugins'))
+      const res = await fetch(apiUrl('/gateway/plugins'))
       const data = await res.json()
       if (!data || !data.plugins || !data.skills) throw new Error(data.error || 'bad response')
       MGR = data
@@ -65,7 +66,7 @@
     }
     return MGR
   }
-  // 模型配置数据源（/api/models：便携根 settings.json 的 model + 模型类环境变量；只读展示）
+  // 模型配置数据源（/gateway/models：便携根 settings.json 的 model + 模型类环境变量；只读展示）
   let MODELS = null
   let MODELS_LOADING = false
   let MODELS_ERR = ''
@@ -76,7 +77,7 @@
     MODELS_ERR = ''
     renderMgrModels()
     try {
-      const res = await fetch(apiUrl('/api/models'))
+      const res = await fetch(apiUrl('/gateway/models'))
       const data = await res.json()
       if (!data || !('model' in data)) throw new Error(data.error || 'bad response')
       MODELS = data
@@ -97,6 +98,7 @@
       MODELS_LOADING = false
       renderMgrModels()
       renderModelSeat() // 2026-08-25 模型数据落地后刷新输入栏模型 seat（含 hideGate 补拉场景）
+      renderImgBtn() // 2026-08-28 图片门控：全局识图判定落地后刷新上传按钮显隐（空态兜底）
     }
     return MODELS
   }
@@ -148,7 +150,7 @@
   let ALL = []
   let timer = null
   // 阶段1 实时同步：SSE 变更驱动的去重/防抖状态
-  const live = { es: null, listSig: '', curSig: '', listT: null, sessT: null, lastUserSig: '', pinnedUserSig: '', lastMsgLen: null }
+  const live = { es: null, listSig: '', curSig: '', listT: null, sessT: null, lastUserSig: '', pinnedUserSig: '', lastMsgLen: null, lastDataTs: 0, curUuid: null, queueRemote: [] }
 
   // ---------- 工具 ----------
   const esc = (s) =>
@@ -168,7 +170,7 @@
   }
   function setChar(n) {
     if (!charEl) return
-    charEl.src = 'char/' + n + '.jpg'
+    charEl.src = '/char/' + n + '.jpg'
   }
 
   // ---------- Markdown 渲染（安全：mdHtml 入口先整体转义，再生成白名单 HTML） ----------
@@ -277,40 +279,54 @@
 
   // 手机端（≤720px）：侧栏为全屏抽屉，选择会话后自动收起
   const isMobile = () => window.matchMedia('(max-width: 720px)').matches
+  // 纯触屏设备（iPad/iPhone Safari）：打开弹层时不得程序化聚焦输入框——iOS 会因此弹出系统键盘
+  // （2026-08-28：+ 命令菜单搜索框 / 模型菜单回填输入栏焦点均被识别为文本输入；桌面不受影响，方向键导航保留）
+  const isTouch = () => window.matchMedia('(hover: none) and (pointer: coarse)').matches
 
   // ---------- 会话映射 ----------
   const hashOf = (s) => (s.file || '').replace(/\.jsonl$/, '')
+  // 2026-08-28 定案（用户）：URL 用完整会话 hash 不简写 → 精确匹配即可
   const findSession = (hash) => ALL.find((s) => hashOf(s) === hash)
   // 2026-08-24 归档过滤：统一数据源过滤已归档会话（isArchived 声明在下方行菜单区，函数提升可用）
   const sorted = () => [...ALL].filter((s) => !isArchived(s)).sort((a, b) => b.updatedAt - a.updatedAt)
 
   // ---------- 数据 ----------
+  // 列表签名（2026-08-29 状态点偶发观测不到修复）：数量+最新 updatedAt+标题+各会话状态点。
+  // 状态翻转不改 count/updatedAt，签名不含 state 时 refreshList 判同跳过重渲染 → 点不刷新。
+  function listSigOf(sessions) {
+    const top = sessions[0]
+    return sessions.length + ':' + (top ? top.updatedAt : 0) + ':' + (top ? top.title : '') + ':' +
+      sessions.map((s) => s.state || '').join(',')
+  }
   async function loadSessions() {
     if (needToken()) return // token 门锁定态：不发请求（hideGate 解锁后刷新）
     try {
-      const res = await fetch(apiUrl('/api/sessions'))
+      const res = await fetch(apiUrl('/gateway/sessions'))
       const data = await res.json()
       if (!Array.isArray(data.sessions)) throw new Error(data.error || 'bad response')
       ALL = data.sessions
-      const top = data.sessions[0]
-      live.listSig = data.sessions.length + ':' + (top ? top.updatedAt : 0) + ':' + (top ? top.title : '')
+      live.listSig = listSigOf(data.sessions)
     } catch (e) {
       toast('加载失败: ' + (e.message || e))
       bodyEl.innerHTML = '<div class="no-hit">无法连接后端服务。请确认服务已启动。</div>'
     }
   }
 
+  let sessionCwd = null // 当前会话启动根（网关 /gateway/session 附带，取自 jsonl 记录 cwd）；变更卡相对路径显示用
   async function fetchMessages(sessionId) {
     if (needToken()) return { messages: [], context: null, model: null, modelTs: null } // token 门锁定态
-    const res = await fetch(apiUrl('/api/session?id=' + encodeURIComponent(sessionId)))
+    const res = await fetch(apiUrl('/gateway/session?id=' + encodeURIComponent(sessionId)))
     const data = await res.json()
     if (!Array.isArray(data.messages)) throw new Error(data.error || 'bad response')
     // CLI 已按「复用已有实现」原则导出过滤后的会话展示（display，见 conversationDisplay.ts /
-    // 网关 /api/session 注入）→ 存在时优先消费（thinking 过滤 / 真实用户消息识别由 CLI 权威完成），
+    // 网关 /gateway/session 注入）→ 存在时优先消费（thinking 过滤 / 真实用户消息识别由 CLI 权威完成），
     // 尚未导出（如网关重启后 CLI 未重发）时回退后端原始消息映射。
     // context = 网关 readSession 提取的上下文占用（dsh ContextMeter 数据源），无则 null。
     // model/modelTs = 网关附带的每会话实际模型（CLI reportCurrentModel 上报），无则 null。
-    return { messages: data.display || data.messages, context: data.context || null, model: data.model || null, modelTs: data.modelTs || null }
+    // cwd = 会话启动根（2026-08-29 变更卡相对路径显示），无则 null。
+    // queued = 当前排队项快照（2026-08-30 队列快照链，CLI queue-state 上报，置底排队区首载数据源）；
+    // file = jsonl 文件名（uuid），供 SSE queue-state 事件按会话精确匹配。
+    return { messages: data.display || data.messages, context: data.context || null, model: data.model || null, modelTs: data.modelTs || null, vision: !!data.vision, cwd: data.cwd || null, queued: Array.isArray(data.queued) ? data.queued : [], file: typeof data.file === 'string' ? data.file : null }
   }
   // 用 CLI 上报的会话实际模型校准模型 seat（2026-08-24 模型 web/CLI 同步）。仅当用户本次会话内
   // 未主动切换（modelUserPicked=false）时采纳，避免覆盖刚切的选择。modelTs 暂保留（供后续冲突判定）。
@@ -328,11 +344,20 @@
   function initLive() {
     if (!('EventSource' in window)) return
     if (needToken()) return // token 门锁定态：不建 SSE（避免 401 重连刷屏，hideGate 解锁后再建）
-    try { live.es = new EventSource(apiUrl('/api/events')) } catch { return }
+    try { live.es = new EventSource(apiUrl('/gateway/events')) } catch { return }
     live.es.onmessage = (e) => {
       let ev
       try { ev = JSON.parse(e.data) } catch { return }
       if (ev.type === 'hello') { refreshList(); refreshSession() }
+      else if (ev.type === 'activity') refreshList() // 状态点翻转即时刷新（网关 /gateway/activity 群发，2026-08-29）
+      else if (ev.type === 'queue-state') {
+        // 2026-08-30 队列快照增量（清单#2/#4）：CLI commandQueue 变化 → 网关 SSE 群发（事件体
+        // 直接带 items 全量快照）→ 当前会话置底排队区即时重渲，不等 400ms 防抖的 refreshSession。
+        if (live.curUuid && ev.session === live.curUuid) {
+          live.queueRemote = Array.isArray(ev.items) ? ev.items : []
+          renderQueueDock()
+        }
+      }
       else if (ev.type === 'updated') {
         if (ev.hash === state.currentHash) refreshSession()
         refreshList()
@@ -351,11 +376,10 @@
       live.listT = null
       if (needToken()) return // token 门锁定态
       try {
-        const res = await fetch(apiUrl('/api/sessions'))
+        const res = await fetch(apiUrl('/gateway/sessions'))
         const data = await res.json()
         if (!Array.isArray(data.sessions)) return
-        const top = data.sessions[0]
-        const sig = data.sessions.length + ':' + (top ? top.updatedAt : 0) + ':' + (top ? top.title : '')
+        const sig = listSigOf(data.sessions)
         if (sig === live.listSig) return
         live.listSig = sig
         // 保留展开中的项目文件夹
@@ -404,14 +428,29 @@
       const s = findSession(hash)
       if (!s) return
       try {
-        const { messages, context, model, modelTs } = await fetchMessages(s.id)
+        const { messages, context, model, modelTs, cwd, queued, file } = await fetchMessages(s.id)
+        // 2026-08-30 串会话根治：会话校验只在 await 前做过一次 → fetch 回程期间用户切到其它
+        // 会话时，本响应（A 的整份消息/cwd/模型/上下文/队列快照）会写穿全部全局槽并把 A 的
+        // 历史 innerHTML 整页渲染进新会话 DOM（CLI 单进程单会话无此异步边界，web 必须在每个
+        // 异步边界重验身份）。await 后已切走 → 本响应整体作废。
+        if (state.currentHash !== hash) return
+        sessionCwd = cwd
+        // 2026-08-30 队列快照：jsonl 文件名（uuid）供 SSE queue-state 会话匹配；queued 交排队区
+        live.curUuid = file ? file.replace(/\.jsonl$/, '') : live.curUuid
+        live.queueRemote = queued
+        live.lastDataTs = (messages.length && messages[messages.length - 1].timestamp) || live.lastDataTs
         applySessionModel(model, modelTs) // 2026-08-24：实时刷新同样按 CLI 上报模型校准 seat
         renderCtxMeter(context)
+        // 2026-08-29 待落盘乐观消息吸收判定：jsonl 已出现该文本（单条落盘或 drainCommandQueue
+        // 多条合并成一条，join 后 includes 命中）→ 真实气泡已由渲染权威接管，不再重插
+        absorbPending(messages)
+        renderQueueDock() // 排队区与对话流同步重渲（吸收变化/远端快照更新后）
         const last = messages.length ? messages[messages.length - 1] : null
         const sig = messages.length + ':' + (last ? (last.timestamp || '') : '') + ':' + (last && last.blocks.length ? last.blocks[last.blocks.length - 1].kind : '')
-        // 新增用户消息检测（实时同步的钉顶触发点）：末尾真实用户消息索引/时间变了 = 新回合
+        // 新增用户消息检测（实时同步的钉顶触发点）：末尾真实用户消息索引/时间变了 = 新回合。
+        // 注入引导消息（injected:true）不触发钉顶（用户定案：引导消息不钉顶，钉顶只属于新回合开启消息）
         let lastU = -1
-        for (let i = messages.length - 1; i >= 0; i--) if (isRealUser(messages[i])) { lastU = i; break }
+        for (let i = messages.length - 1; i >= 0; i--) if (isRealUser(messages[i]) && !messages[i].injected) { lastU = i; break }
         const uSig = lastU >= 0 ? lastU + ':' + (messages[lastU].timestamp || '') : ''
         const hasNewUser = live.lastUserSig !== '' && uSig && uSig !== live.lastUserSig
         live.lastUserSig = uSig
@@ -419,7 +458,7 @@
         // 假设实时折叠由 WS out 增量填充——但网关从不给 web 发 out 消息（实时流走 SSE：conversationDisplay
         // 上报 + jsonl + 列表刷新），WS out 是死代码 → 处理中折叠一直空白（用户反馈「完全没有渲染，并且也不同步」）。
         // 现改为：回合未结束（数据在增长或 segIsProcessing）→ 照常整页重建，messagesHtml 对处理中段走
-        // liveFoldBody 只渲染「当前正在运行」的工具步（400ms 去抖已限频，SSE 逐条写入时最多 ~2.5 次/秒）；
+        // liveFoldBody 只渲染一个工具折叠行（「正在运行：<当前工具>」轮转；400ms 去抖已限频，SSE 逐条写入时最多 ~2.5 次/秒）；
         // 回合结束（末段回复落地）→ 关掉空 proc 折叠交回下方数据渲染一次性出最终态（已处理时长/回复/变更卡）。
         // 2026-08-24 保留：仅当消息区已有真实消息时才关折叠——web 新会话首条消息发送后 jsonl 尚空，
         // 界面停在「暂无 user/assistant 记录」空态，不关空折叠（下方正常重建让首条消息立即上屏）。
@@ -438,7 +477,15 @@
         // 条件：上次渲染存在 + 消息数只增不减（SSE 纯追加；回退/压缩等减少则整页）+ 有处理中末段。
         // 回复落地（段结束）/新回合/消息数减少 → 整页重建一次（低频，带「已处理」收拢可接受）。
         const html = messagesHtml(messages)
-        const canDelta = live.lastMsgLen != null && messages.length >= live.lastMsgLen && lastSegInfo && lastSegInfo.processing && lastSegInfo.html
+        // 2026-08-29 吞消息根治：末条真实用户消息（常为刚落盘的引导消息）气泡若不在 DOM（中间段
+        // 新增，乐观气泡已被洗掉），增量路径只贴末段永远补不上 → 强制整页重建一次补齐；气泡在位
+        // 后续轮次恢复增量（只多一次整页，折叠开合/入场动画已有恢复机制）。
+        let lastRealUser = -1
+        for (let i = messages.length - 1; i >= 0; i--) if (isRealUser(messages[i])) { lastRealUser = i; break }
+        // 2026-08-29 引导消息折叠链：引导消息气泡 data-m=段 key ≠ 自身索引 → 额外带 data-g=自身索引，
+        // 此处一并查（否则引导消息在末段时 userBubbleMissing 恒真 → 每次 SSE 都整页重建）
+        const userBubbleMissing = lastRealUser >= 0 && !messagesEl.querySelector(`[data-m="${lastRealUser}"][data-t="u"], [data-g="${lastRealUser}"]`)
+        const canDelta = !userBubbleMissing && live.lastMsgLen != null && messages.length >= live.lastMsgLen && lastSegInfo && lastSegInfo.processing && lastSegInfo.html
         live.lastMsgLen = messages.length
         if (canDelta) {
           applySegDelta(lastSegInfo)
@@ -458,9 +505,12 @@
             const finishedNow = doneLivePrev[i] && !d.classList.contains('done-live')
             d.open = finishedNow ? false : openState[i]
           })
+          // 2026-08-30 乐观改排队区（清单#4③）：整页重建洗掉 #queue-dock（无 data-m）→
+          // renderQueueDock 重渲即可，不再有对话流乐观气泡重插/乐观折叠补挂
+          renderQueueDock()
         }
         if (takeover === 'approval') { /* 交互式逐题审批卡已占据输入栏，勿用只读堆叠卡覆盖/清除 */ }
-        else if (pendingAskInput) showTakeover(questionCardHtml(pendingAskInput, null), 'ask')
+        else if (pendingAskInput) showTakeover(questionCardHtml(pendingAskInput, null, { single: true }), 'ask')
         else clearTakeover()
         setChar(charNote) // 只读 SSE：按末段最近工具/处理状态切形象
         bindLiveFoldTimer(messages)
@@ -500,14 +550,22 @@
     const frag = document.createDocumentFragment()
     for (const n of [...tmp.children]) frag.appendChild(n)
     let anchor = null
-    if (info.prev) anchor = messagesEl.querySelector(`[data-m="${info.prev.key}"][data-t="${info.prev.type}"]`)
+    if (info.prev) {
+      // 同 data-t 多元素时（如多轮 end_turn 的多个 reply 气泡、同 key 多 fold）取文档序最后一个
+      // = 段尾精确锚点（碎片化交错渲染 2026-08-29：prev.type 语义=段尾最后元素）
+      const nodes = messagesEl.querySelectorAll(`[data-m="${info.prev.key}"][data-t="${info.prev.type}"]`)
+      anchor = nodes.length ? nodes[nodes.length - 1] : null
+    }
+    // 插入点恒避让 .pin-spacer（占位必须是末元素）：段尾无后继或无锚点（首段处理中）时都插到
+    // spacer 之前——否则新段节点落到 spacer 后面，占位错位到内容中间且 pinReserveApply 只调
+    // 高度不搬位置，错位持续到刷新（2026-08-28 钉顶占位突然死亡根因一）。
+    const spacer = messagesEl.querySelector('.pin-spacer')
     if (anchor && anchor.isConnected) {
       let after = anchor.nextSibling
       while (after && after.nodeType !== 1) after = after.nextSibling
-      if (after) messagesEl.insertBefore(frag, after)
-      else messagesEl.appendChild(frag)
+      messagesEl.insertBefore(frag, after || spacer)
     } else {
-      messagesEl.appendChild(frag)
+      messagesEl.insertBefore(frag, spacer)
     }
   }
 
@@ -524,7 +582,8 @@
     let t1 = 0
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i]
-      if (isRealUser(m) && m.timestamp) {
+      // 注入引导消息（injected:true）不重置计时——「已处理」时长 = 从段开启消息起算，不打断（用户定案）
+      if (isRealUser(m) && !m.injected && m.timestamp) {
         t1 = m.timestamp
         break
       }
@@ -548,10 +607,21 @@
   }
 
   // ---------- 路由 ----------
+  // 2026-08-28 pushState 路径路由：/session/<全长会话hash>、/manage/<kind>、/project/<label>（project 避开网关
+  // /preview/* 静态页路径）；hash 路由保留为旧链接/旧缓存页兜底（parseRoute 先 pathname 后 hash）。
+  // 2026-08-29 用户定案：全部前缀用全称（/session/、/manage/、/project/、/backend/，禁止简写）；
+  // 旧缩写前缀（/s/、/mgr/、/pview/）仅作已发出链接的解析兼容，不再生成。
+  // navigate('#mgr/k')/'#preview/l' 是内部调用约定 hash，经 pathFor 转真路径，URL 上不出现。
   function parseRoute() {
+    const p = location.pathname
+    if (p.startsWith('/session/')) return { name: 'session', hash: decodeURIComponent(p.slice(9)) }
+    if (p.startsWith('/s/')) return { name: 'session', hash: decodeURIComponent(p.slice(3)) }
+    if (p.startsWith('/manage/')) return { name: 'mgr', mgr: decodeURIComponent(p.slice(8)) }
+    if (p.startsWith('/mgr/')) return { name: 'mgr', mgr: decodeURIComponent(p.slice(5)) }
+    if (p.startsWith('/project/')) return { name: 'preview', label: decodeURIComponent(p.slice(9)) }
+    if (p.startsWith('/pview/')) return { name: 'preview', label: decodeURIComponent(p.slice(7)) }
     const raw = location.hash.replace(/^#\/?/, '')
     if (!raw) return { name: 'home' }
-    // 管理视图 / 项目预览进入 hash 路由（2026-08-16）：刷新后恢复当前界面而非回到初始界面。
     // 会话 UUID 不会以 mgr//preview/ 开头，前缀判定安全。
     if (raw.startsWith('mgr/')) return { name: 'mgr', mgr: raw.slice(4) }
     if (raw.startsWith('preview/')) return { name: 'preview', label: decodeURIComponent(raw.slice(8)) }
@@ -575,7 +645,14 @@
     // 原先 renderSession() 在 renderRecent() 之后才设 currentHash → 点第一次侧栏高亮停在旧会话，
     // 要再点一次才高亮正确（用户反馈「需要选中会话多次才可以完全切换」）。这里按路由目标预置，
     // 让 renderRecent() 一次导航即高亮正确目标。
+    // 2026-08-28 /session/<全长hash> → resolve 校验会话存在（currentHash/SSE/WS 全链全长）；
+    // 未知 hash 原样透传（renderSession 显示「会话不存在」）。
+    if (r.name === 'session') {
+      const sess = findSession(r.hash)
+      r.hash = sess ? hashOf(sess) : r.hash
+    }
     state.currentHash = r.name === 'session' ? r.hash : null
+    if (r.name !== 'session') sessVision = undefined // 2026-08-28 离开会话：回落全局识图判定（空态用 /gateway/models vision）
     renderRecent()
     if (r.name === 'home') renderHome()
     else if (r.name === 'mgr') { state.mgr = r.mgr; loadMgrView(); renderMgr() }
@@ -588,15 +665,26 @@
     document.querySelectorAll('.mgr-tab').forEach((x) => x.classList.toggle('on', x.dataset.mgr === state.mgr))
   }
 
-  // 2026-08-25 同步路由：navigate 设置 hash 后同步调用 route()，不再依赖 hashchange 异步时序。
+  // 2026-08-25 同步路由：navigate 后同步调用 route()，不再依赖 hashchange 异步时序。
   // 背景：切换会话需双击——第一次点击走 hashchange 异步 route() 内容区不切换（侧栏 .on 高亮已对，
   // 因 currentHash 在 renderRecent 前预置），第二次点击 hash 已同 → navigate 同步 route() 才切。
-  // 实测差异在同步 vs 异步，故改为同步渲染；hashchange 只兜底浏览器前进/后退、手动改 URL。
+  // 实测差异在同步 vs 异步，故改为同步渲染。
+  // 2026-08-28 pushState 路径路由：navigate 参数保持既有 hash 形式（调用点零改动），内部转真路径：
+  // '#/' → '/'、'#/<hash>' → '/session/<全长hash>'、'#mgr/<k>' → '/manage/<k>'、'#preview/<l>' → '/project/<l>'；
+  // history.pushState + popstate 兜底前进/后退（hashchange 保留为旧 hash 链接兜底）。
   let lastNavHash = null
+  function pathFor(hash) {
+    if (hash === '#/' || hash === '#') return '/'
+    if (hash.startsWith('#/')) return '/session/' + hash.slice(2)
+    if (hash.startsWith('#mgr/')) return '/manage/' + hash.slice(5)
+    if (hash.startsWith('#preview/')) return '/project/' + hash.slice(9)
+    return '/'
+  }
   function navigate(hash) {
-    if (location.hash === hash) return route()
-    lastNavHash = hash
-    location.hash = hash
+    const path = pathFor(hash)
+    if (location.pathname === path) return route()
+    lastNavHash = path
+    history.pushState(null, '', path)
     route()
   }
 
@@ -606,6 +694,57 @@
   function mountInput(where) {
     const target = where === 'stage' ? emptyStageEl() : chatArea
     if (target && inputWrap.parentNode !== target) target.appendChild(inputWrap)
+  }
+  // 输入栏 stage↔chat 迁移的 FLIP 补间（2026-08-30 丝滑空态→会话）：换父后 top/width 是
+  // 百分比/calc，插值基准随新父容器变化 → 直接过渡会首帧跳变甚至离散。改 FLIP：变更前测
+  // 旧矩形 → 统一施加类/父容器变更 → transform 从旧位滑到新位（transform 终点=恒等，无
+  // 收尾跳变）→ 结束恢复样式表过渡。隐藏态（门/管理视图 display:none）或未移动时退回普通切换。
+  let flipInputTimer = null
+  function flipInput(toStage) {
+    const el = inputWrap
+    if (flipInputTimer) { // 上一次 FLIP 动画中途重入：清定时器并恢复内联样式，防残留
+      clearTimeout(flipInputTimer)
+      el.style.transition = ''
+      el.style.transformOrigin = ''
+      flipInputTimer = null
+    }
+    const apply = () => {
+      if (toStage) {
+        el.classList.remove('docked')
+        chatArea.classList.remove('in-session')
+        mountInput('stage')
+      } else {
+        mountInput('chat')
+        el.classList.add('docked')
+        chatArea.classList.add('in-session')
+      }
+    }
+    const r1 = el.getBoundingClientRect()
+    if (getComputedStyle(el).display === 'none' || !r1.width) { apply(); return }
+    el.style.transition = 'none'
+    apply()
+    const r2 = el.getBoundingClientRect()
+    if (!r2.width) { el.style.transition = ''; return }
+    // 类变换恒等盒换算：stage 态 translate(-50%,-50%)、docked 态 translate(-50%,-100%)
+    const anchorY = toStage ? 0.5 : 1
+    const tx = r1.left - (r2.left + r2.width / 2)
+    const ty = r1.top - (r2.top + r2.height * anchorY)
+    const kx = r1.width / r2.width
+    const ky = r1.height / r2.height
+    if (Math.abs(tx) < 1 && Math.abs(ty) < 1 && Math.abs(kx - 1) < 0.01 && Math.abs(ky - 1) < 0.01) {
+      el.style.transition = ''
+      return
+    }
+    el.style.transformOrigin = 'top left'
+    el.style.transform = 'translate(' + tx + 'px, ' + ty + 'px) scale(' + kx + ', ' + ky + ')'
+    void el.offsetWidth // 提交起始帧
+    el.style.transition = 'transform 0.55s cubic-bezier(0.22, 0.61, 0.36, 1)'
+    el.style.transform = ''
+    flipInputTimer = setTimeout(() => {
+      el.style.transition = ''
+      el.style.transformOrigin = ''
+      flipInputTimer = null
+    }, 580)
   }
 
   function renderHome() {
@@ -617,10 +756,8 @@
     setChar(1) // 首页空态 → 默认形象
     renderCtxMeter(null) // 首页空态 → 隐藏上下文环
     renderNewProjChip()
-    inputWrap.classList.remove('docked')
-    chatArea.classList.remove('in-session')
     chatArea.classList.remove('mgr-on')
-    mountInput('stage')
+    flipInput(true) // docked/in-session 移除 + 挂回 stage 一并由 FLIP 处理（旧位取变更前矩形）
   }
 
   // 2026-08-25 项目新建会话指示：项目「+」先到初始化界面（同笔），首条消息才真正建会话。
@@ -647,15 +784,35 @@
 
   function renderSession(hash) {
     stopLiveFoldTimer()
+    // 切换会话：丢空态（hash=null）乐观项；各会话 pending 保留（2026-08-29 用户反馈
+    // 「切换会话引导消息会消失」→ 按 hash 关联，切回时 absorbPending + renderQueueDock 处理）
+    pendingUserMsgs = pendingUserMsgs.filter((p) => p.hash)
     live.lastMsgLen = null // 切换会话：重置增量重建守卫（首个刷新必整页渲染，防跨会话误增量）
-    modelUserPicked = false // 切换会话：允许 /api/session 上报的会话模型校准 seat
+    // 2026-08-30 串会话根治：上一会话遗留的全局槽在切换瞬间必须清空——
+    // ① live.queueRemote 不清 → 新会话首屏 renderQueueDock 直接渲染上一会话的 CLI 队列快照
+    //   （确定性串染，连竞态都不需要；fetch 回来再硬重置为本会话 queued）；② live.curUuid
+    //   不清 → 加载窗口内 queue-state SSE 按旧 uuid 匹配成功，把旧会话快照写进新会话视图。
+    live.queueRemote = []
+    live.curUuid = null
+    modelUserPicked = false // 切换会话：允许 /gateway/session 上报的会话模型校准 seat
     pinRelease()
     clearTakeover() // 切换会话：清掉残留的提问/审批 takeover（输入栏恢复）
     chatArea.classList.remove('mgr-on')
-    mountInput('chat') // 输入栏移回 #chat-area 沉底
+    flipInput(false) // 输入栏移回 #chat-area 沉底（FLIP 像素级补间）
     const s = findSession(hash)
     state.currentHash = hash
+    sendSubscribe() // 2026-08-30 pending 重放：切会话即订阅 → 网关回放该会话未决审批/提问（补弹交互卡）
     if (!s) {
+      // 2026-08-30 刷新直进 /session/<hash>：token 门未过时会话列表未拉（loadSessions 空跑），
+      // 此时找不到 ≠ 真不存在 → 占位「加载中」，由 hideGate 的 loadSessions().then 恢复链落地重渲；
+      // 列表就绪后仍找不到才渲染「会话不存在或已删除」。
+      if (needToken()) {
+        messagesEl.innerHTML = '<div class="msg msg-system">加载中…</div>'
+        renderCtxMeter(null) // 无会话数据 → 隐藏上下文环
+        inputWrap.classList.add('docked')
+        chatArea.classList.add('in-session')
+        return
+      }
       messagesEl.innerHTML = '<div class="msg msg-system">会话不存在或已删除</div>'
       renderCtxMeter(null) // 无会话数据 → 隐藏上下文环
       inputWrap.classList.add('docked')
@@ -665,18 +822,35 @@
     // 2026-08-25 发送即 resume：打开 web 会话仅预览（与 CLI 会话一致），不再自动拉起本地 CLI 窗口；
     // 会话进程未在线时，发送消息（gwSend → 网关 resumeAndDeliver）才恢复窗口并投递。
     // 原自动 resume + subscribe 已移除：审批卡经网关 broadcast → /ws sockets 到达，subscribe 为死代码。
-    messagesEl.innerHTML = '<div class="msg msg-system">加载中…</div>'
+    // 丝滑建会（2026-08-30）：gwSend 空态分支在 wsession 返回前已乐观渲染（气泡+处理折叠），
+    // 创建中 navigate 触发的本轮 renderSession 不洗成「加载中…」，保留乐观 DOM 消除闪烁。
+    if (!(pendingFirstSend && pendingFirstSend.pre && !pendingFirstSend.hash && webCreating)) {
+      messagesEl.innerHTML = '<div class="msg msg-system">加载中…</div>'
+    }
     setChar(1) // 加载中 → 默认形象
     inputWrap.classList.add('docked')
     chatArea.classList.add('in-session')
     fetchMessages(s.id)
-      .then(({ messages, context, model, modelTs }) => {
+      .then(({ messages, context, model, modelTs, vision, cwd, file, queued }) => {
         if (state.currentHash !== hash) return
+        sessionCwd = cwd
+        // 切会话队列快照硬重置（2026-08-30）：以本会话响应为准，杜绝上一会话残留
+        live.queueRemote = Array.isArray(queued) ? queued : []
+        // 2026-08-30 图片内联渲染：会话 uuid（image-cache 目录名）供用户气泡 <img> URL 拼接，
+        // 首开即设（refreshSession 同款，防首屏图片 URL 带空 uuid）
+        if (file) live.curUuid = file.replace(/\.jsonl$/, '')
+        live.lastDataTs = (messages.length && messages[messages.length - 1].timestamp) || 0 // 切会话：基线硬重置为本会话末条 ts
         applySessionModel(model, modelTs) // 2026-08-24：打开会话即用 CLI 上报的实际模型校准 seat
+        sessVision = vision // 2026-08-28 图片门控：该会话模型识图判定（网关按凭据池 override 判）
+        renderImgBtn()
         renderCtxMeter(context)
         messagesEl.innerHTML = messagesHtml(messages)
+        // 2026-08-29 切回会话：吸收该会话已落盘消息（切走不再清空 pending）；2026-08-30 乐观
+        // 改排队区——重渲 #queue-dock（innerHTML 重建会洗掉 dock），不再有对话流重插/乐观折叠补挂
+        absorbPending(messages)
+        renderQueueDock()
         if (takeover === 'approval') { /* 交互式逐题审批卡已占据输入栏，勿用只读堆叠卡覆盖/清除 */ }
-        else if (pendingAskInput) showTakeover(questionCardHtml(pendingAskInput, null), 'ask')
+        else if (pendingAskInput) showTakeover(questionCardHtml(pendingAskInput, null, { single: true }), 'ask')
         else clearTakeover()
         setChar(charNote) // 只读 SSE：按末段最近工具/处理状态切形象
         bindLiveFoldTimer(messages)
@@ -718,7 +892,8 @@
           const pf = pendingFirstSend
           pendingFirstSend = null
           if (messages.length === 0) {
-            addUser(pf.text)
+            // pre=true：发送瞬间已乐观上屏（气泡+折叠），勿重复 addUser；DOM 被意外洗掉才补
+            if (!pf.pre || !messagesEl.querySelector('.msg.user[data-t="u"]')) addUser(pf.text)
             procOpen()
           }
         }
@@ -750,12 +925,18 @@
   // ---- AskUserQuestion 提问卡（2026-08-21 移植 DSH QuestionComposer 视觉，只读展示）----
   // eyebrow + 标题 + 编号选项行（label/推荐徽标/描述）+ 答案注脚；
   // 答案来自后续 tool_result 文本吸附标记（parseRecommendedLabel 后缀剥离对齐 DSH）。
-  function questionCardHtml(inp, answerText) {
+  function questionCardHtml(inp, answerText, opts) {
+    const o = opts || {}
     const q = (inp && typeof inp === 'object') ? inp : {}
     // CLI AskUserQuestion 上报 input 为 {questions:[{question,header,multiSelect,options[]}]}（数组，支持多问题）；
     // 兼容旧单问题 {question, options} 结构（无 questions 数组时把 q 当单个问题处理）。
     const list = (Array.isArray(q.questions) && q.questions.length) ? q.questions : [q]
-    return list.map((qq) => {
+    // single（兜底等待态 2026-08-30）：CLI 一次带多 questions 时全量展开 = 多张卡堆叠在输入栏
+    // （用户实测「这又是什么情况」）。兜底卡只读无法作答，只渲染第一题 + 计数提示（与 CLI 逐题观感一致）；
+    // 已答历史折叠（ask-fold）仍全量展示，不受影响。
+    const shown = o.single ? list.slice(0, 1) : list
+    const pendingFoot = o.single && list.length > 1 ? `（第 1/${list.length} 题 · 请在 CLI 窗口作答）` : ''
+    return shown.map((qq) => {
       const question = String(qq.question || '').trim()
       const options = Array.isArray(qq.options) ? qq.options : []
       const header = String(qq.header || q.header || '提问')
@@ -770,7 +951,7 @@
         rows += `<div class="q-option${sel ? ' sel' : ''}"><span class="q-num">${i + 1}</span><span class="q-copy"><span class="q-line"><span class="q-label">${esc(plain)}</span>${rec ? '<span class="q-badge">推荐</span>' : ''}</span>${desc ? `<span class="q-desc">${esc(desc)}</span>` : ''}</span>${sel ? `<span class="q-check">${I.dshCheck}</span>` : ''}</div>`
       })
       const ans = answerText != null ? String(answerText).slice(0, 200) : ''
-      return `<div class="question-card"><div class="q-head">${esc(header)}</div><div class="q-title">${esc(question)}</div><div class="q-options">${rows}</div>${answerText != null ? `<div class="q-ans">已选择：${esc(ans)}</div>` : '<div class="q-ans pending">等待回答…</div>'}</div>`
+      return `<div class="question-card"><div class="q-head">${esc(header)}</div><div class="q-title">${esc(question)}</div><div class="q-options">${rows}</div>${answerText != null ? `<div class="q-ans">已选择：${esc(ans)}</div>` : `<div class="q-ans pending">等待回答…${pendingFoot}</div>`}</div>`
     }).join('')
   }
   // 提问在消息流里的紧凑行（DSH 工具行语义）：icon + 「提问」+ 状态（等待回答 / 已回答）
@@ -796,15 +977,18 @@
     const label = verbs.length <= 1 ? (verbs[0] || '调用了工具') : verbs.slice(0, -1).join('、') + '并' + verbs[verbs.length - 1]
     return `${label}（${tools.length}）`
   }
-  // 把段内 items（think/text/note/tool 对象）渲染为 done-body 内部 HTML：
-  // 连续 tool 合并成一个可展开折叠（默认收起省空间），思考/旁白原位穿插显示（与动作关联）
+  // 把段内 items（think/text/guide/tool 对象）渲染为 done-body 内部 HTML：
+  // 连续 tool 合并成一个可展开折叠（默认收起省空间），思考/旁白/引导气泡原位穿插显示（与动作关联）。
+  // 2026-08-30 恢复（工具行折叠回归）：v163 stackBody 重写把 groupTools/liveFoldBody 连同折叠
+  // 一起删除（用户实测「工具行折叠的功能消失了」，对照 182358 正常版 diff 定位），本函数原样取回；
+  // running 判定改用 done 标（现行 items 约定），供被打断段（closeSeg(false)）未完成工具亮 tf-dot。
   function groupTools(items) {
     let html = ''
     let group = []
     const flush = () => {
       if (!group.length) return
       const rows = group.map((g) => g.html).join('')
-      const running = group.some((g) => g.running)
+      const running = group.some((g) => !g.done)
       html += `<details class="tool-fold"${running ? ' data-state="running"' : ''}><summary>${running ? '<span class="tf-dot"></span>' : ''}<span class="tf-label">${esc(toolFoldLabel(group))}</span></summary><div class="tool-fold-body">${rows}</div></details>`
       group = []
     }
@@ -817,29 +1001,19 @@
     flush()
     return html
   }
-  // 当前正在运行的工具步（实时段专用）：复用原灰色工具行（tool-line）的 inline 形态，仅加 .tool-running
-  // 光泽扫动标识运行态（无蓝点、无 <details> 提示行、无输入 JSON，用户 2026-08-26 定案）。
-  function toolCurHtml(block) {
-    const t = toolMeta(block)
-    return `<span class="tool-line tool-running" data-name="${esc(t.name)}"><span class="t-ico">${toolIcon(t.name)}</span><span class="tl-text">${esc(t.zh)}${t.detail ? ' · ' + esc(t.detail) : ''}</span></span>`
-  }
   // 实时（处理中）段体（2026-08-26 用户定案：一个工具调用轮次只渲染一个工具折叠行）：
   // 有工具在运行 → summary 显示「正在运行：<当前工具>」+ 光泽扫动，点开看全部工具步明细
   // （已完成行 + 当前运行行）；全部完成（回合间等待回复/思考）→ 折叠概括（与已处理段同形态）。
-  // 【思考/压缩态（2026-08-27 二轮修正：均不独立成行）】vacuumState='think'|'compact'|null：
-  // 尾动作为思考间隙/压缩标记（auto-compact 自动摘要）时，「末尾工具组的折叠行 label 原位替换」
-  // 为『正在思考』/『正在压缩会话中……』（复用 tool-running 扫光形态，点开仍有明细；新一轮
-  // 工具开始后恢复「正在运行：Y」——与工具调用等权轮转，用户 08-27 定案）。仅纯空窗（items
-  // 无任何可见步骤，如刚发消息 CLI 首段思考、末条 thinking 经方案B放行到位）无折叠行可替换
-  // 时才退化为折叠体内独立状态行兜底。历史思考抑制：某思考之后还有任何可见步骤项（工具/
-  // 旁白/提问/注释/更新的思考）→ 该思考已过时；同一记录 thinking 在前 tool_use 在后时自动
-  // 只剩「正在运行」。旁白是独立 kind（text），不经 think 分支——思考与旁白严格分流。
-  // 真空期判定见 closeSeg（busyOk/vacuumState；方案B 见 localGateway.ts / server.mjs readSession
-  // 尾部放行）。轮次结束（回复落地）后整段改走 groupTools 折叠概括。
+  // 【思考/压缩态】尾动作为思考间隙/压缩标记时，「末尾工具组的折叠行 label 原位替换」为
+  // 『正在思考』/『正在压缩会话中……』（带 data-ts 起点，bindLiveFoldTimer 每秒补「· Ns」，
+  // 对齐 CLI spinner 计时；新一轮工具开始后恢复「正在运行：Y」——与工具调用等权轮转）。
+  // 仅纯空窗（items 无任何可见步骤，如刚发消息 CLI 首段思考）才退化为折叠体内独立状态行兜底。
+  // 思考永不独立成行（if (it.kind === 'think') continue）：有尾工具组=label 原位替换，纯空窗=兜底行。
+  // 2026-08-30 随 groupTools 一并从 182358 取回。引导气泡（kind 'guide'）按非 tool 项原样穿插，
+  // 打断工具组时组照常收口（状态只在真正的尾组上亮）。
   function liveFoldBody(items, vacuumState, vacuumStart) {
     let html = ''
     let tools = []
-    // 思考/压缩态文本（四轮：带 data-ts 起点，bindLiveFoldTimer 每秒补「· Ns」，对齐 CLI spinner 计时）
     const stateLabel = (st) => {
       const verb = st === 'compact' ? '正在压缩会话中……' : '正在思考'
       const attr = vacuumStart ? ` data-ts="${vacuumStart}" data-mode="${st}"` : ''
@@ -865,7 +1039,7 @@
       if (!it || !it.html) continue // 占位/置空的块（reply 占位、被过滤的思考）
       if (it.kind === 'think') continue // 思考永不独立成行：有尾工具组=label 原位替换；纯空窗=末尾兜底行
       if (it.kind === 'tool') { tools.push(it); continue } // 完成/运行中的工具都进当前组 → 统一成一个折叠行
-      flushTools(null) // 中途被旁白/文本打断的工具组按普通折叠收口（状态只在真正的尾组上亮）
+      flushTools(null) // 中途被旁白/文本/引导气泡打断的工具组按普通折叠收口
       html += it.html
     }
     flushTools(vacuumState || null) // 循环结束后仍挂着的尾组才可能进入思考/压缩态
@@ -873,6 +1047,12 @@
     // → 折叠体内独立状态行。真实场景：CLI 高 effort 思考期 web 段内原本全空白。
     if (vacuumState && !html) html = stateLabel(vacuumState)
     return html
+  }
+  // 当前正在运行的工具步（实时段专用）：复用原灰色工具行（tool-line）的 inline 形态，仅加 .tool-running
+  // 光泽扫动标识运行态（无蓝点、无 <details> 提示行、无输入 JSON，用户 2026-08-26 定案）。
+  function toolCurHtml(block) {
+    const t = toolMeta(block)
+    return `<span class="tool-line tool-running" data-name="${esc(t.name)}"><span class="t-ico">${toolIcon(t.name)}</span><span class="tl-text">${esc(t.zh)}${t.detail ? ' · ' + esc(t.detail) : ''}</span></span>`
   }
 
   // ---- 文件变更汇总卡片（Codex 风格：+N 绿 / -N 红）----
@@ -883,6 +1063,16 @@
   function baseName(p) {
     const s = String(p || '').replace(/\\/g, '/')
     return s.split('/').pop() || s
+  }
+  // 相对启动根路径显示（2026-08-29）：路径在会话启动根（sessionCwd）下 → 剥前缀显示相对路径
+  // （如 src/gateway/web/app.js）；不在根下/未知 cwd → 回退文件名。仅显示层，聚合 key 仍用绝对路径。
+  function relFromCwd(p) {
+    const norm = String(p || '').replace(/\\/g, '/')
+    const root = String(sessionCwd || '').replace(/\\/g, '/').replace(/\/+$/, '') + '/'
+    if (root.length > 1 && norm.toLowerCase().startsWith(root.toLowerCase())) {
+      return norm.slice(root.length) || baseName(norm)
+    }
+    return baseName(norm)
   }
   // 从 tool_result 文本提取文件路径与增删行数（Edit/Write 统一格式）——旧网关兜底
   function parseFileChange(text) {
@@ -918,7 +1108,7 @@
     for (const [path, c] of changes) {
       totalAdd += c.added
       totalDel += c.removed
-      rows += `<div class="ch-row"><span class="ch-file">${esc(baseName(path))}</span><span class="ch-add">+${c.added}</span><span class="ch-del">-${c.removed}</span></div>`
+      rows += `<div class="ch-row"><span class="ch-file">${esc(relFromCwd(path))}</span><span class="ch-add">+${c.added}</span><span class="ch-del">-${c.removed}</span></div>`
     }
     // 2026-08-19 默认折叠：卡片落地即为收起姿态（标题行 + ▸），点右上角展开文件列表
     // 2026-08-26：key 可选（messagesHtml 段尾传入 s.key）→ 带 data-m/data-t 供增量重建定位删除；
@@ -1012,7 +1202,7 @@
   // 不应把它当成回合结束，否则「正在处理」被强收成「已处理」、后续思考/工具拆成断开的新段。
   // ⚠️ 存活代码勿删（2026-08-27 P2 复核纠正审查报告§C 结论）：shouldShowUserMessage 只剔 isMeta，
   // 而 isCompactSummary 续接记录不带 isMeta、conversationDisplay 亦无专门剔除 → 经网关 display /
-  // 磁盘兜底同样以 role:'user' 到达前端；处理中命中即驱动 liveFoldBody「正在压缩会话中……」，
+  // 磁盘兜底同样以 role:'user' 到达前端；处理中命中即驱动 liveFoldBody 真空态「正在压缩会话中……」行，
   // 已收尾时静默吞行。英/中双正则分别兜官方原文与离线标签两种形态。
   const CONTINUED_RE = /This session is being continued from a previous conversation/i
   function isContinuationMsg(m) {
@@ -1028,6 +1218,57 @@
     if (m.role !== 'user') return false
     return m.blocks.some((b) => (b.kind === 'text' && b.text && b.text.trim()) || b.kind === 'image')
   }
+
+  // 用户气泡正文（2026-08-30 图片渲染，用户定案：图在气泡外）：
+  // 带 imageId 的 image 块 → 气泡只出文本（剥掉文本里已渲染图的 [Image #N] 占位），
+  // 图由 userImgsHtml 渲染在气泡框外；字节走网关 GET /gateway/image-cache/<会话uuid>/<id>
+  // （复用 CLI processUserInput storeImages 落盘的 image-cache，display JSON 不塞 base64）。
+  // 无 imageId（旧记录）→ 回落 [图片] 占位/纯文本；图已落盘后被清（会话重启
+  // cleanupOldImageCaches 清非当前会话缓存）→ userImgsHtml onerror 出 [Image #N] 裸文本。
+  function userBodyHtml(m) {
+    const ids = []
+    for (const b of m.blocks) if (b.kind === 'image' && b.imageId) ids.push(b.imageId)
+    const txt = m.blocks.filter((b) => b.kind === 'text').map((b) => b.text).join('')
+    if (ids.length) {
+      const stripped = txt.replace(new RegExp('\\s*\\[Image #(' + ids.join('|') + ')\\]', 'g'), '')
+      return mdHtml(stripped)
+    }
+    const hasImg = m.blocks.some((b) => b.kind === 'image')
+    return mdHtml(hasImg && !txt ? '[图片]' : txt)
+  }
+
+  // 图片容器（用户 2026-08-30 定案：渲染在气泡外）：.msg 内、.body 后——.msg 无背景，
+  // 视觉即气泡正下方右侧。图未落盘（404）→ onerror 替换为 [Image #N] 裸文本，不出破图
+  //（用户定案「会话重启后图片不留盘，就仅渲染裸文本就好了」）。
+  function userImgsHtml(m) {
+    const ids = []
+    for (const b of m.blocks) if (b.kind === 'image' && b.imageId) ids.push(b.imageId)
+    if (!ids.length) return ''
+    const imgs = ids.map((id) => `<img class="msg-img" loading="lazy" alt="图片" data-ph="[Image #${id}]" onerror="this.replaceWith(document.createTextNode(this.dataset.ph))" src="/gateway/image-cache/${live.curUuid || ''}/${id}">`).join('')
+    return `<div class="msg-imgs">${imgs}</div>`
+  }
+
+  // 大图预览 lightbox（2026-08-30 用户定案：单击缩略图看大图）：单例覆盖层，
+  // src 复用缩略图同 URL（网关 Cache-Control private 1d，字节已缓存零请求）；
+  // 点击任意处 / Esc 关闭。事件委托 document 级绑一次，覆盖历史/实时/SSE 全渲染路径。
+  function ensureLightbox() {
+    let lb = document.getElementById('img-lightbox')
+    if (lb) return lb
+    lb = document.createElement('div')
+    lb.id = 'img-lightbox'
+    lb.innerHTML = '<img alt="大图预览">'
+    lb.addEventListener('click', () => lb.classList.remove('on'))
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') lb.classList.remove('on') })
+    document.body.appendChild(lb)
+    return lb
+  }
+  document.addEventListener('click', (e) => {
+    const im = e.target.closest && e.target.closest('.msg-img')
+    if (!im) return
+    const lb = ensureLightbox()
+    lb.querySelector('img').src = im.currentSrc || im.src
+    lb.classList.add('on')
+  })
 
   // 已处理时长：10m 50s 风格
   function fmtDur(sec) {
@@ -1139,83 +1380,92 @@
     lastSegInfo = null // 每次渲染重置：仅记录本次被 closeSeg 的最后一个段
     let lastNode = null // 最近输出的 data-m 元素 {key, type}（供增量重建定位插入锚点）
     pendingAskInput = null // 每次渲染重置：末尾待答提问由下方检测重写
-    // 兜底：最后一条真实用户消息的时间（供「系统消息打断后」无 user 的末段计时/展示时长）
+    // 兜底：最后一条真实用户消息的时间（供「系统消息打断后」无 user 的末段计时/展示时长）；
+    // 注入引导消息（injected）不计入——计时起点不打断（单折叠定稿）
     let lastUserTs = 0
-    for (const m of messages) if (isRealUser(m) && m.timestamp) lastUserTs = m.timestamp
+    for (const m of messages) if (isRealUser(m) && !m.injected && m.timestamp) lastUserTs = m.timestamp
+    // 引导消息按 pos 织进 items 流（从后往前插避免下标位移）；guides 按 push 序天然 pos 升序。
+    // A 方案（用户 2026-08-29 定案）：处理中/完成态均为顶层完整用户气泡，原位保留。
+    function weave(items, guides, s) {
+      if (!guides || !guides.length) return items
+      const out = items.slice()
+      for (let gi = guides.length - 1; gi >= 0; gi--) {
+        const g = guides[gi]
+        out.splice(Math.min(g.pos, out.length), 0, {
+          kind: 'guide', gi,
+          html: `<div class="msg user" data-m="${s.key}" data-t="g${gi}"${g.i != null ? ` data-g="${g.i}"` : ''}><div class="body">${userBodyHtml(g.m)}</div>${userImgsHtml(g.m)}</div>`, // 引导气泡不带复制按钮（用户 2026-08-30 定案）
+        })
+      }
+      return out
+    }
+    // end_turn 正式回复气泡（流内 reply 项用，形态与原 reply 特判渲染一致）
+    function replyBubbleHtml(key, text) {
+      return `<div class="msg assistant" data-m="${key}" data-t="a"><div class="body"><div class="blocks">${mdHtml(text)}</div><div class="msg-actions"><button class="msg-copy" title="复制" aria-label="复制">${ICON_COPY}</button></div></div></div>`
+    }
     function closeSeg(isFinal) {
       if (!seg) return
       const s = seg
       seg = null
       const segPrev = lastNode // 该段输出前的最后一个 data-m 元素（增量重建插入锚点）
       const processing = isFinal && !s.finished // 最后一段且末尾还没收到纯文本回复 = 处理中
-      // reply 仅当段已收尾（end_turn 回复已落盘）时取最后一条文本；未收尾段（处理中 / 被系统或新用户消息打断）
-      // 的文本都是过程旁白，留在折叠内原位穿插——修复旁白被当「伪回复」沉到工具折叠下方的乱序（2026-08-26）。
-      const reply = s.finished && s.texts.length ? s.texts[s.texts.length - 1] : null
       // 末段仍在处理中（未出正式回复）且段内最近有工具调用 → 按该工具选形象；否则（回复已发布/空闲）默认 1
       if (isFinal) charNote = (!s.finished && s.lastTool) ? toolToChar(s.lastTool) : 1
-      // 旁白 text 原位回填（与其后的动作交错，不再统一沉到段尾）；reply 占位置空（回复主内容在折叠外单独渲染）
-      for (const t of s.texts) s.items[t.idx].html = (t === reply) ? '' : processTextHtml(t.text)
-      // 处理中段末个思考块 → running 态（末行摘要实时跟随 + 扫光，对齐 DSH ReasoningRow 流式尾块）
-      if (processing && s.thinks.length) {
-        const it = s.items[s.thinks[s.thinks.length - 1]]
-        if (it && it.html) it.html = thinkRowHtml(it.text, true)
-      }
+      // 旁白 text 原位回填（与其后的动作交错，不再统一沉到段尾）；正式回复（end_turn）已在切段时
+      // 气泡化（reply 项 → 折叠体外），不进 texts
+      for (const t of s.texts) s.items[t.idx].html = processTextHtml(t.text)
+      // 思考行不做 running 态回填（2026-08-30 恢复 liveFoldBody：思考永不独立成行，
+      // 「正在思考」由尾工具组 label 原位替换/纯空窗兜底行呈现，与 182358 正常版一致）
 
       let segHtml = ''
       if (s.user) {
         const m = s.user
-        const txt = m.blocks.filter((b) => b.kind === 'text').map((b) => b.text).join('')
-        const hasImg = m.blocks.some((b) => b.kind === 'image')
-        const body = hasImg && !txt ? '[图片]' : txt
-        segHtml += `<div class="msg user" data-m="${s.key}" data-t="u"><div class="body">${mdHtml(body)}</div><div class="msg-actions"><button class="msg-copy" title="复制" aria-label="复制">${ICON_COPY}</button></div></div>`
+        segHtml += `<div class="msg user" data-m="${s.key}" data-t="u"><div class="body">${userBodyHtml(m)}</div>${userImgsHtml(m)}<div class="msg-actions"><button class="msg-copy" title="复制" aria-label="复制">${ICON_COPY}</button></div></div>`
         lastNode = { key: s.key, type: 'u' }
       }
 
-      // 已处理折叠：思考 + 阅读/编辑/搜索 等全部收进一个可展开容器
-      // 时长 = 回复时间 − 用户消息时间（t2 − t1，即整段 AI 处理过程）
-      let foldHtml = ''
-      // 2026-08-26：processing 时即使段内尚无 assistant 内容（刚发消息、CLI 还没写入 thinking/工具）
-      // 也渲染空「正在处理」折叠——gwSend 乐观开的折叠会被 SSE refreshSession 整页重建销毁，
-      // 若这里不补渲染则折叠会消失（发送后不立即弹已处理）。items 非空时正常渲染内容。
-      if (s.items.length || processing) {
-        // 处理中（实时）段：liveFoldBody 全部工具行原位渲染（已完成=文本行、当前=光泽运行行）；
-        // 已处理段保持现状（groupTools 连续工具合并概括折叠 + 思考/旁白原位穿插）
-        // 「正在思考/正在压缩」真空期占位（2026-08-27 二轮修正；三轮补纯思考开场）：处理中 +
-        // 所有已登记工具均已收到结果 + 无待答提问 + 尾动作（lastStep）——result/thinking→think
-        // 态；compact（续接标记）→压缩态；lastStep=null（段刚开、首条 assistant 记录尚未落盘，
-        // CLI 正在推理的高 effort 思考期）→ 也按思考推断亮态；旁白 text/提问 ask 不亮态。
-        // 下一条 assistant 记录写入前按尾动作推断；真实 thinking 到位（数据层放行）后由 think
-        // 占位接管（liveFoldBody 内不重复渲染）。注意：thinking 流式期间 jsonl 零写入 → SSE
-        // 不触发，web 保持本次渲染的思考态直到落盘轮转（须有本兜底才不空白）。
-        const busyOk = processing && !s.pendingTools.length
-          && !(s.lastAsk && s.lastAsk.answer == null)
-        let vacuumState = null
-        if (busyOk) {
-          if (s.lastStep === 'compact') vacuumState = 'compact'
-          else if (!s.lastStep || s.lastStep === 'result' || s.lastStep === 'thinking') vacuumState = 'think'
-        }
-        // 思考/压缩态计时起点：段内最后一条落盘记录的时刻（真空期从那时开始）；尚无记录（纯思考
-        // 开场）退回段 user 时间。四轮新增，供 bindLiveFoldTimer 每秒补「· Ns」（对齐 CLI spinner 计时）。
-        const vacuumStart = s.lastTs || (s.user && s.user.timestamp) || 0
-        const bodyHtml = processing ? liveFoldBody(s.items, vacuumState, vacuumStart) : groupTools(s.items)
-        if (bodyHtml || processing) {
-          const endTs = reply ? reply.ts : s.lastTs
-          // 处理中：label「正在处理」+ 实时计时（bindLiveFoldTimer 每秒跳字）；回复落地后「已处理 X」
-          const t1 = (s.user && s.user.timestamp) || (isFinal ? lastUserTs : 0)
-          const dur = !processing && t1 && endTs ? fmtDur(Math.round((endTs - t1) / 1000)) : ''
-          const openAttr = processing ? ' open' : ''
-          const liveCls = processing ? ' done-live' : ''
-          foldHtml = `<details class="done-fold${liveCls}" data-m="${s.key}" data-t="f"${openAttr}><summary><span class="d-chev">${CHEV}</span>${processing ? '<span class="df-dot"></span>' : ''}${processing ? '正在处理' : '已处理'}${dur ? `<span class="d-dur"> ${dur}</span>` : ''}</summary><div class="done-body">${bodyHtml}</div></details>`
-        }
+      // 2026-08-29 最终定案（用户）：开启消息渲染一个折叠体，旁白/工具调用行/思考/引导消息
+      // 都作为折叠体内部的元素（思考/旁白/引导原位穿插，连续工具折叠概括——liveFoldBody/groupTools），end_turn 正式
+      // 回复是唯一折叠体外元素（「已处理 X」+回复）。顺序与 CLI 线性序一致（网关已把回合中
+      // 引导重定位回 enqueue 位置并打 guide 标——「回复跑到引导上面」的顺序颠倒已根治）。
+      const woven = weave(s.items, s.guides, s)
+      const foldItems = []
+      const flowParts = []
+      for (const it of woven) {
+        if (it.kind === 'reply') flowParts.push({ html: it.html, type: 'a' })
+        else foldItems.push(it)
       }
 
-      if (reply) {
-        segHtml += `<div class="msg assistant" data-m="${s.key}" data-t="a"><div class="body"><div class="blocks">${foldHtml}${mdHtml(reply.text)}</div><div class="msg-actions"><button class="msg-copy" title="复制" aria-label="复制">${ICON_COPY}</button></div></div></div>`
-        lastNode = { key: s.key, type: 'a' }
-      } else if (foldHtml) {
-        // 段被中断（无回复）：已处理折叠独立展示
-        segHtml += foldHtml
+      // 「正在思考/正在压缩」真空期占位（2026-08-27 机制沿用）：live fold 消费。
+      // 处理中 + 所有已登记工具均已收到结果 + 无待答提问 + 尾动作（lastStep）——result/thinking→
+      // think 态；compact（续接标记）→压缩态；lastStep=null（段刚开、首条 assistant 记录尚未落盘）
+      // → 也按思考推断亮态；旁白 text/提问 ask 不亮态。thinking 流式期间 jsonl 零写入 → SSE 不触发，
+      // web 保持本次渲染的思考态直到落盘轮转（须有本兜底才不空白）。
+      const busyOk = processing && !s.pendingTools.length
+        && !(s.lastAsk && s.lastAsk.answer == null)
+      let vacuumState = null
+      if (busyOk) {
+        if (s.lastStep === 'compact') vacuumState = 'compact'
+        else if (!s.lastStep || s.lastStep === 'result' || s.lastStep === 'thinking') vacuumState = 'think'
+      }
+      // 思考/压缩态计时起点：段内最后一条落盘记录的时刻（真空期从那时开始）；尚无记录退回段 user 时间
+      const vacuumStart = s.lastTs || (s.user && s.user.timestamp) || 0
+      // 处理中（实时）段 = liveFoldBody（单工具折叠行轮转 + 思考/压缩 label 原位替换）；
+      // 已处理/被打断段 = groupTools（连续工具合并概括折叠，思考/旁白/引导原位穿插）。
+      // 2026-08-30 恢复 182358 形态（v163 stackBody 重写误删工具折叠，用户实测「工具行折叠的
+      // 功能消失」退回）。处理中恒渲染（即使空体——刚发消息乐观折叠语义）；完成态空体跳过。
+      const bodyHtml = processing ? liveFoldBody(foldItems, vacuumState, vacuumStart) : groupTools(foldItems)
+      if (bodyHtml || processing) {
+        // dur 计时（CLI spinner 对应物）：t1=段开启消息 ts（开启消息/新回合段首引导），endTs=回复落盘 ts/段末 ts
+        const t1 = (s.user && s.user.timestamp) || s.startTs || (isFinal ? lastUserTs : 0)
+        const endTs = s.replyTs || s.lastTs
+        const dur = !processing && t1 && endTs ? fmtDur(Math.round((endTs - t1) / 1000)) : ''
+        segHtml += `<details class="done-fold${processing ? ' done-live' : ''}" data-m="${s.key}" data-t="f"${processing ? ' open' : ''}><summary><span class="d-chev">${CHEV}</span>${processing ? '<span class="df-dot"></span>' : ''}${processing ? '正在处理' : '已处理'}${dur ? `<span class="d-dur"> ${dur}</span>` : ''}</summary><div class="done-body">${bodyHtml}</div></details>`
         lastNode = { key: s.key, type: 'f' }
+      }
+      // 流内项（按落盘序）：引导气泡 + 回复气泡（data-t 精确值供下段 prev 锚点查询命中）
+      for (const p of flowParts) {
+        segHtml += p.html
+        lastNode = { key: s.key, type: p.type }
       }
 
       // 段末文件变更汇总卡片（回合内 Edit/Write 的真实增删行数）
@@ -1232,7 +1482,7 @@
       if (isContinuationMsg(m)) {
         // 压缩/自动摘要标记（2026-08-27 二轮修正）：不再产生任何可见行——曾以 note 吸进折叠或
         // 居中系统提示，都会打断实时工具折叠行的展示（用户实测）。现在处理中段记 lastStep=
-        // 'compact'，由 liveFoldBody 把末尾工具折叠行 label 原位替换为闪烁「正在压缩会话中……」
+        // 'compact'，由 liveFoldBody 纯空窗兜底附加闪烁「正在压缩会话中……」状态行
         // （与「正在思考」同机制）；段间/已完成则静默吞行——数据层不剔 isCompactSummary 续接记录，拦截必须留。
         if (seg && !seg.finished) seg.lastStep = 'compact'
         continue
@@ -1246,11 +1496,29 @@
         continue
       }
       if (isRealUser(m)) {
+        // 2026-08-30 共同后端定案（接力文档清单#4①）：切段由语义事件驱动——injected:true
+        // （queued_command attachment 注入，filterConversationForDisplay 权威输出）= 回合中
+        // 引导 → 归当前未收尾段 guides（weave 织入折叠体内部，记 pos=织入 items 流的下标）。
+        // 无未收尾段的孤儿注入 → 不开新回合段（user:null，引导为折叠体首元素，兜底防吞）。
+        // 非 injected 真实 user = dequeue 消费落盘的开启消息 → 永远开新段并立即计时。
+        // 原「段未收尾到来的真实 user 一律吸 guides」启发式删除——它是排队消息被渲染成
+        // 引导气泡的根因（102156 二轮实测），排队语义现由置底排队区承担。
+        if (m.injected === true) {
+          if (seg && !seg.finished) {
+            if (!seg.guides) seg.guides = []
+            seg.guides.push({ m, i, pos: seg.items.length })
+            if (m.timestamp) seg.lastTs = m.timestamp
+            continue
+          }
+          closeSeg(false)
+          seg = { user: null, guides: [{ m, i, pos: 0 }], items: [], texts: [], lastTs: m.timestamp || null, startTs: m.timestamp || 0, key: i, thinks: [], lastTool: null, lastAsk: null, pendingTools: [], changes: new Map(), lastStep: null }
+          continue
+        }
         closeSeg(false)
-        seg = { user: m, items: [], texts: [], lastTs: null, key: i, thinks: [], lastTool: null, lastAsk: null, pendingTools: [], changes: new Map(), lastStep: null } // lastStep=段尾最新动作类型（thinking/tool/result/ask/text），真空期「正在思考」占位判定用
+        seg = { user: m, guides: [], items: [], texts: [], lastTs: null, startTs: m.timestamp || 0, key: i, thinks: [], lastTool: null, lastAsk: null, pendingTools: [], changes: new Map(), lastStep: null } // lastStep=段尾最新动作类型（thinking/tool/result/ask/text），真空期「正在思考」占位判定用
         continue
       }
-      if (!seg) seg = { user: null, items: [], texts: [], lastTs: null, key: i, thinks: [], lastTool: null, lastAsk: null, pendingTools: [], changes: new Map(), lastStep: null }
+      if (!seg) seg = { user: null, guides: [], items: [], texts: [], lastTs: null, startTs: m.timestamp || 0, key: i, thinks: [], lastTool: null, lastAsk: null, pendingTools: [], changes: new Map(), lastStep: null }
       const hasText = m.blocks.some((b) => b.kind === 'text' && b.text && b.text.trim())
       const hasTool = m.blocks.some((b) => b.kind === 'tool_use')
       for (const b of m.blocks) {
@@ -1260,8 +1528,14 @@
         else if (b.kind === 'text' && hasTool && b.text && b.text.trim()) {
           // 工具消息里的旁白文本：按块原位插入 items（保持 content 数组顺序——旁白在其对应工具调用之上），
           // 不统一沉到段尾；纯文本消息（无 tool_use）仍在循环后整体追加（保持同消息多 text 块拼接为一条的语义）。
-          seg.items.push({ kind: 'text', html: '', text: b.text })
-          seg.texts.push({ text: b.text, ts: m.timestamp, idx: seg.items.length - 1 })
+          // end_turn 正式回复（理论不带 tool_use，防御分支）→ 流内 reply 气泡，不进 texts
+          if (m.stopReason === 'end_turn') {
+            seg.items.push({ kind: 'reply', html: replyBubbleHtml(seg.key, b.text), text: b.text })
+            seg.replyTs = m.timestamp
+          } else {
+            seg.items.push({ kind: 'text', html: '', text: b.text })
+            seg.texts.push({ text: b.text, ts: m.timestamp, idx: seg.items.length - 1 })
+          }
           seg.lastStep = 'text' // 工具消息内旁白 ≠ 思考
         }
         else if (b.kind === 'tool_use') {
@@ -1280,7 +1554,7 @@
           // 真实增删行数，权威 = diff.ts sumLinesChanged），优先消费；parseFileChange 正则反解仅作
           // 旧网关/旧数据兜底（新 exe 部署后可删）。聚合文件变更 → 段末汇总卡片
           const fc = normalizeFileChange(b.fileChange) || parseFileChange(b.text); if (fc) mergeChanges(seg.changes, fc)
-          // 2026-08-26 实时折叠：该工具步已收到结果 → 标记 done，liveFoldBody 对完成的工具步
+          // 2026-08-26 实时折叠：该工具步已收到结果 → 标记 done，groupTools/liveFoldBody 对完成的工具步
           // 显示为普通文本行（「当这一步工具调用完成后，折叠为文本」，不再显示「正在运行」）
           if (seg.pendingTools.length) { const pi = seg.pendingTools.shift(); seg.items[pi].done = true }
           seg.lastStep = 'result'
@@ -1292,11 +1566,18 @@
         }
       }
       if (hasText && !hasTool) {
-        // text 块占位进 items（记索引）：closeSeg 时旁白原位填充、reply 置空（回复主内容在折叠外单独渲染）。
-        // 有 tool_use 的消息已在上面循环内逐块原位插入（hasTool 时走上面分支），不再重复追加。
+        // 纯文本消息：end_turn 正式回复 → 流内 assistant 气泡（reply 项，B 缺陷根治：end_turn 后
+        // 继续有工具调用时回复不再被沉进折叠体；多轮 end_turn 各自原位气泡）。旧数据无 stopReason
+        // 字段 → 纯文本=回复（与现行 finished 启发式同口径迁移）。其余为过程旁白 → 占位进 items，
+        // closeSeg 时原位填充。
         const text = m.blocks.filter((b) => b.kind === 'text').map((b) => b.text).join('')
-        seg.items.push({ kind: 'text', html: '', text })
-        seg.texts.push({ text, ts: m.timestamp, idx: seg.items.length - 1 })
+        if (m.stopReason === 'end_turn' || m.stopReason === undefined) {
+          seg.items.push({ kind: 'reply', html: replyBubbleHtml(seg.key, text), text })
+          seg.replyTs = m.timestamp
+        } else {
+          seg.items.push({ kind: 'text', html: '', text })
+          seg.texts.push({ text, ts: m.timestamp, idx: seg.items.length - 1 })
+        }
         seg.lastStep = 'text' // 纯文本旁白/回复（无 tool_use 的消息）≠ 思考
       }
       // finished = 段已收尾判定。2026-08-26 起优先用 stopReason（源码 conversationDisplay 新增，
@@ -1336,8 +1617,8 @@
 
   function itemHtml(s, showProj) {
     const on = hashOf(s) === state.currentHash
-    // 会话状态点：busy=绿（正在运行）· idle/waiting=红（运行暂停）· 无=透明（CLI 未打开）
-    const dotCls = s.state === 'busy' ? ' st-busy' : (s.state === 'idle' || s.state === 'waiting') ? ' st-wait' : ''
+    // 会话状态点：busy=绿（正在运行）· waiting=橘（等待用户）· idle=红（运行暂停/已完成）· 无=透明（CLI 未打开）
+    const dotCls = s.state === 'busy' ? ' st-busy' : s.state === 'waiting' ? ' st-ask' : s.state === 'idle' ? ' st-wait' : ''
     // 2026-08-25 项目会话编号气泡（仅「在一个列表中」堆叠视图，renderList 传 showProj=true）：
     // 平铺时项目会话混在根会话里，用短编号（Pj16）标识所属项目；项目文件夹视图已有文件夹名，不重复显示。
     const projTag = showProj && s.projectScope === 'project' && s.projectLabel
@@ -1434,7 +1715,7 @@
 
   // ---------- 会话重命名（2026-08-24 DSH 侧栏 rename dialog 移植）----------
   // 弹窗 DOM 在 index.html（#rename-modal，复用 risk-modal 的 mask/dialog 样式骨架）；
-  // 提交 POST /api/session/rename → 网关 append custom-title 记录（对已停止会话同样生效）。
+  // 提交 POST /gateway/session/rename → 网关 append custom-title 记录（对已停止会话同样生效）。
   let renameTarget = null // { hash, title }
   const renameModal = $('rename-modal')
   const renameInput = $('rename-input')
@@ -1463,7 +1744,7 @@
     }
     try {
       const s = ALL.find((x) => hashOf(x) === renameTarget.hash)
-      const res = await fetch(apiUrl('/api/session/rename'), {
+      const res = await fetch(apiUrl('/gateway/session/rename'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id: s ? s.id : '', title }),
@@ -1498,7 +1779,7 @@
   // 网关 spawn 本地可见交互 REPL 窗口（--session-id 预分配）→ CLI 连 /clients 注册 →
   // 网关等注册完成才返回 → 首条消息经 cliClients 精确路由注入 REPL（与本地打字同路径）。
   // 展示走 conversationDisplay 上报 + jsonl 落盘 + SSE 列表刷新（与 CLI 会话一致）。
-  // 2026-08-24 防双 spawn：web 会话创建中标志（POST /api/wsession 等 CLI 注册最长 20s），
+  // 2026-08-24 防双 spawn：web 会话创建中标志（POST /gateway/wsession 等 CLI 注册最长 20s），
   // 创建期间 gwSend 空态分支再次发送直接忽略，杜绝「每发一条新建一个会话」。
   let webCreating = false
   // 2026-08-26 新建会话首条消息乐观渲染：navigate 只置 location.hash（hashchange → renderSession
@@ -1513,7 +1794,7 @@
     webCreating = true
     toast(projectLabel ? `正在 ${projectLabel} 打开本地 CLI 窗口…` : '正在全局根打开本地 CLI 窗口…')
     try {
-      const res = await fetch(apiUrl('/api/wsession'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(projectLabel ? { project: projectLabel } : {}) })
+      const res = await fetch(apiUrl('/gateway/wsession'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(projectLabel ? { project: projectLabel } : {}) })
       const d = await res.json()
       if (!d.hash || !d.id) throw new Error(d.error || 'bad response')
       // 合成列表条目：子进程刚起 jsonl 可能未落盘，先插入列表保证可导航；SSE 刷新会用真实条目替换。
@@ -1567,7 +1848,7 @@
   }
 
   // 管理视图（插件/技能预览，Codex 风格）：渲染到主聊天区（侧栏会话列表保持不变）。
-  // 插件与技能预览都从「插件」入口进入，顶部插件/技能切换；数据源 = 网关 /api/plugins 实时扫描。
+  // 插件与技能预览都从「插件」入口进入，顶部插件/技能切换；数据源 = 网关 /gateway/plugins 实时扫描。
   // 重渲保留滚动位置（切换 kind/cat 时内容高度变化，避免 scrollTop 被重置成可见跳动）。
   function renderMgr() {
     closeMentionPop()
@@ -1590,7 +1871,7 @@
         `<div class="mgr-search">${I.mag}<input id="mgr-pq" type="text" placeholder="搜索项目…" value="${esc(state.mgrView.q)}"></div>` +
         `<div class="mgr-cats"><span class="mgr-cat on">共 ${projCount} 个项目</span></div>` +
         '<div class="mgr-list" id="mgr-list"></div>' +
-        '<div class="mgr-foot">数据源：会话按项目分组（/api/sessions）</div>' +
+        '<div class="mgr-foot">数据源：会话按项目分组（/gateway/sessions）</div>' +
         '</div>'
       inputWrap.classList.remove('docked')
       chatArea.classList.remove('in-session')
@@ -1608,7 +1889,7 @@
         '<div class="mgr-top"></div>' +
         '<div class="mgr-head"><h2 class="mgr-title">模型列表</h2></div>' +
         '<div class="mgr-model-list" id="mgr-model-list"></div>' +
-        '<div class="mgr-foot">数据源：网关 /api/models</div>' +
+        '<div class="mgr-foot">数据源：网关 /gateway/models</div>' +
         '</div>'
       inputWrap.classList.remove('docked')
       chatArea.classList.remove('in-session')
@@ -1638,7 +1919,7 @@
       `<button class="mgr-cat${v.cat === 'personal' ? ' on' : ''}" data-cat="personal">个人</button>` +
       '</div>' +
       '<div class="mgr-grid" id="mgr-grid"></div>' +
-      '<div class="mgr-foot">数据源：网关 /api/plugins 实时扫描</div>' +
+      '<div class="mgr-foot">数据源：网关 /gateway/plugins 实时扫描</div>' +
       '</div>'
     inputWrap.classList.remove('docked')
     chatArea.classList.remove('in-session')
@@ -1671,7 +1952,7 @@
     if (q) q.addEventListener('input', () => { v.q = q.value; saveMgrView(); renderMgrGrid() })
   }
 
-  // 管理视图：插件/技能卡片网格（按 kind + cat + 搜索词过滤；数据源 = 后端 /api/plugins）
+  // 管理视图：插件/技能卡片网格（按 kind + cat + 搜索词过滤；数据源 = 后端 /gateway/plugins）
   function renderMgrGrid() {
     const v = state.mgrView
     const grid = $('mgr-grid')
@@ -1728,7 +2009,7 @@
     list.querySelectorAll('.mgr-proj').forEach((b) =>
       b.addEventListener('click', () => {
         // 点项目胶囊一律进预览：带 .claude/preview 加载真预览页；不带 → 默认项目主页
-        // （GitHub 仓库风格，web/default-preview/，由网关 /api/project 拉数据）。
+        // （GitHub 仓库风格，web/default-preview/，由网关 /gateway/project 拉数据）。
         if (b.dataset.label) {
           // 进预览走 hash 路由（#preview/<label>），刷新后可恢复当前预览页
           navigate('#preview/' + encodeURIComponent(b.dataset.label))
@@ -1754,7 +2035,7 @@
     )
   }
 
-  // 管理视图：模型列表（按供应商分组；数据源 = 网关 /api/models，只读展示）
+  // 管理视图：模型列表（按供应商分组；数据源 = 网关 /gateway/models，只读展示）
   const MODEL_PROVIDER_KEYS = [
     [/^ANTHROPIC_/, 'Claude · Anthropic'],
     [/^OPENAI_/, 'OpenAI'],
@@ -1809,10 +2090,10 @@
       list.innerHTML = '<div class="mgr-empty">暂无模型配置</div>'
       return
     }
-    // 按供应商分组（保持配置出现顺序，组内保持原序）
+    // 按供应商分组（保持配置出现顺序，组内保持原序）；2026-08-29 优先网关下发的真实归属（items[].provider）
     const groups = []
     for (const it of items) {
-      const p = modelProviderOf(it)
+      const p = it.provider || modelProviderOf(it)
       let g = groups.find((x) => x.provider === p)
       if (!g) {
         g = { provider: p, items: [] }
@@ -1834,19 +2115,20 @@
     })
   }
   // 模型胶囊：完全复用项目胶囊 .mgr-proj 的风格与尺寸（40px 彩块 icon + 名称行 + 描述行）。
-  // 2026-08-23 设为默认：凭据池当前供应商可切换模型（MODELS.providerModels 内）→ 整行可点「设为默认」；
-  // 当前默认模型（MODELS.activeModel）标「默认」徽标；其余配置项保持只读 › 箭头。
+  // 2026-08-23 设为默认：凭据池内模型 → 整行可点「设为默认」；2026-08-29 直接切模型自动切供应商 →
+  // 放开为全池（src 以「凭据池」开头的行，跨商由网关 switchModelAuto 自动切供应商）；
+  // 当前默认模型（MODELS.activeModel）标「默认」徽标；其余配置项保持只读。
   function modelCapHtml(it) {
     const name = String(it.v || '')
     // 备注小字 = 是否为视觉模型（凭据池 modelVision 配置；未标记按非视觉）
     const desc = it.vision === true ? '支持视觉' : '不支持视觉'
     // DeepSeek 供应商 → 白底 + 蓝色鲸鱼；其它供应商保留彩块 + 芯片线条
-    const isDs = modelProviderOf(it) === 'DeepSeek'
+    const isDs = (it.provider || modelProviderOf(it)) === 'DeepSeek'
     const icStyle = isDs ? 'background:#fff;color:#4d6bfe;border:1px solid #d9e2f8' : 'background:' + mgrColor(name)
     const icSvg = isDs ? I.whale : I.chip
-    // 凭据池当前供应商可切换模型 → 整行可点「设为默认」；默认模型整行绿色高亮（无文字徽标）。
+    // 凭据池内模型 → 整行可点「设为默认」；默认模型整行绿色高亮（无文字徽标）。
     // 不渲染右侧装饰箭头：模型胶囊右侧无任何按钮。
-    const settable = !!(MODELS && Array.isArray(MODELS.providerModels) && MODELS.providerModels.includes(name))
+    const settable = !!(typeof it.src === 'string' && it.src.startsWith('凭据池'))
     const isDefault = settable && MODELS.activeModel === name
     const cls = 'mgr-proj mgr-model-item' + (settable ? ' settable' : '') + (isDefault ? ' is-default' : '')
     return (
@@ -1857,10 +2139,10 @@
       '</div>'
     )
   }
-  // 2026-08-23 设为默认：POST /api/model { defaultModel } → 写 credentials.json activeModel（仅全局默认，
+  // 2026-08-23 设为默认：POST /gateway/model { defaultModel } → 写 credentials.json activeModel（仅全局默认，
   // 不影响当前会话）。成功后本地更新 MODELS.activeModel 重渲染，默认徽标移到新模型。
   async function setDefaultModel(id) {
-    if (!gToken) { toast('未连接网关，无法设置'); return }
+    if (needToken()) { toast('未连接网关，无法设置'); return } // 2026-08-29 !gToken → needToken()（cookie 设备误报修复）
     if (MODELS && MODELS.activeModel === id) { toast('已是默认模型'); return }
     const ok = await apiSetModel({ defaultModel: id })
     if (ok) {
@@ -1868,15 +2150,15 @@
       renderMgrModels()
       toast(`默认模型已设为 ${id}`)
     } else {
-      toast('设置失败 · 模型不在当前供应商清单或网关未连接')
+      toast('设置失败 · 模型不在凭据池或网关未连接')
     }
   }
   // 项目预览：主聊天区渲染 iframe，替换管理/会话界面；退出预览走侧栏导航（route 统一清心跳）。
   // 预览页加载三级策略（2026-08-19 Web 容器）：
-  //  ① preview.json 声明 backend → 网关 /api/backend 懒加载 spawn 后端进程，iframe 直连 http://127.0.0.1:<port>/
+  //  ① preview.json 声明 backend → 网关 /gateway/backend 懒加载 spawn 后端进程，iframe 直连 http://127.0.0.1:<port>/
   //     （并 60s 心跳刷新网关侧 lastActive，防空闲回收误杀）；
   //  ② 有 .claude/preview/ 静态页（hasPreview=true）→ 加载 <项目>/.claude/preview/index.html；
-  //  ③ 兜底默认项目主页（GitHub 仓库风格，web/default-preview/，/api/project 拉取文件树/README/会话）。
+  //  ③ 兜底默认项目主页（GitHub 仓库风格，web/default-preview/，/gateway/project 拉取文件树/README/会话）。
   function openProjectPreview(label, hasPreview) {
     state.currentHash = null
     stopLiveFoldTimer()
@@ -1889,20 +2171,24 @@
       '<div class="preview-shell">' +
       '<div class="preview-body"><div class="preview-loading">正在加载…</div></div>' +
       '</div>'
-    const mount = (src, name) => {
+    const mount = (src, name, already) => {
       const body = document.querySelector('.preview-body')
       if (!body) return
       // 覆盖层遮住后端前端加载时的深色初始化画面（2026-08-20 三轮反馈后定稿 v81）：
       // ① 纯遮罩无指令/按钮（用户「弹出的指令框」= 带指令文字的提示层，已去指令）；
       // ② 文案由 backend name 驱动（可插拔：preview.json backend.name，缺省「项目服务」）；
       // ③ backend 容器 load 后缓冲自动淡出 —— 用户「不点击界面就永远卡转圈，但其实早就启动好了」：
-      //    后端已就绪（/api/backend 命中）才挂 iframe，load 后 object_info（如 ComfyUI 855 节点）拉取渲染
+      //    后端已就绪（/gateway/backend 命中）才挂 iframe，load 后 object_info（如 ComfyUI 855 节点）拉取渲染
       //    还需数秒，缓冲 8s 自动淡出（不再永远卡转圈），点击仍可提前关闭（focus iframe 移交内部焦点）。
+      // ④ 2026-08-28 生命周期解耦：already=后端进程已在跑（复用/收养）→ 不渲染覆盖层，iframe 直挂秒开
+      //    （后端常驻后刷新/重进预览不再见「正在启动」，仅冷启动时显示）。
       body.innerHTML =
         `<iframe class="preview-frame" title="${esc(label)} 项目主页" src="${src}"></iframe>` +
-        `<div class="preview-overlay"><div class="preview-overlay-spin"></div>` +
-        `<div class="preview-overlay-title">正在启动 ${esc(name || '项目服务')}…</div>` +
-        `<div class="preview-overlay-sub">首次启动需等待后端就绪，加载完成后将自动进入</div></div>`
+        (already
+          ? ''
+          : `<div class="preview-overlay"><div class="preview-overlay-spin"></div>` +
+            `<div class="preview-overlay-title">正在启动 ${esc(name || '项目服务')}…</div>` +
+            `<div class="preview-overlay-sub">首次启动需等待后端就绪，加载完成后将自动进入</div></div>`)
       const frame = body.querySelector('.preview-frame')
       const overlay = body.querySelector('.preview-overlay')
       if (!frame) return
@@ -1922,19 +2208,19 @@
       // 点击关闭（可提前进入）：focus iframe + 移除覆盖层；首次点击把键盘焦点交给 iframe 内部
       if (overlay) overlay.addEventListener('click', () => { try { frame.focus() } catch {}; dismiss() })
     }
-    // ① Web 容器：backend 优先（/api/* 受网关 token 校验）
-    fetch(`/api/backend?label=${encodeURIComponent(label)}${gToken ? '&token=' + encodeURIComponent(gToken) : ''}`)
+    // ① Web 容器：backend 优先（/gateway/* 受网关 token 校验）
+    fetch(`/gateway/backend?label=${encodeURIComponent(label)}${gToken ? '&token=' + encodeURIComponent(gToken) : ''}`)
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
       .then((d) => {
         if (!(d && d.url)) throw new Error('no-backend')
         // 2026-08-27 远程端分流：127.0.0.1 直连仅在本机浏览器成立，手机等远程宿主一律改走
-        // 网关同源代理 /bp/<label>/（访问票由上一拍 /api/backend 响应种下的 HttpOnly cookie 提供）
+        // 网关同源代理 /backend/<label>/（访问票由上一拍 /gateway/backend 响应种下的 HttpOnly cookie 提供）
         const remotePage =
           location.protocol.startsWith('http') && ['127.0.0.1', 'localhost'].indexOf(location.hostname) < 0
-        mount(remotePage ? `/bp/${encodeURIComponent(label)}/` : d.url, d.name)
+        mount(remotePage ? `/backend/${encodeURIComponent(label)}/` : d.url, d.name, !!d.alreadyRunning)
         if (window.__backendHeartbeat) clearInterval(window.__backendHeartbeat)
         window.__backendHeartbeat = setInterval(() => {
-          fetch(`/api/backend?label=${encodeURIComponent(label)}&token=${encodeURIComponent(gToken || '')}`).catch(() => {})
+          fetch(`/gateway/backend?label=${encodeURIComponent(label)}&token=${encodeURIComponent(gToken || '')}`).catch(() => {})
         }, 60000)
       })
       .catch(() => {
@@ -2140,7 +2426,7 @@
   overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.classList.remove('show') })
 
   // ---------- 上下文占用指示（2026-08-23 dsh ContextMeter 移植）----------
-  // 数据来自 /api/session 的 context 字段（网关 readSession 提取最后一条 assistant usage，
+  // 数据来自 /gateway/session 的 context 字段（网关 readSession 提取最后一条 assistant usage，
   // 除以 getContextWindowForModel 窗口）。无数据（无 usage / 无模型窗口）→ hidden。
   // 环形 = 14px/2px 圆环，点击展开 breakdown 面板（headline + ~used/window + 占比条）。
   const ctx = { data: null, open: false }
@@ -2245,6 +2531,23 @@
   // composer（只读；网关模式由下方 gatewayInit 的 gwSend 接管）
   sendBtn.innerHTML = I.dshSend // 2026-08-21 dsh 移植：发送 = dsh IconSendOutline16
   $('cmd-btn').innerHTML = I.dshPlus // 2026-08-21 dsh 移植：+ 按钮 = dsh IconPlusOutline16（命令菜单）
+  // 2026-08-28 v137：图片上传入口在 + 浮窗「图片」tab（独立按钮移除）；选完图关浮窗，胶囊显示在输入栏上方
+  $('img-file').addEventListener('change', () => {
+    addImageFiles(Array.from($('img-file').files || []))
+    $('img-file').value = '' // 允许重复选同一文件
+    closeCmdPop()
+  })
+  $('img-pills').addEventListener('click', (e) => {
+    const x = e.target.closest('.img-x')
+    if (!x) return
+    pendingImages.splice(+x.dataset.i, 1)
+    renderImgPills()
+  })
+  inputEl.addEventListener('paste', (e) => {
+    if (gateAwait) return
+    const files = Array.from((e.clipboardData && e.clipboardData.files) || []).filter(f => /^image\//.test(f.type))
+    if (files.length) { e.preventDefault(); addImageFiles(files) }
+  })
   // 模型 seat 的 chevron 是静态 DOM（dsh 移植，随 open 翻转），初始塞入 dsh IconChevronDownOutline14
   $('model-seat').querySelector('.chevron').innerHTML = I.dshChevDown
   // 命令菜单 / 模型菜单按钮（2026-08-21 dsh 输入栏移植；controller 定义见下）
@@ -2296,13 +2599,21 @@
   })
 
   // 路由
+  // 2026-08-28 pushState 配套：popstate 兜底浏览器前进/后退（navigate 同步 route 后同值跳过）；
+  // hashchange 保留为旧 hash 链接/手动改 hash 的兜底（pathname 优先级更高，仅在根路径生效）。
+  window.addEventListener('popstate', () => {
+    if (lastNavHash !== null && location.pathname === lastNavHash) { lastNavHash = null; return }
+    lastNavHash = null
+    route()
+  })
   window.addEventListener('hashchange', () => {
-    // 2026-08-25 同步路由配套：navigate 已同步 route()，其触发的同值 hashchange 跳过避免重复渲染；
-    // 浏览器前进/后退、手动改 URL 的非 navigate hashchange 正常走 route()（刷新保持恢复界面）。
     if (lastNavHash !== null && location.hash === lastNavHash) { lastNavHash = null; return }
     lastNavHash = null
     route()
   })
+  // 左上 logo 是 <a href="#/">：pushState 下仅改 hash 不切视图 → 拦截走 navigate
+  const logoLink = document.querySelector('.floria-logo')
+  if (logoLink) logoLink.addEventListener('click', (e) => { e.preventDefault(); navigate('#/') })
   // 默认项目主页（default-preview iframe）点会话 → 父级打开该会话（hash = 会话 uuid）
   window.addEventListener('message', (e) => {
     const d = e.data || {}
@@ -2311,8 +2622,9 @@
       if (isMobile()) setPanel(false)
     }
   })
-  // 钉顶回合窗口尺寸变化（旋转/缩放）时，预留空间跟随新容器高度自适应
-  window.addEventListener('resize', () => { if (pin.active && pin.reserve) pinReserveApply() })
+  // 钉顶回合窗口尺寸变化（旋转/缩放）时，预留空间跟随新容器高度自适应；
+  // allowRelease=false：视口变化不算「回复撑满」，禁用解除判定（防视口变小误杀钉顶）
+  window.addEventListener('resize', () => { if (pin.active && pin.reserve) pinReserveApply(false) })
 
   // 钉顶滚动监听：用户上滑离开底部 → 仅暂停跟随（pin.follow=false），钉顶/占位保持不解除；
   // 回到底部重挂跟随（触发 pinReserveApply 的解除判定）。滚动不解除钉顶——2026-08-22 恢复：
@@ -2326,28 +2638,54 @@
     if (atBottom) {
       if (!pin.follow) { pin.follow = true; pinScrollFollow() } // 回底重挂跟随 → 解除判定
     } else {
-      pin.follow = false // 上滑离开底部：仅暂停跟随，钉顶保持，回底重挂
+      // 上滑离开底部：仅暂停跟随，钉顶保持，回底重挂。
+      // 2026-08-30 占位自愈兜底：上滑后 follow=false，scrollBottom 全部静默（提前 return），
+      // 占位收缩/临时让位恢复（temp）失去最高频重算腿——低频入口（SSE syncPin/toggle）错过
+      // 内容变短窗口就让位态固化到刷新（用户实测「处理中上滑 → 消息+横线掉下来，刷新才恢复」）。
+      // 此处每帧重算占位但 allowRelease=false：内容变短即补占位/恢复 temp，绝不触发解除
+      // （对齐 resize 路径设计：滚动不是「回复撑满」，2026-08-20 「上滑即 pinRelease」教训）。
+      pin.follow = false
+      pinReserveApply(false)
     }
   })
   // 展开/收起处理折叠（details toggle）→ 内容高度变化，重算钉顶占位：展开的处理折叠内容
   // 撑满视口即临时让位（roundFoldOpen 判正文，折叠收起后恢复钉顶），收起后短内容重新补回占位。
   messagesEl.addEventListener('toggle', () => { if (pin.active) pinReserveApply() }, true)
 
+  // 图片异步加载改变内容高度 → 重算钉顶几何（用户实测「带图片的会错误计算」根因）：
+  // 钉顶/占位在 <img> 高度为 0 时算定，图片加载完成后 baseH/pin.top 全部过期——
+  // ①spacer 按图 0 高算大 → scrollHeight 虚高 → 吸底过冲，消息滚出视口顶（上方露出历史）；
+  // ②图加载后 baseH 猛增 → SSE syncPin（allowRelease=true）临时让位撤 sticky+横线；
+  // ③图高恒在 → 让位/占位判定恒基于过期几何，不刷新不自愈。load/error 均重算
+  // （error=404 裸文本兜底替换同样变高；load 不冒泡靠 capture，同 toggle）。
+  const pinImgRecalc = (e) => {
+    if (!pin.active || !pin.el || !pin.el.isConnected) return
+    if (!e.target || e.target.tagName !== 'IMG') return
+    if (!pin.temp) pin.top = pinNaturalTop() // 历史图懒加载也改上方高度，刷新吸附位
+    pinReserveApply()
+  }
+  messagesEl.addEventListener('load', pinImgRecalc, true)
+  messagesEl.addEventListener('error', pinImgRecalc, true)
+
   // ---------- 网关模式（SubPj2 私有化网关）----------
-  // 检测 /api/health 返回 mode==='gateway' 即启用：composer 可发、WS 双向、工具审批。
+  // 检测 /gateway/health 返回 mode==='gateway' 即启用：composer 可发、WS 双向、工具审批。
   // 只读查看模式（SubPj1 后端）下本块全部不生效。
   let GATEWAY = false
   let GATEWAY_REVIEW = false // 审阅模式（server.mjs REVIEW_GATEWAY）：health 带 review 标志，token 门不建真 WS 直接走视觉流程
   let HOT_RELOAD = false // 开发审阅热重载（server.mjs HOT_RELOAD）：health 带 hotReload 标志，建 SSE 监听 public 变化自动刷新
   let gateAwait = false // token 门态：网关 token 验证通过前锁定为全空白 + 中间输入框
+  let gateVerified = false // 网关 token/cookie 已验证（WS onopen 或 REVIEW 直置；声明提前供 needToken 用）
+  // 2026-08-28 token 出 URL：gToken 仅作首链/门输入的附加凭据；已授权设备刷新后 gToken 为空，
+  // 靠 floria_auth cookie（网关首链时种下）通过校验。URL query token 验证成功后由 hideGate 清除。
   let gToken = new URLSearchParams(location.search).get('token') || ''
   let gws = null
   let reconnectTimer = null
   let cur = null // 当前正在流的 assistant 消息元素
 
   // 安全加固（2026-08-15）：数据接口 URL 统一附加网关 token（query），与 WS 升级校验一致。
-  // token 门锁定态（GATEWAY 且尚无 token）下不发数据请求，待 hideGate 解锁后重新加载。
-  const needToken = () => GATEWAY && !gToken
+  // 2026-08-28 门控条件从「有无 gToken」改为「是否已验证」：cookie 授权设备刷新后直接可拉数据，
+  // 未验证（无 cookie 且无首链 token）时请求不发，待 connect 失败回门 / hideGate 解锁后补拉。
+  const needToken = () => GATEWAY && !gateVerified
   function apiUrl(path) {
     const q = path.includes('?') ? '&' : '?'
     return path + q + 'token=' + encodeURIComponent(gToken)
@@ -2372,15 +2710,55 @@
       .appr-deny:hover:not(:disabled){background:#fef2f2;color:#dc2626;border-color:transparent}
       .appr-allow{border:none!important;background:#4176e6!important;color:#fff!important}
       .appr-allow:hover:not(:disabled){background:#679efe!important}
-      /* 2026-08-24 提问交互表单（floria 作答）：逐题选项单选 */
-      .qa-opts{display:flex;flex-direction:column;gap:8px;padding:4px 0 2px}
-      .qa-opt{display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border:1px solid var(--border);border-radius:12px;background:#fff;text-align:left;cursor:pointer;color:var(--text)}
+      /* 2026-08-30 提问卡 DSH QuestionComposer 对齐：eyebrow+右上折叠/×；编号方块选项（label+描述
+         同行）；自由输入行；底部 <N/M> 翻题导航+跳过本题+下一题/提交；整卡可折叠为一行。
+         qa-card 走中性边框（不继承审批卡黄色警示边），配色守 floria 浅色主题。 */
+      .appr-card.qa-card{border-color:var(--border)}
+      .qa-top{display:flex;align-items:center;gap:10px;padding:12px 16px 0}
+      .qa-eyebrow{flex:none;color:var(--text-3);font-size:12px;line-height:16px;font-weight:500}
+      .qa-title-sm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text);font-size:13px;line-height:18px}
+      .qa-fold{flex:none;width:22px;height:22px;display:flex;align-items:center;justify-content:center;color:var(--text-3);cursor:pointer;border-radius:6px}
+      .qa-fold:hover{background:#f3f4f6;color:var(--text)}
+      .qa-fold svg{width:14px;height:14px;transform:rotate(180deg)}
+      .qa-collapsed .qa-fold svg{transform:none}
+      .qa-x{flex:none;width:22px;height:22px;display:flex;align-items:center;justify-content:center;color:var(--text-3);cursor:pointer;border-radius:6px}
+      .qa-x:hover{background:#fef2f2;color:#dc2626}
+      .qa-x svg{width:11px;height:11px}
+      .qa-main{display:flex;flex-direction:column;gap:10px;padding:6px 16px 14px}
+      .qa-title{color:var(--text);font-size:15px;font-weight:600;line-height:22px}
+      .qa-opts{display:flex;flex-direction:column;gap:6px;max-height:40vh;overflow-y:auto}
+      .qa-opt{display:flex;align-items:flex-start;gap:10px;padding:9px 12px;border:1px solid var(--border);border-radius:12px;background:#fff;text-align:left;cursor:pointer;color:var(--text)}
       .qa-opt:hover{border-color:#4176e6;background:#f7faff}
       .qa-opt.sel{border-color:#4176e6;background:#eff5ff}
-      .qa-opt .qa-dot{flex:none;width:16px;height:16px;margin-top:2px;border-radius:50%;border:1.5px solid var(--border);box-sizing:border-box}
-      .qa-opt.sel .qa-dot{border-color:#4176e6;background:#4176e6;box-shadow:inset 0 0 0 3px #fff}
-      .qa-opt .qa-copy{flex:1;display:flex;flex-direction:column;gap:3px;font-size:14px;line-height:20px}
-      .qa-opt .qa-desc{color:var(--text-2);font-size:12px;line-height:16px}
+      .qa-opt .qa-num{flex:none;min-width:20px;height:20px;padding:0 5px;border-radius:6px;background:#f3f4f6;color:var(--text-2);font-size:12px;font-weight:500;line-height:20px;text-align:center;box-sizing:border-box}
+      .qa-opt.sel .qa-num{background:#4176e6;color:#fff}
+      .qa-opt .qa-copy{flex:1;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;font-size:14px;line-height:20px}
+      .qa-opt .qa-label{color:var(--text)}
+      .qa-opt .qa-desc{color:var(--text-2);font-size:12px;line-height:18px}
+      .qa-multi-hint{color:var(--text-3);font-size:11px;font-weight:400;margin-left:4px}
+      .qa-inputrow{display:flex;align-items:center;gap:8px;height:38px;padding:0 12px;margin-bottom:-4px;border:1px solid var(--border);border-radius:12px;background:#fff}
+      .qa-inputrow:focus-within{border-color:#4176e6;background:#f7faff}
+      .qa-input-ico{flex:none;width:14px;height:14px;color:var(--text-3);display:flex;align-items:center;justify-content:center}
+      .qa-input-ico svg{width:14px;height:14px}
+      .qa-inputrow .qa-input{flex:1;height:34px;border:none;outline:none;background:transparent;color:var(--text);font-size:14px;font-family:inherit}
+      .qa-inputrow .qa-input::placeholder{color:var(--text-3)}
+      .qa-foot{display:flex;align-items:center;justify-content:space-between;gap:10px}
+      .qa-nav{display:flex;align-items:center;gap:6px}
+      .qa-nav-btn{width:24px;height:24px;display:flex;align-items:center;justify-content:center;border:none;background:transparent;color:var(--text-2);cursor:pointer;border-radius:6px;padding:0}
+      .qa-nav-btn:hover:not(.off){background:#f3f4f6;color:var(--text)}
+      .qa-nav-btn.off{opacity:.35;cursor:default}
+      .qa-nav-btn svg{width:14px;height:14px}
+      .qa-nav-btn.prev svg{transform:rotate(180deg)}
+      .qa-nav-pos{color:var(--text-2);font-size:12px;line-height:16px;min-width:32px;text-align:center}
+      .qa-foot-btns{display:flex;gap:8px}
+      .qa-foot-btns button{height:32px;padding:0 16px;border-radius:999px;font-size:13px;font-weight:500;line-height:18px;cursor:pointer;border:1px solid var(--border);background:#fff;color:var(--text-2)}
+      .qa-foot-btns button:disabled{opacity:.5;cursor:default}
+      .qa-skip:hover:not(:disabled){background:#f3f4f6;color:var(--text)}
+      /* 2026-08-30 间距对齐（用户「最下一行到边界 vs 最上一行到边界差别很大」）：空状态行不吃空间
+         （.appr-state padding 0 16px 12px + qa-main gap 10px 使脚行到卡底 ≈36px，眉行到卡顶仅 12px）；
+         折叠单行卡 qa-top 底垫 0→12px（原底部贴边不对称）。 */
+      .qa-card .appr-state:empty{display:none}
+      .qa-collapsed .qa-top{padding:12px 16px}
       /* 2026-08-26 任务 A2：审批增强——原因说明/被拒路径/「记住此规则」建议多选 */
       .appr-desc{color:var(--text-2);font-size:13px;line-height:20px}
       .appr-path{display:flex;gap:6px;align-items:flex-start;color:var(--text-2);font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;line-height:18px;word-break:break-all}
@@ -2631,7 +3009,7 @@
 
   // ---------- 命令菜单 + 模型选择（2026-08-21 dsh 输入栏逻辑移植）----------
   // ⚠️ 数据源 = 本地内置展示数据（⚠️ 非 dsh 真实注册表、非网关接口）：
-  // 网关暂无 /api/commands 与 /api/models，命令列表/模型目录先本地内置供 UI 审阅——
+  // 网关暂无 /gateway/commands 与 /gateway/models，命令列表/模型目录先本地内置供 UI 审阅——
   // 命令 = floria(Claude Code) 真实斜杠命令（claim=带参数/bare=直接执行/risk=需确认门），
   // 模型目录 = 真实 Claude 模型（对齐 dsh ModelDirectory：provider 分组 + reasoning.defaultEffort/efforts[]）。
   // 待网关接口就绪后替换数据源，交互逻辑不变。
@@ -2654,12 +3032,18 @@
     { id: 'high', name: 'High' },
     { id: 'max', name: 'Max' },
   ]
-  // 模型目录（真实凭据池，与 floria MGR 模型 tab 同源）：providerModels=当前供应商可切换清单（网关 switchModel 校验集），
-  // 无 activeProvider 时回落 /api/models items（全部供应商池化模型）。2026-08-22 取代 MOCK_MODEL_DIR（anthropic 上游）。
+  // 模型目录（真实凭据池，与 floria MGR 模型 tab 同源）：2026-08-29 直接切模型自动切供应商 →
+  // 全池模型可选（items 内 src 以「凭据池」开头的行，跨商直选由网关自动切供应商）；回落 providerModels → items。
+  // 2026-08-22 取代 MOCK_MODEL_DIR（anthropic 上游）。
   function modelDir() {
-    const raw = (MODELS && Array.isArray(MODELS.providerModels) && MODELS.providerModels.length)
-      ? MODELS.providerModels
-      : ((MODELS && Array.isArray(MODELS.items) ? MODELS.items : []).map(it => String(it.v)).filter(Boolean))
+    const pool = ((MODELS && Array.isArray(MODELS.items) ? MODELS.items : []) || [])
+      .filter(it => it && typeof it.src === 'string' && it.src.startsWith('凭据池') && it.v)
+      .map(it => String(it.v))
+    const raw = pool.length
+      ? pool
+      : ((MODELS && Array.isArray(MODELS.providerModels) && MODELS.providerModels.length)
+        ? MODELS.providerModels
+        : ((MODELS && Array.isArray(MODELS.items) ? MODELS.items : []).map(it => String(it.v)).filter(Boolean)))
     const seen = new Set()
     const out = []
     for (const id of raw) {
@@ -2669,8 +3053,8 @@
     }
     return out
   }
-  // 当前选中模型（本地状态；首次 /api/models 加载后与凭据池 activeModel/provider/effortLevel 对齐）
-  // 2026-08-24 模型 web/CLI 同步：MODEL_CUR 持久化 localStorage（刷新恢复），并按 /api/session 上报的
+  // 当前选中模型（本地状态；首次 /gateway/models 加载后与凭据池 activeModel/provider/effortLevel 对齐）
+  // 2026-08-24 模型 web/CLI 同步：MODEL_CUR 持久化 localStorage（刷新恢复），并按 /gateway/session 上报的
   // 会话实际模型（CLI reportCurrentModel）校准——每会话 override 只在 CLI 内存，web 不持久化会回落
   // 凭据池默认 activeModel 造成「CLI 用 vision-exp / web 显示 flash」不一致。
   const MODEL_KEY = 'floria-model-v1'
@@ -2689,11 +3073,12 @@
     } catch { /* 存储不可用忽略 */ }
   }
   let MODEL_CUR = loadModelCur() || { provider: '', model: '', effortLevel: undefined }
-  // 用户本次会话内主动切换过模型 → 不再被 /api/session 旧上报覆盖（切换会话时重置）。避免
-  // POST /api/model 尚未落地前的一次刷新把刚切的选择回滚成旧值。
+  // 用户本次会话内主动切换过模型 → 不再被 /gateway/session 旧上报覆盖（切换会话时重置）。避免
+  // POST /gateway/model 尚未落地前的一次刷新把刚切的选择回滚成旧值。
   let modelUserPicked = false
   // 命令菜单状态（对齐 dsh PopupState：open/status/options/search/active/submitting/confirming/acknowledged/error）
-  const cmd = { open: false, status: 'pending', options: [], search: '', active: 0, submitting: false, confirming: null, acknowledged: false, error: null }
+  // 2026-08-28 v137：+ 浮窗加 tab（图片 tab 在最上、仅识图模型渲染）；tab: 'img' | 'cmd'，打开回落命令
+  const cmd = { open: false, tab: 'cmd', status: 'pending', options: [], search: '', active: 0, submitting: false, confirming: null, acknowledged: false, error: null }
   // 模型菜单状态（对齐 dsh ModelSelect Pane：root | model | effort）
   const msel = { open: false, pane: 'root', active: 0 }
   const cmdPop = $('cmd-pop')
@@ -2711,6 +3096,7 @@
     if (msel.open) closeModelPop()
     closeMentionPop()
     cmd.open = true
+    cmd.tab = 'cmd' // 每次打开回落命令 tab
     cmd.status = 'ready' // 本地内置列表同步就绪（dsh PopupState：pending→ready 即出列表）
     cmd.options = MOCK_COMMANDS
     cmd.search = ''
@@ -2733,22 +3119,49 @@
     if (!cmd.open) return
     // dsh confirmation gate：确认态下命令卡隐藏，改由全屏 RiskConfirmation 模态接管
     if (cmd.confirming) { cmdPop.hidden = true; renderRiskModal(); return }
-    const items = cmdFiltered()
-    let html = `<input class="search" type="text" placeholder="搜索命令…" aria-label="搜索命令" autocomplete="off"/>`
-    if (cmd.error !== null) {
-      html += `<div class="error" role="alert"><span class="errorText">${esc(cmd.error)}</span>${cmd.status === 'failed' ? `<button type="button" class="retry">重试</button>` : ''}</div>`
-    } else if (cmd.status === 'pending') {
-      html += `<div class="status">加载中…</div>`
-    } else if (cmd.status === 'ready' && !items.length) {
-      html += `<div class="status">没有匹配的命令</div>`
-    } else if (cmd.status === 'ready') {
-      html += `<div role="listbox" class="viewport">${items.map((o, i) => {
-        const on = i === cmd.active ? ' rowActive' : ''
-        return `<button type="button" role="option" aria-selected="${i === cmd.active}" class="row${on}" data-idx="${i}"><span class="label">/${o.name}</span>${o.desc ? `<span class="detail">${esc(o.desc)}</span>` : ''}${o.active === true ? `<span class="check">${I.dshCheck}</span>` : ''}</button>`
-      }).join('')}</div>`
+    // 2026-08-28 v137：顶部 tab 行——「图片」tab 在最上（仅识图模型渲染，vision 门控），「命令」恒在
+    const canImg = GATEWAY && visionOn()
+    const imgOn = cmd.tab === 'img' && canImg
+    let html = `<div class="tabs">`
+      + (canImg ? `<button type="button" class="tab${imgOn ? ' tabActive' : ''}" data-tab="img"><span class="tabIco">${I.dshImage}</span>图片</button>` : '')
+      + `<button type="button" class="tab${imgOn ? '' : ' tabActive'}" data-tab="cmd"><span class="tabIco">${I.dshPlus}</span>命令</button></div>`
+    if (imgOn) {
+      // 图片 tab：已选缩略图（可移除）+ 选择图片按钮 + 粘贴提示
+      html += `<div class="imgpane">`
+        + (pendingImages.length
+          ? `<div class="imggrid">${pendingImages.map((p, i) => `<span class="imgpill"><img src="${p.dataUrl}" alt=""/><button type="button" class="img-x" data-i="${i}" title="移除">×</button></span>`).join('')}</div>`
+          : `<div class="imgempty">尚未选择图片</div>`)
+        + `<button type="button" class="imgpick">${I.dshImage}选择图片…</button>`
+        + `<div class="imghint">也可直接粘贴图片到输入栏 · 一次最多 4 张，自动压缩</div></div>`
+    } else {
+      const items = cmdFiltered()
+      html += `<input class="search" type="text" placeholder="搜索命令…" aria-label="搜索命令" autocomplete="off"/>`
+      if (cmd.error !== null) {
+        html += `<div class="error" role="alert"><span class="errorText">${esc(cmd.error)}</span>${cmd.status === 'failed' ? `<button type="button" class="retry">重试</button>` : ''}</div>`
+      } else if (cmd.status === 'pending') {
+        html += `<div class="status">加载中…</div>`
+      } else if (cmd.status === 'ready' && !items.length) {
+        html += `<div class="status">没有匹配的命令</div>`
+      } else if (cmd.status === 'ready') {
+        html += `<div role="listbox" class="viewport">${items.map((o, i) => {
+          const on = i === cmd.active ? ' rowActive' : ''
+          return `<button type="button" role="option" aria-selected="${i === cmd.active}" class="row${on}" data-idx="${i}"><span class="label">/${o.name}</span>${o.desc ? `<span class="detail">${esc(o.desc)}</span>` : ''}${o.active === true ? `<span class="check">${I.dshCheck}</span>` : ''}</button>`
+        }).join('')}</div>`
+      }
     }
     cmdPop.innerHTML = html
     cmdPop.hidden = false
+    // tab 切换（vision 变化后图片 tab 可能消失：tab='img' 落回 'cmd' 已在渲染分支兜底）
+    cmdPop.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () => { cmd.tab = b.dataset.tab; renderCmdPop() }))
+    if (imgOn) {
+      cmdPop.querySelector('.imgpick')?.addEventListener('click', () => $('img-file').click())
+      cmdPop.querySelectorAll('.img-x').forEach(x => x.addEventListener('click', () => {
+        pendingImages.splice(+x.dataset.i, 1)
+        renderImgPills()
+        renderCmdPop()
+      }))
+      return
+    }
     // 搜索输入：本地过滤（dsh 语义——敲字不重查选项；←→ 保留原生光标）
     const box = cmdPop.querySelector('.search')
     if (box) {
@@ -2760,7 +3173,7 @@
         if (e.key === 'Enter') { e.preventDefault(); cmdSelect() }
         if (e.key === 'Escape') { e.preventDefault(); closeCmdPop() }
       })
-      box.focus()
+      if (!isTouch()) box.focus() // 触屏不聚焦：iOS 会弹键盘；搜索仍可手动点输入框唤起
     }
     cmdPop.querySelectorAll('.row').forEach(b => b.addEventListener('click', () => { cmd.active = +b.dataset.idx; cmdSelect() }))
     cmdPop.querySelector('.retry')?.addEventListener('click', () => { cmd.error = null; cmd.status = 'ready'; renderCmdPop() })
@@ -2882,7 +3295,7 @@
     msel.pane = 'root'
     msel.active = 0
     renderModelPop()
-    inputEl.focus({ preventScroll: true }) // 焦点留输入栏：方向键/ESC 走 keydown
+    if (!isTouch()) inputEl.focus({ preventScroll: true }) // 焦点留输入栏：方向键/ESC 走 keydown；触屏跳过防 iOS 弹键盘
   }
   function closeModelPop() {
     if (!msel.open) return
@@ -2932,7 +3345,9 @@
         html += `<div class="groups">`
         const groups = []
         for (const id of ids) {
-          const p = modelProviderOf({ k: id, v: id })
+          // 2026-08-29 全池可选：优先用网关下发的真实归属供应商标签（items[].provider），缺失再走启发式前缀判定
+          const it = ((MODELS && MODELS.items) || []).find(x => x && x.v === id)
+          const p = (it && it.provider) || modelProviderOf(it || { k: id, v: id })
           let g = groups.find((x) => x.provider === p)
           if (!g) { g = { provider: p, items: [] }; groups.push(g) }
           g.items.push(id)
@@ -2973,12 +3388,14 @@
     const on = modelPop.querySelector('.option.on')
     if (on) on.scrollIntoView({ block: 'nearest' })
   }
-  // 2026-08-22 模型/思考等级切换接通网关：POST /api/model（持久化写 settings.json + 广播实时生效），
-  // 非网关环境（无 gToken）返回 false → toast 提示。
+  // 2026-08-22 模型/思考等级切换接通网关：POST /gateway/model（持久化写 settings.json + 广播实时生效），
+  // 未验证（needToken：网关模式且 cookie/token 均未通过）返回 false → toast 提示。
+  // 2026-08-29 修复：门控从 !gToken 改 needToken()——cookie 授权设备刷新后 gToken 为空但已验证，
+  // 误报「未连接网关」；/gateway/* 网关侧本就「query token 或 cookie」二选一。
   async function apiSetModel(body) {
-    if (!gToken) return false
+    if (needToken()) return false
     try {
-      const res = await fetch(apiUrl('/api/model'), {
+      const res = await fetch(apiUrl('/gateway/model'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -2992,10 +3409,16 @@
     if (msel.pane === 'model') {
       const id = row.id
       if (MODEL_CUR.model === id) { closeModelPop(); return }
-      MODEL_CUR = { ...MODEL_CUR, model: id }
-      modelUserPicked = true // 2026-08-24：本次会话内主动切换，防止 /api/session 旧上报回滚
+      const it = ((MODELS && MODELS.items) || []).find(x => x && (x.v === id || x.k === id))
+      // 2026-08-29 直接切模型自动切供应商：MODEL_CUR.provider 同步真实归属（网关侧自动切供应商）
+      MODEL_CUR = { ...MODEL_CUR, model: id, provider: (it && it.provider) || MODEL_CUR.provider }
+      modelUserPicked = true // 2026-08-24：本次会话内主动切换，防止 /gateway/session 旧上报回滚
       saveModelCur() // 2026-08-24：持久化，刷新后恢复
+      // 2026-08-28 图片门控：会话内主动切模型 → 即时按凭据池标注重算识图判定
+      // （最终以 CLI 上报为准，下次 /gateway/session 拉到 vision 后再校准）
+      sessVision = it && it.vision !== undefined ? !!it.vision : !!(MODELS && MODELS.vision)
       renderModelSeat()
+      renderImgBtn()
       closeModelPop()
       // 2026-08-23 用户定案：model 每会话覆盖，带 sessionId 精确路由，网关不广播兜底
       void apiSetModel({ model: id, sessionId: state.currentHash || undefined })
@@ -3091,6 +3514,11 @@
     if (pin.animT) { clearTimeout(pin.animT); pin.animT = null }
     if (pin.settleT) { clearTimeout(pin.settleT); pin.settleT = null }
     if (pin.el && pin.el.classList) pin.el.classList.remove('msg-pin')
+    // 2026-08-29 定位重叠根治：整页重建后 pin.el 悬挂（指向失连旧节点）时上面撤不到真身，
+    // DOM 里重渲染的旧回合消息残留 msg-pin（sticky 吸顶+横线）→ 与新回合钉顶消息两个 sticky
+    // 同粘 top:0 重叠（用户实测「正在处理和直线重叠、10s 后恢复」）。按消息流实际撤全部钉顶类。
+    messagesEl.querySelectorAll('.msg-pin').forEach((el) => el.classList.remove('msg-pin'))
+    pin.el = null
     const sc = $('chat-scroll')
     if (sc && sc.classList.contains('pin-active')) sc.classList.remove('pin-active')
     messagesEl.querySelector('.pin-spacer')?.remove()
@@ -3129,7 +3557,7 @@
   // scrollHeight 全程恒定 → 跟随吸底不跳动；回复随流式增长时占位自动收缩（每帧几 px，无跳变）；
   // 回复填满视口后占位为 0（移除元素，无位移）。高度按滚动容器实际可见高度 clientHeight
   // 自适应（桌面/iPad/手机各自容器高，不依赖 iOS 100vh），resize 时重算。
-  function pinReserveApply() {
+  function pinReserveApply(allowRelease = true) {
     if (!pin.active || !pin.el || !pin.el.isConnected) return
     const sc = $('chat-scroll')
     const target = pin.top + sc.clientHeight
@@ -3150,6 +3578,10 @@
     // 折叠不被识别为正文，钉顶消息 sticky 悬浮遮挡可滚动阅读的思考/工具过程。
     if (baseH >= target) {
       if (sp) sp.remove()
+      // 视口驱动（resize）不参与解除判定：视口变小（iPad 工具栏收放/窗口缩放）也会令
+      // baseH≥target，属几何巧合而非「回复撑满」——曾在此永久解除钉顶致占位突然死亡
+      // （2026-08-28 根因二）。只撤占位保持钉顶资格，视口变回即由占位分支补回。
+      if (!allowRelease) return
       if (pin.replied || roundFoldOpen()) {
         const sc = $('chat-scroll')
         const wasFollow = pin.follow
@@ -3181,12 +3613,14 @@
       }
       return
     }
-    // 内容未满一屏：临时让位中内容变短（如折叠处理折叠）→ 恢复钉顶 sticky，重算吸附位
+    // 内容未满一屏：临时让位中内容变短（如折叠处理折叠）→ 恢复钉顶 sticky，重算吸附位。
+    // 2026-08-30：follow 只在用户本就在底部时重挂——上滑中触发恢复（滚动自愈兜底/SSE）若
+    // 强制 follow=true，下一个 delta 的 scrollBottom 会强行吸底抢走用户滚动位置。
     if (pin.temp) {
       pin.el.classList.add('msg-pin')
       pin.temp = false
       pin.top = pinNaturalTop()
-      pin.follow = true
+      pin.follow = sc.scrollTop >= sc.scrollHeight - sc.clientHeight - 40
     }
     // 目标：加占位后 scrollHeight 恰为 target → maxScrollTop == pin.top，吸底时消息贴顶、
     // 视口恰满、无死区、无跳动。边界时高算 0 也保留元素：靠 flex gap 补足，避免撤占位丢掉
@@ -3300,22 +3734,106 @@
     scrollBottom()
   }
 
-  function addUser(text) {
-    // 新回合：清掉上一个回合的流式状态（回复消息 + 处理折叠 + 计时器）
-    procStopTimer()
-    cur = null
-    proc = null
+  // 2026-08-30 共同后端定案（接力文档清单#4②③）：回合中发送的乐观 = 排队区成员（对齐 CLI
+  // 语义：回合运行中入队，终端只显示队列预览）。生命周期：发送 → 置底排队区小气泡 → CLI
+  // 注入（injected 出现）→ 渲染权威折叠体内 injected 气泡接管，本端吸收移除 → dequeue 落盘
+  // （user 出现）→ 变开启气泡开新折叠体。pendingUserMsgs = 排队乐观尚未接管者（吸收 + dock）。
+  // 2026-08-30 忙碌/空闲区分（用户实测「开启消息刚开始也会被短暂认定为引导消息」）：
+  // DOM 有 done-live（回合运行中，含乐观折叠）才属排队语义；无 done-live（回合间隙）= 本次
+  // 发送是「新回合开启消息」，CLI 空闲即消费、无排队阶段 → 直接乐观渲染开启气泡进对话流
+  // （gwSend 随后 procOpen 挂「正在处理」折叠），真实数据经 SSE 整页重建接管。空档期误判
+  // 双向自愈：回合刚结束时误入 dock → dequeue user 落盘即被吸收移除。
+  let pendingUserMsgs = []
+  // imgs：gwSend 传入的 pendingImages（{content,mediaType,filename,dataUrl}）——乐观阶段图尚未落盘，
+  // 用本地 dataUrl 即时渲染（排队小气泡 + 空档期开启气泡两分支），SSE 整页重建后由 image-cache URL 接管
+  function addUser(text, imgs) {
     liveAskInput = null
-    clearTakeover() // 新回合：清掉上一回合残留的提问/审批 takeover
-    liveChangeReset() // 新回合开始清空上一回合变更聚合 + 移除实时内联行
-    const div = document.createElement('div')
-    div.className = 'msg user msg-in'
-    div.innerHTML = `<div class="body">${renderUserText(text)}</div><div class="msg-actions"><button class="msg-copy" title="复制" aria-label="复制">${ICON_COPY}</button></div>`
-    msgAppend(div)
-    // 钉顶：平滑上划让该消息吸附到视口顶部，下方预留空间给回复滚动
-    pinApply(div, true)
+    clearTakeover() // 清掉残留的提问/审批 takeover
+    // 注意：回合中不动 proc 折叠/计时器/变更聚合——注入消息不打断当前回合的运行态（吸收后由
+    // 渲染权威折叠体内 injected 气泡呈现，计时基点不被打断）
+    const list = imgs || []
+    const imgsHtml = list.length
+      ? `<div class="msg-imgs">${list.map((im) => `<img class="msg-img" src="${im.dataUrl || ''}" alt="">`).join('')}</div>`
+      : ''
+    const bodyText = list.length ? String(text).replace(/\s*\[Image #\d+\]/g, '') : text
+    if (messagesEl.querySelector('details.done-fold.done-live')) {
+      pendingUserMsgs.push({ hash: state.currentHash, text, el: null, baseTs: live.lastDataTs || 0, imgs: list })
+      renderQueueDock()
+    } else {
+      const div = document.createElement('div')
+      div.innerHTML = `<div class="msg user msg-in" data-t="u"><div class="body">${renderUserText(bodyText)}</div>${imgsHtml}</div>`
+      msgAppend(div.firstElementChild)
+    }
+    scrollBottom() // 发送后跟随下滑
   }
+  // 吸收：当前会话 jsonl 已出现该文本（单条落盘或 drainCommandQueue 多条合并成一条，join 后
+  // includes 命中）→ 真实气泡已由渲染权威接管，不再重插；其它会话的 pending 保留（切回时处理）。
+  // 2026-08-29 误吸收根治：只认「本条 pending 插入时刻之后落盘」（timestamp > baseTs）的真实消息
+  // ——短文本（如「继续」）极易被历史 user 文本 includes 命中，误吸收后乐观气泡被整页重建洗掉、
+  // 真实气泡尚未落盘 → 消息静默消失。baseTs 取自渲染权威末条 timestamp（服务端时钟，两端设备无关）。
+  function absorbPending(messages) {
+    if (!pendingUserMsgs.length) return
+    const cur = state.currentHash
+    if (!cur) return
+    const before = pendingUserMsgs.length
+    pendingUserMsgs = pendingUserMsgs.filter((p) => {
+      if (p.hash !== cur) return true
+      // 吸收信号（2026-08-30 定案弃「文本 includes」单启发式的第一步）：injected 出现
+      // （role:'user'+injected，isRealUser 命中）= 注入已发生，渲染权威折叠体内气泡接管；
+      // dequeue 落盘 user 出现 = 开启气泡接管。baseTs 防历史文本误吸（教训见下）。
+      const newer = messages.filter((m) => isRealUser(m) && (!p.baseTs || (m.timestamp || 0) > p.baseTs))
+      const realTexts = newer.map((m) => m.blocks.filter((b) => b.kind === 'text').map((b) => b.text).join(''))
+      return !realTexts.some((t) => t.includes(p.text))
+    })
+    if (pendingUserMsgs.length !== before) renderQueueDock()
+  }
+  // 置底排队区（2026-08-30 清单#4②）：本地乐观 pending + CLI 队列快照（live.queueRemote，
+  // queue-state SSE / queued 首载）合并渲染在消息流最末尾——最后一个折叠体「正在思考」
+  // 状态行之下（dock 恒为 #messages 末元素，pin-spacer 之前）。文本去重防 web 自发消息与
+  // CLI 快照回报双份；按入队 ts 升序（FIFO）。全空 → 移除 dock。
+  function renderQueueDock() {
+    let dock = document.getElementById('queue-dock')
+    const cur = state.currentHash
+    const local = cur ? pendingUserMsgs.filter((p) => p.hash === cur) : []
+    const remote = cur ? (live.queueRemote || []) : []
+    const items = []
+    const seen = new Set()
+    for (const p of local) {
+      const t = String(p.text || '')
+      if (t && !seen.has(t)) { seen.add(t); items.push({ content: t, ts: p.baseTs || Date.now(), imgs: Array.isArray(p.imgs) ? p.imgs : [] }) }
+    }
+    for (const q of remote) {
+      if (q && typeof q.content === 'string' && q.content && !seen.has(q.content)) {
+        seen.add(q.content)
+        items.push({ content: q.content, ts: typeof q.ts === 'number' ? q.ts : 0 })
+      }
+    }
+    items.sort((a, b) => (a.ts || 0) - (b.ts || 0))
+    if (!items.length) {
+      if (dock) dock.remove()
+      return
+    }
+    if (!dock) {
+      dock = document.createElement('div')
+      dock.id = 'queue-dock'
+      dock.className = 'queue-dock'
+    }
+    // 2026-08-30 排队图片：本地乐观项带图 → 渲染缩略图并剥 [Image #N] 占位（占位仅供 CLI 注入
+    // 对应 pastedContents，原样显示即「排队图片没有渲染」根因）；remote（CLI 队列快照）无图数据仅文本
+    dock.innerHTML = items.map((q) => {
+      const imgs = Array.isArray(q.imgs) && q.imgs.length
+        ? `<div class="q-imgs">${q.imgs.map((im) => `<img class="q-img" src="${im.dataUrl || ''}" alt="">`).join('')}</div>`
+        : ''
+      const txt = imgs ? String(q.content).replace(/\s*\[Image #\d+\]/g, '') : q.content
+      return `<div class="q-item"><div class="q-body"><p>${renderUserText(txt)}</p>${imgs}</div><div class="q-tag">排队中</div></div>`
+    }).join('')
+    msgAppend(dock)
+  }
+  // 本地状态系统行开关（2026-08-28 用户定案：连接/回合结束/审批回执/状态行等本地反馈
+  // 一律不插入聊天流，保留接口以便后续更改；错误行 addError 不受影响）
+  const SHOW_LOCAL_SYS = false
   function addSystem(text) {
+    if (!SHOW_LOCAL_SYS) return
     appendMsg(`<div class="msg msg-system">${esc(text)}</div>`)
   }
   function addError(text) {
@@ -3352,6 +3870,12 @@
   }
   function procOpen() {
     if (proc && proc.isConnected) return proc
+    // 2026-08-29 收养渲染权威折叠：整页重建后乐观折叠被 data-m「正在处理」折叠取代但 proc
+    // 变量悬挂指向失连旧元素——回合进行中发引导消息经此复用渲染权威的活跃折叠，不新建
+    // （防双「正在处理」+ 计时重开，用户 16:57 实测反馈）。收养不设 procStart/不启计时器：
+    // 该折叠计时由 bindLiveFoldTimer（数据起点）负责，proc 仅作幂等/收拢句柄。
+    const live = messagesEl.querySelector('details.done-fold.done-live')
+    if (live) { proc = live; return live }
     // 注意：思考/工具折叠展开期间**不**置 pin.replied——思考过程不是回复，不构成回复语义。
     // 处理折叠展开本身即「正文」：pinReserveApply 以 roundFoldOpen() 判定，展开的处理/思考
     // 折叠撑满视口时直接解除钉顶（消息上滑让内容可滚动阅读，2026-08-20）。replied 只由
@@ -3512,11 +4036,26 @@
   let takeover = null
   let pendingAskInput = null // messagesHtml 检测到「末尾待答提问」时写入提问 input，供 renderSession/refreshSession 触发 composer takeover
   const takeoverEl = () => $('composer-takeover')
+  // 2026-08-30 修复「提问卡相对位置大小奇怪」：takeover 卡片可远高于普通输入栏（多题卡 ~700px），
+  // 而 #chat-scroll 的 padding-bottom 是按输入栏足迹设计的固定值（styles.css 142px）→ 卡片贴底
+  // 向上生长直接叠压消息。改为按 #input-wrap 实际高度动态同步聊天滚动区预留（卡高+22px 底距+12px 间隙），
+  // ResizeObserver 跟随整卡折叠/展开实时变化。
+  const chatScrollPadEl = $('chat-scroll')
+  function syncTakeoverPad() {
+    if (takeover) {
+      const h = inputWrap.getBoundingClientRect().height
+      if (h > 0) chatScrollPadEl.style.paddingBottom = Math.round(h + 34) + 'px'
+    } else {
+      chatScrollPadEl.style.paddingBottom = ''
+    }
+  }
+  if (typeof ResizeObserver !== 'undefined') new ResizeObserver(syncTakeoverPad).observe(inputWrap)
   function showTakeover(html, kind) {
     if (inputBarEl) inputBarEl.style.display = 'none'
     const t = takeoverEl()
     if (t) { t.innerHTML = html; t.hidden = false }
     takeover = kind
+    syncTakeoverPad()
     scrollBottom()
   }
   function clearTakeover() {
@@ -3524,6 +4063,7 @@
     const t = takeoverEl()
     if (t) { t.hidden = true; t.innerHTML = '' }
     takeover = null
+    syncTakeoverPad()
   }
   // ---- 实时提问卡（AskUserQuestion）：DSH QuestionComposer 语义——提问占输入栏（composer takeover），
   //      不进入 chat 流；tool_result 到来时输入栏回归、已答提问落到处理折叠只读展示 ----
@@ -3535,7 +4075,7 @@
     // 2026-08-26 修复：问输出路径已由审批中继渲染出「交互式逐题」卡（takeover==='approval'，
     // renderApproval→renderQuestionApproval）时，不再用只读堆叠卡覆盖——否则用户看到的是全部问题
     // 叠在一起且无法作答的等待卡。只读 questionCardHtml 仅作「CLI/网关未桥接审批」时的兜底展示。
-    if (takeover !== 'approval') showTakeover(questionCardHtml(block.input, null), 'ask')
+    if (takeover !== 'approval') showTakeover(questionCardHtml(block.input, null, { single: true }), 'ask')
   }
   function addToolResult(text) {
     // 待答提问 → 输入栏回归，已答提问落到处理折叠只读展示（标记所选）；否则按普通结果行追加
@@ -3650,45 +4190,119 @@
   // 2026-08-26 用户「一次仅渲染一个」：与 DSH QuestionComposer 一致的逐题语义——输入栏只显示当前一题，
   // 点选选项即记录，点「下一题」推进（带进度 第N/共M题），最后一题按钮变「提交答案」带全部 answers 回 CLI。
   function renderQuestionApproval(a, qs) {
-    const answers = {}
+    // 2026-08-30 提问卡对齐 DSH QuestionComposer（用户按 DSH 截图定稿）：eyebrow(header)+右上 折叠/×；
+    // 编号方块选项（label+描述同行）；「输入你的答案」自由输入行（自定义答案优先于选项）；
+    // 底部 <N/M> 翻题导航（可回看修改）+ 跳过本题 + 下一题/提交；整卡可折叠为一行（header+标题）。
+    // 多选题（multiSelect:true）同编号方块、可多选 toggle、eyebrow 带「（可多选）」；提交时多选
+    // join(", ") —— 与 CLI answers 契约对齐（record(question,string)，CLI join(", ") 同构）。
+    // 取消回答 = 右上 ×（sendApprove deny），不再设「拒绝」按钮；跳过本题 = 该题留空推进（允许空答）。
+    const answers = {}     // question -> string（单选）/ string[]（多选）
+    const customText = {}  // question -> 自由输入文本（非空时优先于选项答案）
     let qi = 0
+    let collapsed = false
+    let submitting = false
+    const ansOf = (q) => {
+      const t = String(customText[q] || '').trim()
+      if (t) return t
+      const v = answers[q]
+      return Array.isArray(v) ? v.join(', ') : v
+    }
+    const submit = () => {
+      submitting = true
+      const out = {}
+      qs.forEach((qq) => {
+        const q = String(qq.question || '').trim()
+        const v = ansOf(q)
+        if (v) out[q] = v
+      })
+      sendApprove(a.requestId, true, { input: a.input, answers: out })
+    }
+    const bindChrome = (t) => {
+      // 折叠/展开与 ×（取消回答）——展开/收起两态共用；点击 qa-top 空白处也可切换
+      t.querySelector('.qa-top').addEventListener('click', (e) => {
+        if (submitting || e.target.closest('.qa-x')) return
+        collapsed = !collapsed
+        render()
+      })
+      t.querySelector('.qa-x').addEventListener('click', () => {
+        if (!submitting) sendApprove(a.requestId, false)
+      })
+    }
+    function renderCollapsed() {
+      const qq = qs[qi]
+      const question = String(qq.question || '').trim()
+      const header = String(qq.header || '提问')
+      showTakeover(`<div class="appr-card qa-card qa-collapsed"><div class="qa-top"><span class="qa-eyebrow">${esc(header)}</span><span class="qa-title-sm">${esc(question)}</span><span class="qa-fold" role="button" title="展开">${I.dshChevDown}</span><span class="qa-x" role="button" title="取消回答">${I.dshClose}</span></div></div>`, 'approval')
+      bindChrome(takeoverEl())
+    }
     function renderOne() {
       const qq = qs[qi]
       const question = String(qq.question || '').trim()
       const header = String(qq.header || '提问')
       const opts = Array.isArray(qq.options) ? qq.options : []
+      const multi = qq.multiSelect === true
       const isLast = qi + 1 >= qs.length
       const fmt = (o) => (o && typeof o === 'object') ? String(o.label || '') : String(o || '')
       const descOf = (o) => (o && typeof o === 'object' && o.description) ? String(o.description) : ''
+      const curAns = multi ? (Array.isArray(answers[question]) ? answers[question] : []) : answers[question]
       let rows = ''
-      opts.forEach((o) => {
+      opts.forEach((o, oi) => {
         const label = fmt(o)
         const desc = descOf(o)
-        const sel = answers[question] === label ? ' sel' : ''
-        rows += `<button type="button" class="qa-opt${sel}" data-question="${esc(question)}" data-v="${esc(label)}"><span class="qa-dot"></span><span class="qa-copy">${esc(label)}${desc ? `<span class="qa-desc">${esc(desc)}</span>` : ''}</span></button>`
+        const sel = multi ? curAns.includes(label) : curAns === label
+        rows += `<button type="button" class="qa-opt${sel ? ' sel' : ''}" data-v="${esc(label)}"><span class="qa-num">${oi + 1}</span><span class="qa-copy"><span class="qa-label">${esc(label)}</span>${desc ? `<span class="qa-desc">${esc(desc)}</span>` : ''}</span></button>`
       })
-      let html = '<div class="appr-card">'
-      html += `<div class="appr-strip"><span class="appr-dot"></span>需要你回答 · 提问 ${qi + 1}/${qs.length}</div>`
-      html += `<div class="question-card"><div class="q-head">${esc(header)}</div><div class="q-title">${esc(question)}</div><div class="qa-opts">${rows}</div></div>`
-      html += `<div class="appr-btns"><button class="appr-deny">拒绝</button><button class="appr-allow">${isLast ? '提交答案' : '下一题'}</button></div><div class="appr-state"></div></div>`
+      let html = '<div class="appr-card qa-card">'
+      html += `<div class="qa-top"><span class="qa-eyebrow">${esc(header)}${multi ? '<span class="qa-multi-hint">（可多选）</span>' : ''}</span><span class="qa-fold" role="button" title="收起">${I.dshChevDown}</span><span class="qa-x" role="button" title="取消回答">${I.dshClose}</span></div>`
+      html += `<div class="qa-main"><div class="qa-title">${esc(question)}</div>`
+      html += `<div class="qa-opts">${rows}</div>`
+      html += `<div class="qa-inputrow"><span class="qa-input-ico">${I.dshEdit}</span><input type="text" class="qa-input" placeholder="输入你的答案" value="${esc(String(customText[question] || ''))}"></div>`
+      html += `<div class="qa-foot"><div class="qa-nav"><button type="button" class="qa-nav-btn prev${qi > 0 ? '' : ' off'}" data-nav="prev" title="上一题">${I.dshChevRight}</button><span class="qa-nav-pos">${qi + 1}/${qs.length}</span><button type="button" class="qa-nav-btn next${qi < qs.length - 1 ? '' : ' off'}" data-nav="next" title="下一题">${I.dshChevRight}</button></div>`
+      html += `<div class="qa-foot-btns"><button type="button" class="qa-skip">跳过本题</button><button type="button" class="appr-allow">${isLast ? '提交答案' : '下一题'}</button></div></div>`
+      html += '<div class="appr-state"></div></div></div>'
       showTakeover(html, 'approval')
       const t = takeoverEl()
+      bindChrome(t)
+      // 选项点选：只 toggle 行高亮不整卡重渲染（输入框不闪不失焦）；多选互不影响、单选互斥
       t.querySelectorAll('.qa-opt').forEach((btn) => {
         btn.addEventListener('click', () => {
-          t.querySelectorAll('.qa-opt').forEach((b) => b.classList.remove('sel'))
-          btn.classList.add('sel')
-          answers[btn.dataset.question] = btn.dataset.v
+          if (multi) {
+            const v = btn.dataset.v
+            const at = curAns.indexOf(v)
+            if (at >= 0) curAns.splice(at, 1)
+            else curAns.push(v)
+            btn.classList.toggle('sel')
+          } else {
+            t.querySelectorAll('.qa-opt').forEach((b) => b.classList.remove('sel'))
+            btn.classList.add('sel')
+            answers[question] = btn.dataset.v
+          }
         })
       })
-      t.querySelector('.appr-deny').addEventListener('click', () => sendApprove(a.requestId, false))
+      const inp = t.querySelector('.qa-input')
+      inp.addEventListener('input', () => { customText[question] = inp.value })
+      t.querySelectorAll('.qa-nav-btn').forEach((b) => {
+        b.addEventListener('click', () => {
+          if (b.classList.contains('off')) return
+          if (b.dataset.nav === 'prev' && qi > 0) { qi--; render() }
+          if (b.dataset.nav === 'next' && qi < qs.length - 1) { qi++; render() }
+        })
+      })
+      t.querySelector('.qa-skip').addEventListener('click', () => {
+        if (submitting) return
+        delete answers[question]
+        delete customText[question]
+        if (isLast) submit()
+        else { qi++; render() }
+      })
       t.querySelector('.appr-allow').addEventListener('click', () => {
-        const cur = String(qs[qi].question || '').trim()
-        if (!answers[cur]) return toast('请先选择本题答案')
-        if (isLast) sendApprove(a.requestId, true, { input: a.input, answers })
-        else { qi++; renderOne() }
+        if (submitting) return
+        if (isLast) submit()
+        else { qi++; render() }
       })
     }
-    renderOne()
+    function render() { if (collapsed) renderCollapsed(); else renderOne() }
+    render()
   }
 
   // 2026-08-26 P0 审批确认送达（Codex）：sendApprove 不再 WS send 后立即 clearTakeover。
@@ -3706,7 +4320,8 @@
     approvalPending = { requestId, allowed, qa, perms }
     const t = takeoverEl()
     if (t) {
-      t.querySelectorAll('.appr-allow, .appr-deny').forEach((b) => { b.disabled = true; b.classList.add('busy') })
+      // 2026-08-30 提问卡改版：.qa-skip（跳过本题）同属提交动作按钮，busy 一并禁用
+      t.querySelectorAll('.appr-allow, .appr-deny, .qa-skip').forEach((b) => { b.disabled = true; b.classList.add('busy') })
       let st = t.querySelector('.appr-state')
       if (!st) {
         const btns = t.querySelector('.appr-btns')
@@ -3722,7 +4337,7 @@
     if (approvalPending && approvalPending.requestId === requestId) approvalPending = null
     const t = takeoverEl()
     if (t && takeover === 'approval') {
-      t.querySelectorAll('.appr-allow, .appr-deny').forEach((b) => { b.disabled = false; b.classList.remove('busy') })
+      t.querySelectorAll('.appr-allow, .appr-deny, .qa-skip').forEach((b) => { b.disabled = false; b.classList.remove('busy') })
       let st = t.querySelector('.appr-state')
       if (!st) {
         const btns = t.querySelector('.appr-btns')
@@ -3787,6 +4402,14 @@
     }
   }
 
+  // 2026-08-30 网关 pending approval 重放（DSH 同款「待答=会话持久状态」语义）：切会话/WS 重连时
+  // 告知网关当前会话 → 网关回放该会话未决 approval（提问瞬间开着别的会话或页面没开 → 切回补弹交互卡，
+  // 不再只剩只读兜底卡）。gws 未开/无当前会话时静默跳过（onopen 与 renderSession 双向兜底）。
+  function sendSubscribe() {
+    if (!gws || gws.readyState !== 1 || !state.currentHash) return
+    try { gws.send(JSON.stringify({ type: 'subscribe', sessionId: state.currentHash })) } catch { /* 连接已断 */ }
+  }
+
   function connect() {
     if (GATEWAY_REVIEW) {
       // 审阅模式（bun 编译 exe）：node:http 的 upgrade 握手在 bun 下 101 无法送达客户端、
@@ -3806,6 +4429,7 @@
       if (gateAwait) gatePlayTransition() // 门流程：播过渡视频（白板拉伸成输入栏/角色转正趴栏），ended 后 hideGate
       else hideGate() // URL 带 token 直连（无门）：验证通过直接解锁
       syncGwSend()
+      sendSubscribe() // 2026-08-30 pending 重放：连上/重连即订阅当前会话（补切会话时 WS 尚未就绪的场景）
     }
     gws.onclose = () => {
       setConn(false, '未连接')
@@ -3813,7 +4437,8 @@
       // 2026-08-18 修复：token 未验证成功即断开（URL token 过期——网关重启/换新 token、或门内输入错误）
       // 一律回 token 门重输，避免静默卡在空态、后续数据请求带着无效 token 全 401。
       if (!gateVerified) {
-        toast(gateAwait ? 'token 错误或连接失败，请重试' : '连接失败：token 无效或已过期，请重新输入')
+        // 2026-08-28 设备配对：未授权/未验证 → 回门显示请求码（PC /server auth add 后自动进入）
+        toast(gateAwait ? '设备尚未授权：请在 PC 运行 /server auth add <请求码>' : '设备未授权：请在 PC 运行 /server auth add <门上请求码>')
         showGate()
       } else {
         // 2026-08-26 修复：已通过 token 验证的会话断连后自动重连，否则 sockets=0 导致
@@ -3865,13 +4490,46 @@
   // 输入 token 回车 → connect()（WS 服务端验证）→ onopen 置 gateVerified → 白板内表单淡出 + 过渡视频
   // （白板拉伸成输入栏/角色转正趴栏）→ ended → 阶段3 趴栏+胶囊淡入 → 停留后 hideGate() 进空态
   // （空态同趴栏 stage，位置一致无缝）。token 错误（onclose 未验证）→ 回门重输。
-  let gateVerified = false // WS 已验证 token
+  // gateVerified 声明已提前到网关模式区（2026-08-28：needToken 依赖）。
   let finishGateTimer = null // 阶段3 停留后 hideGate 的定时器
   let hideGateTimer = null // gate-screen 淡出后隐藏的定时器（hideGate 不再硬切）
   const gateScreen = $('gate-screen')
   const gTok = $('g-token'), gVid = $('g-video'), gNewImg = $('g-new')
   const gCard = $('g-card')
-  const gTokenInput = $('g-token-input')
+
+  // ---------- 设备认证配对（2026-08-28，浏览器侧完全删除 token 授权链） ----------
+  // 门态显示设备请求码（localStorage 持久，同一设备恒定），轮询 /gateway/activate?code=：
+  // PC 端 /server auth add <请求码> 后网关名单命中 → 种 floria_auth cookie → 下轮轮询 200 →
+  // connect()（cookie 直过）→ onopen → gateVerified → gatePlayTransition。无自动转正、无 token。
+  let pairTimer = null
+  function deviceCode() {
+    let c = ''
+    try { c = localStorage.getItem('floria-device-code') || '' } catch { /* 忽略 */ }
+    if (!/^[a-f0-9]{8}$/.test(c)) {
+      const b = new Uint8Array(4)
+      crypto.getRandomValues(b)
+      c = Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('')
+      try { localStorage.setItem('floria-device-code', c) } catch { /* 忽略 */ }
+    }
+    return c
+  }
+  function pairStart() {
+    pairStop()
+    $('g-pair-code').textContent = deviceCode().replace(/(..)(..)(..)(..)/, '$1 $2 $3 $4')
+    pairTimer = setInterval(pairPollOnce, 2500)
+  }
+  function pairStop() {
+    if (pairTimer) { clearInterval(pairTimer); pairTimer = null }
+  }
+  async function pairPollOnce() {
+    try {
+      const res = await fetch('/gateway/activate?code=' + encodeURIComponent(deviceCode()))
+      if (!res.ok) return false
+      pairStop()
+      connect() // cookie 已种，WS 直过 → onopen → gatePlayTransition
+      return true
+    } catch { return false }
+  }
 
   function showGate() {
     closeMentionPop()
@@ -3895,8 +4553,7 @@
     gTok.classList.remove('fade-out')
     gNewImg.classList.remove('show')
     gCard.classList.remove('hide', 'shake')
-    gTokenInput.value = ''
-    gTokenInput.focus()
+    pairStart() // 显示设备请求码 + 启动激活轮询
     syncGwSend()
   }
   function gatePlayTransition() {
@@ -3922,13 +4579,15 @@
 
   function hideGate() {
     gateAwait = false
+    pairStop() // 退出门态：停止配对激活轮询
     document.body.classList.remove('token-gate')
-    // 2026-08-18：token 验证通过后写入 URL（replaceState 不触发刷新）——地址栏显示 token，
-    // 刷新/收藏即带 token 直连，不再回门重输（用户实测「url 还是 ?token= 空」）。
+    // 2026-08-28 token 出 URL：正式网关验证通过即清除 URL query token（凭据已入 floria_auth
+    // cookie 票证，刷新/收藏都是干净地址）；REVIEW 模式保留写回（server.mjs 仍按 query 校验）。
     try {
       const u = new URL(location.href)
-      u.searchParams.set('token', gToken)
-      history.replaceState(null, '', u.toString())
+      if (GATEWAY_REVIEW) u.searchParams.set('token', gToken)
+      else u.searchParams.delete('token')
+      history.replaceState(null, '', u.pathname + u.search + u.hash)
     } catch { /* 忽略 */ }
     gVid.pause()
     inputEl.dataset.ph = '输入消息，Enter 发送' // 占位符复位（token 提示 → 正常输入）
@@ -3944,7 +4603,23 @@
     // 2026-08-18 修复：loadSessions 只填 ALL 不渲染，门后首次拉取后侧栏一直空——
     // 后续 SSE hello→refreshList 因 sig===listSig 短路跳过渲染；须在数据落地后显式渲染侧栏
     //（renderRecent 保留展开文件夹+滚动位置，幂等）。
-    loadSessions().then(renderRecent)
+    loadSessions().then(() => {
+      // 刷新直进 /session/<hash>：boot 时会话列表未就绪，route() 的 resolve 落空，
+      // currentHash 暂存 → 补拉列表落地后重 resolve（renderSession/refreshSession/SSE 全链全长）。
+      // 2026-08-30 改定案（刷新保留当前界面，boot 不再强制回首页）后本恢复链成为刷新直进的唯一落地路径：
+      // 「无真实消息气泡」才整页重渲（占位行也是 .msg → 旧判定 .msg 对占位恒假，列表落地即残留）；
+      // 列表就绪仍找不到 → route() 渲染真实「会话不存在或已删除」（此时 needToken 已 false）。
+      if (state.currentHash) {
+        const sess = findSession(state.currentHash)
+        if (sess) {
+          state.currentHash = hashOf(sess)
+          if (!messagesEl.querySelector('.msg:not(.msg-system)')) route()
+        } else {
+          route()
+        }
+      }
+      renderRecent()
+    })
     initLive()
     // 恢复当前界面（gToken 已就绪）：预览态重挂 iframe、管理视图补拉数据、会话态增量刷新
     if (state.preview) route()
@@ -3952,56 +4627,147 @@
     else {
       refreshSession()
       // 2026-08-25 首页/会话态补拉模型数据：初始 renderModelSeat 时 GATEWAY 尚未就绪、
-      // token 空 → /api/models 401，MODELS 恒 null，seat 一直显示「选择模型」（用户反馈「看不到模型」）。
+      // token 空 → /gateway/models 401，MODELS 恒 null，seat 一直显示「选择模型」（用户反馈「看不到模型」）。
       // hideGate 解锁后 token 已就绪 → 补拉一次，finally 内 renderModelSeat 刷新输入栏模型名。
       loadModelsData(true).catch(() => {})
     }
   }
-  function gateSubmit() {
-    const t = gTokenInput.value.trim()
-    if (!t) {
-      gTokenInput.classList.remove('shake'); void gTokenInput.offsetWidth
-      gTokenInput.classList.add('shake')
-      gTokenInput.focus()
-      return
-    }
-    gToken = t
-    connect()
+  async function gateSubmit() {
+    // 门态回车/点击发送 = 手动重试一次配对激活（平时 2.5s 自动轮询；授权后数秒内自动进入）
+    await pairPollOnce()
   }
-  // 白板内 token 表单：回车提交（无发送按钮）
-  gTokenInput.addEventListener('keydown', function (e) {
-    if (e.key === 'Enter') { e.preventDefault(); gateSubmit() }
-  })
+  // 白板内 token 表单：回车提交（无发送按钮）—— 设备配对版已移除输入框，此绑定随 #g-token-input 删除
+
+  // ---------- 图片附件（2026-08-28）：仅识图模型开放（vision 门控），走 CLI 粘贴同链路 ----------
+  // pendingImages: {content(base64 无前缀), mediaType, filename, dataUrl(预览)}。发送时文本拼
+  // [Image #N] 占位 + images 随 'send' 上行 → 网关透传 → CLI gatewayClient 构造 pastedContents
+  // → handlePromptSubmit 占位匹配才发送（与本地粘贴图片完全同路径，不落盘、执行时才 resize）。
+  // vision 判定：凭据池 override（/key vision <model> on）为唯一权威，默认非识图。
+  let pendingImages = []
+  let sessVision // undefined=空态/未知（回落全局 MODELS.vision）；boolean=当前会话 /gateway/session 的 vision
+  function visionOn() {
+    if (state.currentHash && sessVision !== undefined) return sessVision
+    return !!(MODELS && MODELS.vision)
+  }
+  function renderImgBtn() {
+    // 2026-08-28 v137 图片入口改 + 浮窗 tab（独立按钮移除）：vision 判定落地/变化时重渲浮窗刷新 tab 显隐
+    if (cmd && cmd.open) renderCmdPop()
+  }
+  function clearPendingImages() {
+    pendingImages = []
+    renderImgPills()
+  }
+  function renderImgPills() {
+    const box = $('img-pills')
+    if (!box) return
+    if (!pendingImages.length) {
+      box.hidden = true
+      box.innerHTML = ''
+    } else {
+      box.hidden = false
+      box.innerHTML = pendingImages
+        .map((p, i) => `<span class="img-pill"><img src="${p.dataUrl}" alt="${p.filename}"/><button class="img-x" data-i="${i}" type="button" aria-label="移除">×</button></span>`)
+        .join('')
+    }
+    syncGwSend()
+  }
+  // 编码：≤1.5MB 且 png/jpg/webp 直传原 base64（截图文字不重压）；否则 canvas 重编码 jpeg
+  // （长边 ≤1568 对齐 API 推荐输入、质量 0.85），把手机照片压到几百 KB 再走 WS。
+  function encodeImg(file) {
+    return new Promise((resolve, reject) => {
+      const r = new FileReader()
+      r.onload = () => {
+        const dataUrl = String(r.result)
+        if (file.size <= 1536 * 1024 && /^image\/(png|jpe?g|webp)$/.test(file.type)) {
+          const mediaType = file.type === 'image/jpg' ? 'image/jpeg' : file.type
+          return resolve({ content: dataUrl.split(',')[1], mediaType, filename: file.name || '图片', dataUrl })
+        }
+        const img = new Image()
+        img.onload = () => {
+          const MAX = 1568
+          const scale = Math.min(1, MAX / Math.max(img.naturalWidth, img.naturalHeight))
+          const w = Math.max(1, Math.round(img.naturalWidth * scale))
+          const h = Math.max(1, Math.round(img.naturalHeight * scale))
+          const cv = document.createElement('canvas')
+          cv.width = w
+          cv.height = h
+          cv.getContext('2d').drawImage(img, 0, 0, w, h)
+          const out = cv.toDataURL('image/jpeg', 0.85)
+          resolve({ content: out.split(',')[1], mediaType: 'image/jpeg', filename: (file.name || '图片').replace(/\.[^.]+$/, '') + '.jpg', dataUrl: out })
+        }
+        img.onerror = () => reject(new Error('decode failed'))
+        img.src = dataUrl
+      }
+      r.onerror = () => reject(new Error('read failed'))
+      r.readAsDataURL(file)
+    })
+  }
+  async function addImageFiles(files) {
+    for (const f of files) {
+      if (!/^image\//.test(f.type)) continue
+      if (pendingImages.length >= 4) { toast('一次最多 4 张图片'); break }
+      try { pendingImages.push(await encodeImg(f)) } catch { toast('图片读取失败') }
+    }
+    renderImgPills()
+  }
 
   async function gwSend() {
     if (!GATEWAY) return false
     closeMentionPop()
-    const text = serializeInput().trim()
-    if (!text) { inputEl.focus(); return true }
+    let text = serializeInput().trim()
+    const imgs = pendingImages.slice()
+    if (!text && !imgs.length) { inputEl.focus(); return true }
     if (!gws || gws.readyState !== 1) { toast('未连接，无法发送'); return true }
+    // 2026-08-28 图片占位：[Image #N] 与 pastedContents id（CLI 侧按 images 数组序生成）一一对应
+    if (imgs.length) {
+      const ph = imgs.map((_, i) => `[Image #${i + 1}]`).join(' ')
+      text = text ? text + ' ' + ph : ph
+    }
+    const imgPayload = imgs.length
+      ? { images: imgs.map(p => ({ content: p.content, mediaType: p.mediaType, filename: p.filename })) }
+      : {}
     // 2026-08-24 首页空态首条消息触发：未在具体会话（#/ 空态）输入第一条消息
     // → 先创建 web 会话（网关 spawn 本地可见 CLI 窗口，返回后 CLI 已连 /clients），
     // 再进会话发送首条消息。web 会话 = 本地可见交互 CLI 窗口（用户本地也可直接操作）。
     // 2026-08-25 项目「+」先到初始化界面：state.newProject 有值 → 建会话时带上 project 落到该项目组；
     // 用完即清（正常进会话后 currentHash 已设置，不再进此分支）。
-    // 2026-08-24 防双 spawn：创建期间（POST /api/wsession 等 CLI 注册，最长 20s）置 webCreating，
+    // 2026-08-24 防双 spawn：创建期间（POST /gateway/wsession 等 CLI 注册，最长 20s）置 webCreating，
     // 期间再发送直接忽略（否则每发一条都新建一个会话）；创建完成后 currentHash 已由 navigate 设置。
     if (!state.currentHash) {
       if (webCreating) { toast('正在创建会话，请稍候…'); return true }
       const tgt = state.newProject
       state.newProject = null
       renderNewProjChip()
-      const d = await newWebSession(tgt || undefined)
-      if (!d || !d.hash) { state.newProject = tgt; renderNewProjChip(); return true }
-      // newWebSession 已 navigate 进会话（renderSession 设置 currentHash + 订阅 + 拉历史）。
-      // 2026-08-26：navigate 的 hashchange 是宏任务、本续体是微任务 → 此处 currentHash 仍为 null，
-      // 下方 procOpen 不会触发，首条消息完全依赖服务器回流；记 pendingFirstSend 供 renderSession
-      // 在 fetch 仍空时乐观渲染（用户气泡 + 正在处理折叠），消除「暂无记录」闪烁。
-      pendingFirstSend = { hash: d.hash, text }
-      gws.send(JSON.stringify({ type: 'send', text, sessionId: d.hash }))
-      if (state.currentHash) procOpen()
+      // 丝滑过渡（2026-08-30）：不等 wsession 返回（spawn CLI 窗口+注册常 >1s，期间空态冻结
+      // 是「不丝滑」根源）——发送瞬间即进会话视觉：输入栏 FLIP 沉底 + 趴栏淡出 + 首条消息
+      // 乐观上屏（气泡+正在处理折叠）。pre 标记 + hash 暂空：renderSession 创建中不洗
+      // 「加载中…」、fetch 空时不重复上屏；创建失败整体回滚空态（还原输入文本与图片胶囊）。
+      pendingFirstSend = { hash: '', text, pre: true }
+      flipInput(false)
+      addUser(text, imgs)
+      procOpen()
       inputEl.textContent = ''
       syncGwSend()
+      const d = await newWebSession(tgt || undefined)
+      if (!d || !d.hash) {
+        pendingFirstSend = null
+        procStopTimer()
+        proc = null
+        messagesEl.innerHTML = ''
+        flipInput(true) // 回滚空态（FLIP 滑回 stage，docked/in-session 一并移除）
+        inputEl.textContent = text
+        syncGwSend()
+        state.newProject = tgt
+        renderNewProjChip()
+        inputEl.focus()
+        return true
+      }
+      pendingFirstSend.hash = d.hash
+      clearPendingImages()
+      // newWebSession 已 navigate 进会话（renderSession 设置 currentHash + 订阅 + 拉历史）。
+      // 乐观气泡/折叠已在发送瞬间上屏（pre），首条消息不再依赖 fetch 空时的补渲。
+      gws.send(JSON.stringify({ type: 'send', text, sessionId: d.hash, ...imgPayload }))
+      if (state.currentHash) procOpen()
       return true
     }
     if (!inputWrap.classList.contains('docked')) {
@@ -4010,21 +4776,23 @@
       inputWrap.classList.add('docked')
       chatArea.classList.add('in-session')
     }
-    addUser(text)
+    addUser(text, imgs)
     // 2026-08-17 网关独立化：带当前会话 hash，网关按 sessionId 精确路由给对应 CLI 进程
     // （未在具体会话时 currentHash 为 null → 字段省略，网关广播兜底）
-    gws.send(JSON.stringify({ type: 'send', text, sessionId: state.currentHash || undefined }))
+    gws.send(JSON.stringify({ type: 'send', text, sessionId: state.currentHash || undefined, ...imgPayload }))
     // 2026-08-24 已处理立即出现：乐观打开「正在处理」折叠，不等 SSE 回程（模型开始思考前即见反馈）。
-    // 回合进行中 refreshSession 不再整页重建（强刷/卡顿根治），末段回复落地才一次性渲染。
+    // 2026-08-29 procOpen 幂等：回合进行中再发（引导/连发）复用既有折叠继续计时（不重置），
+    // 回合间隙发送新建折叠（旧「已处理」定格保留，仿 Codex：已处理 → 新消息 → 正在处理）。
     // 仅真实会话内打开（currentHash 非空）；首页空态广播发送不开折叠，避免空区飘折叠。
     if (state.currentHash) procOpen()
     inputEl.textContent = ''
+    clearPendingImages()
     syncGwSend()
     return true
   }
 
   function syncGwSend() {
-    const on = GATEWAY && gws && gws.readyState === 1 && serializeInput().trim().length > 0
+    const on = GATEWAY && gws && gws.readyState === 1 && (serializeInput().trim().length > 0 || pendingImages.length > 0)
     sendBtn.classList.toggle('enabled', on)
   }
 
@@ -4037,14 +4805,16 @@
     inputEl.dataset.ph = '输入消息，Enter 发送'
     inputEl.addEventListener('input', onInputChange)
     setConn(false, '连接中…')
-    if (gToken) connect()
-    else showGate()
+    // 2026-08-28 token 出 URL：统一先 connect()——已授权设备（floria_auth cookie）WS 直接通过进空态；
+    // 未授权（无 cookie 无首链 token）WS 被拒 → onclose 回 token 门。REVIEW 模式仍要求 URL 带 token。
+    if (GATEWAY_REVIEW) { if (gToken) connect(); else showGate() }
+    else connect()
     syncGwSend()
   }
 
   async function detectGateway() {
     try {
-      const res = await fetch('/api/health')
+      const res = await fetch('/gateway/health')
       if (!res.ok) return
       const d = await res.json()
       if (d.mode === 'gateway') GATEWAY = true
@@ -4060,13 +4830,16 @@
     initLive()
     setPanel(false)
     setChar(1) // 启动默认形象
+    // 2026-08-30 改定案（用户）：刷新保留当前界面——/session/<hash> 直进恢复，boot 不再把会话路径
+    // 重置回首页（2026-08-28「进入/刷新一律默认初始界面」旧定案作废）。刷新瞬间列表未就绪由
+    // renderSession 占位「加载中」，WS 验证通过 → hideGate 的 loadSessions().then 恢复链落地重渲。
     renderRecent()
     route()
     if (GATEWAY) initGateway()
     else { inputEl.contentEditable = 'false'; inputEl.dataset.ph = '只读查看 · 无法发送' } // 只读查看器：输入不可编辑
     if (HOT_RELOAD) {
       // 开发审阅热重载：server.mjs HOT_RELOAD=1 时，public/ 文件变化经 SSE 通知 → 自动刷新
-      const hr = new EventSource('/api/hotreload')
+      const hr = new EventSource('/gateway/hotreload')
       hr.onmessage = (e) => { if (e.data === 'reload') location.reload() }
     }
   })()

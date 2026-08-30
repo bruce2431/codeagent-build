@@ -337,6 +337,9 @@ export type Output = z.infer<OutputSchema>
 export const FileReadTool = buildTool({
   name: FILE_READ_TOOL_NAME,
   searchHint: 'read files, images, PDFs, notebooks',
+  // Fork: defer core tool — GLM-compatible upstreams drop undiscovered inline
+  // core tools; ToolSearch (select:) is the reliable fetch path.
+  shouldDefer: true,
   // Output is bounded by maxTokens (validateContentTokens). Persisting to a
   // file the model reads back with Read is circular — never persist.
   maxResultSizeChars: Infinity,

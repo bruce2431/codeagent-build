@@ -39,6 +39,12 @@ export type DisplayBlock = {
   name?: string
   input?: unknown
   fileChange?: DisplayFileChange
+  /**
+   * image 块专属（2026-08-30 web 内联渲染）：pastedContents id（= image-cache/<sessionId>/<id>.<ext>
+   * 文件名主干，与文本里 `[Image #N]` 占位一一对应）。取自转录 user 记录 / queued_command attachment
+   * 记录的 imagePasteIds（按 content 内 image 块顺序对位）。缺省 = 旧记录/无缓存文件，消费端回落占位。
+   */
+  imageId?: number
 }
 
 export type DisplayMessage = {
@@ -51,6 +57,12 @@ export type DisplayMessage = {
    * （旁白/工具步，折叠保持「正在处理」并只显示当前运行工具）。仅 assistant 消息携带。
    */
   stopReason?: string
+  /**
+   * 引导注入标（2026-08-30 共同后端定案）：queued_command attachment 人发可见时输出
+   * role:'user' + injected:true——web 渲染为折叠体内旁白位（区别于 dequeue 开启消息）。
+   * 仅 user 消息携带。
+   */
+  injected?: boolean
 }
 
 export type DisplayMode = 'prompt' | 'transcript' | 'prompt-tail-think'
@@ -66,6 +78,21 @@ type SourceMessage = {
   timestamp?: number | string
   /** system/local_command 记录的内容在顶层字符串（无 message 字段） */
   content?: unknown
+  /**
+   * user 记录的图片粘贴 id（processUserInput storeImages 落 image-cache 时的文件名主干）；
+   * 与 message.content 内 image 块按顺序一一对应（提交链路按 image 块序生成）。
+   */
+  imagePasteIds?: number[]
+  /** attachment 消息（queued_command = 回合中引导注入；运行时内存链路存在，非 ant 环境不落盘） */
+  attachment?: {
+    type?: string
+    prompt?: string | Array<{ type?: string; text?: string }>
+    origin?: { kind?: string }
+    commandMode?: string
+    isMeta?: boolean
+    /** getQueuedCommandAttachments 携带的图片粘贴 id（attachments.ts:1076），语义同上 */
+    imagePasteIds?: number[]
+  }
   message?: {
     role?: string
     /** 该条 assistant 记录的实际请求模型名（模型切换派生提示的数据源） */
@@ -156,8 +183,11 @@ export function parseFileChangeFromToolResult(text: string): DisplayFileChange |
   return { filePath: filePath.trim(), added: Number(m[1]), removed: Number(m[2]) }
 }
 
-/** 输出单个块（kind 映射 + 文本提取） */
-function toDisplayBlock(b: NonNullable<SourceMessage['message']>['content'][number]): DisplayBlock | null {
+/** 输出单个块（kind 映射 + 文本提取；imageId = 图片粘贴 id，见 DisplayBlock.imageId） */
+function toDisplayBlock(
+  b: NonNullable<SourceMessage['message']>['content'][number],
+  imageId?: number,
+): DisplayBlock | null {
   switch (b?.type) {
     case 'text':
       return { kind: 'text', text: b.text || '' }
@@ -179,7 +209,7 @@ function toDisplayBlock(b: NonNullable<SourceMessage['message']>['content'][numb
       return block
     }
     case 'image':
-      return { kind: 'image' }
+      return imageId !== undefined ? { kind: 'image', imageId } : { kind: 'image' }
     default:
       return null
   }
@@ -230,7 +260,7 @@ function computeTailThinkingPassId(messages: readonly SourceMessage[]): string |
  * 核心过滤：把原始消息转成「CLI 实际显示的」`{role, blocks[]}`。
  * - prompt 模式：thinking 全隐藏（对齐 `Message.tsx` `!isTranscriptMode && !verbose → null`）。
  * - transcript 模式：只保留全局最后一个 thinking（对齐 `hidePastThinking` + `lastThinkingBlockId`）。
- * - prompt-tail-think 模式（2026-08-27，仅网关 /api/session 用）：已收尾历史 thinking 全隐藏，
+ * - prompt-tail-think 模式（2026-08-27，仅网关 /gateway/session 用）：已收尾历史 thinking 全隐藏，
  *   未收尾尾巴放行最后一块（computeTailThinkingPassId）——驱动 floria「正在思考」行内实时态，
  *   且不让历史会话泄露无效思考（server.mjs 离线兜底同语义双份）。
  * - 用户消息按 `shouldShowUserMessage` 识别（isMeta/isVisibleInTranscriptOnly），替代遥测端的 isSynth 复刻。
@@ -240,7 +270,7 @@ function computeTailThinkingPassId(messages: readonly SourceMessage[]): string |
  *   （origin.kind='task-notification'）转「后台任务完成」提示行。全部以 role:'system' 下发，
  *   消费端居中灰字渲染。
  */
-/** 归一时间戳为毫秒（流式/转录可能给 ISO 字符串；网关 /api/session 也转 ms，floria 时长计算依赖数字） */
+/** 归一时间戳为毫秒（流式/转录可能给 ISO 字符串；网关 /gateway/session 也转 ms，floria 时长计算依赖数字） */
 function tsMs(ts: number | string | undefined): number | undefined {
   if (typeof ts === 'string') {
     const n = Date.parse(ts)
@@ -266,6 +296,11 @@ export function filterConversationForDisplay(messages: readonly SourceMessage[],
   const pushSystemHint = (text: string, ts: number | string | undefined): void => {
     out.push({ role: 'system', blocks: [{ kind: 'text', text }], timestamp: tsMs(ts) })
   }
+  // 非中断系统提示开关（2026-08-28 用户定案：居中灰字提示仅保留「用户中断了对话」，
+  // 其余全部隐藏，保留接口以便后续更改）。false = 不下发命令类（命令行 echo/local_command
+  // stdout+stderr/!bash）、后台任务通知、模型切换五类提示行；中断提示不受影响。
+  // 改回 true 即恢复显示。
+  const SHOW_NON_INTERRUPT_HINTS = false
   for (const msg of normalized) {
     const timestamp = tsMs(msg.timestamp)
 
@@ -274,6 +309,7 @@ export function filterConversationForDisplay(messages: readonly SourceMessage[],
       // UserTextMessage（<local-command-stdout> 灰字输出）。内容在顶层 content 字符串，
       // 解析为居中提示行下发；其余 system 子类型维持跳过。
       if (msg.subtype !== 'local_command') continue
+      if (!SHOW_NON_INTERRUPT_HINTS) continue // 非中断提示 web 隐藏（开关见上）
       const raw = typeof msg.content === 'string' ? msg.content : ''
       if (!raw) continue
       const name = extractXmlTag(raw, COMMAND_NAME_TAG)
@@ -285,6 +321,44 @@ export function filterConversationForDisplay(messages: readonly SourceMessage[],
       if (stdout?.trim()) pushSystemHint(stdout.trim(), timestamp)
       const stderr = extractXmlTag(raw, LOCAL_COMMAND_STDERR_TAG)
       if (stderr?.trim()) pushSystemHint(stderr.trim(), timestamp)
+      continue
+    }
+
+    if (msg.type === 'attachment') {
+      // 引导注入消息（2026-08-30 共同后端定案）：CLI 终端实际渲染 queued_command 附件
+      // （AttachmentMessage.tsx → UserTextMessage，回合中注入消费），此前整体丢弃属
+      // 「权威过滤与 CLI 实际显示脱节」。可见性判据照抄 messages.ts:3742-3756：origin
+      // 回退 task-notification；origin/isMeta 任一存在 = 系统生成 → 隐藏（对齐
+      // SHOW_NON_INTERRUPT_HINTS=false 现状）。人发 → role:'user' + injected:true。
+      // 注：非 ant 环境 attachment 不落盘（isLoggableMessage，sessionStorage.ts），本分支
+      // 只作用于实时内存链路；历史回放无 attachment 记录 = 与 CLI resume 行为同构。
+      const att = msg.attachment
+      if (att?.type === 'queued_command') {
+        const origin =
+          att.origin ??
+          (att.commandMode === 'task-notification' ? { kind: 'task-notification' } : undefined)
+        if (origin === undefined && !att.isMeta) {
+          const blocks: DisplayBlock[] = []
+          if (typeof att.prompt === 'string') {
+            if (att.prompt.trim()) blocks.push({ kind: 'text', text: att.prompt })
+          } else if (Array.isArray(att.prompt)) {
+            // imagePasteIds 按 content 内 image 块序对位（getImagePasteIds 契约）；imgIdx 只对
+            // image 块递增——原实现逐块递增，数组形态（text+image）下 text 块抢走 ids[0] 使全部
+            // 图错位丢 id（user 分支因 normalizeMessages 拆出 image-only 单条、image 恒为首块而
+            // 无此问题；attachment 数组 prompt 无拆分工序，此处自对位）。2026-08-30 引导消息带图。
+            let imgIdx = 0
+            for (const b of att.prompt) {
+              if (b?.type === 'image') {
+                blocks.push({ kind: 'image', imageId: att.imagePasteIds?.[imgIdx++] })
+              } else {
+                const db = toDisplayBlock(b)
+                if (db) blocks.push(db)
+              }
+            }
+          }
+          if (blocks.length) out.push({ role: 'user', blocks, timestamp, injected: true })
+        }
+      }
       continue
     }
 
@@ -307,33 +381,60 @@ export function filterConversationForDisplay(messages: readonly SourceMessage[],
         msg.origin?.kind === TASK_NOTIFICATION_TAG ||
         notifyTexts.some(t => t.trimStart().startsWith(`<${TASK_NOTIFICATION_TAG}>`))
       if (isTaskNotify) {
-        const summary = extractXmlTag(notifyTexts.join('\n'), 'summary')?.trim()
-        pushSystemHint(summary ? `后台任务完成：${summary}` : '后台任务通知', timestamp)
+        if (SHOW_NON_INTERRUPT_HINTS) {
+          const summary = extractXmlTag(notifyTexts.join('\n'), 'summary')?.trim()
+          pushSystemHint(summary ? `后台任务完成：${summary}` : '后台任务通知', timestamp)
+        }
         continue
       }
       if (!shouldShowUserMessage(msg, isTranscript)) continue
       const blocks: DisplayBlock[] = []
+      let imgIdx = 0
       for (const b of content) {
-        const db = toDisplayBlock(b)
+        const db = toDisplayBlock(b, msg.imagePasteIds?.[imgIdx++])
         // 指令输入的 user XML echo 形态（2026-08-27 定案转居中提示行；原为静默剔除）：
         // immediateCommand（如 /server）只走此形态；非 immediate（如 /rename）另写 system/local_command
         // 双记录（见 system 分支），两形态互补不重复。<bash-input> = !bash 命令行。
         if (db?.kind === 'text' && db.text && db.text.includes(`<${COMMAND_MESSAGE_TAG}>`)) {
-          const name = extractXmlTag(db.text, COMMAND_NAME_TAG)
-          if (name) {
-            const args = extractXmlTag(db.text, COMMAND_ARGS_TAG)?.trim()
-            pushSystemHint(args ? `${name.trim()} ${args}` : name.trim(), timestamp)
+          if (SHOW_NON_INTERRUPT_HINTS) {
+            const name = extractXmlTag(db.text, COMMAND_NAME_TAG)
+            if (name) {
+              const args = extractXmlTag(db.text, COMMAND_ARGS_TAG)?.trim()
+              pushSystemHint(args ? `${name.trim()} ${args}` : name.trim(), timestamp)
+            }
           }
           continue
         }
         if (db?.kind === 'text' && db.text && db.text.includes('<bash-input>')) {
-          const cmd = extractXmlTag(db.text, 'bash-input')
-          if (cmd?.trim()) pushSystemHint(`$ ${cmd.trim()}`, timestamp)
+          if (SHOW_NON_INTERRUPT_HINTS) {
+            const cmd = extractXmlTag(db.text, 'bash-input')
+            if (cmd?.trim()) pushSystemHint(`$ ${cmd.trim()}`, timestamp)
+          }
           continue
         }
         if (db) blocks.push(db)
       }
-      if (blocks.length) out.push({ role: 'user', blocks, timestamp })
+      if (blocks.length) {
+        // 纯图片块重组（2026-08-30 web 内联图）：normalizeMessages 会把「text+image」人发消息拆成
+        // text-only 与 image-only 两条（CLI 终端分别渲染文本行 + [Image #N] 链接），web 消费端若
+        // 原样输出就出现两个气泡。这里在权威导出层把 image-only 消息并回紧邻的前一条真人 user
+        // 消息（= 拆分前原始 jsonl 记录同构），条件缺一不可：
+        //   ① 本条 blocks 全为 image 且带 imageId；② 前一条 out 消息是 user 且其 text 含对应
+        //   [Image #id] 占位（保证语义配对，工具截图等 image-only 消息因前面是 assistant/无占位
+        //   而自然不合并）。前端据合并后的 blocks 渲染「图上文下」单气泡并剥离占位文本。
+        const ids = blocks.map(b => (b.kind === 'image' ? b.imageId : undefined)).filter((x): x is number => x !== undefined)
+        const isImageOnly = ids.length === blocks.length && ids.length > 0
+        const prev = out[out.length - 1]
+        const prevText =
+          prev?.role === 'user'
+            ? prev.blocks.filter(b => b.kind === 'text').map(b => b.text || '').join('')
+            : ''
+        if (isImageOnly && prevText && ids.every(id => prevText.includes(`[Image #${id}]`))) {
+          prev.blocks.push(...blocks)
+        } else {
+          out.push({ role: 'user', blocks, timestamp })
+        }
+      }
       continue
     }
 
@@ -342,7 +443,7 @@ export function filterConversationForDisplay(messages: readonly SourceMessage[],
       // 切到新模型的第一条记录即新回合起点——提示自然落在回合结束后的边界（切在思考中也回合结束才出现）。
       // 注意：/model 是 local-jsx 命令，「Set model to …」不落盘，派生是历史回放唯一数据源。
       const model = typeof msg.message.model === 'string' && msg.message.model ? msg.message.model : undefined
-      if (model && lastModel && model !== lastModel) pushSystemHint(`已切换模型：${model}`, timestamp)
+      if (SHOW_NON_INTERRUPT_HINTS && model && lastModel && model !== lastModel) pushSystemHint(`已切换模型：${model}`, timestamp)
       if (model) lastModel = model
       const blocks: DisplayBlock[] = []
       for (let j = 0; j < content.length; j++) {
@@ -390,7 +491,7 @@ function gatewayApiUrl(base: string, path: string): string {
 export async function sendConversationToServer(sessionId: string, display: DisplayMessage[]): Promise<boolean> {
   const base = process.env.FLOIRA_GATEWAY || 'http://127.0.0.1:8124'
   try {
-    const res = await fetch(gatewayApiUrl(base, '/api/conversation'), {
+    const res = await fetch(gatewayApiUrl(base, '/gateway/conversation'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sessionId, messages: display }),
@@ -414,7 +515,7 @@ export async function exportConversationToServer(
 }
 
 // ---------- 会话活动状态上报（PID 情况只发送、不落盘）----------
-// 参考 sendConversationToServer 模式：复用 FLOIRA_GATEWAY 通道 POST /api/activity，
+// 参考 sendConversationToServer 模式：复用 FLOIRA_GATEWAY 通道 POST /gateway/activity，
 // 网关在内存维护「当前打开的会话 + 运行/暂停状态」，前端据此显示绿/红点。
 // 不写任何盘：concurrentSessions.ts 的 PID 写盘逻辑（registerSession/updateSessionActivity）
 // 保持原样，此处只做「发送」。FLOIRA_GATEWAY 未配置时回退本地网关 127.0.0.1:8124
@@ -423,7 +524,7 @@ export async function exportConversationToServer(
 export type SessionActivityStatus = 'busy' | 'idle' | 'waiting'
 
 /**
- * 上报当前会话活动状态给网关（内存汇总、不落盘）。网关 /api/sessions 据此给每个会话附
+ * 上报当前会话活动状态给网关（内存汇总、不落盘）。网关 /gateway/sessions 据此给每个会话附
  * `state`：busy=绿点（正在运行），idle/waiting=红点（运行暂停），无记录/进程退出=无点。
  * fire-and-forget，失败静默。
  */
@@ -434,7 +535,7 @@ export async function sendSessionActivity(
   const base = process.env.FLOIRA_GATEWAY || 'http://127.0.0.1:8124'
   if (!base) return false
   try {
-    const res = await fetch(gatewayApiUrl(base, '/api/activity'), {
+    const res = await fetch(gatewayApiUrl(base, '/gateway/activity'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sessionId, ...activity }),

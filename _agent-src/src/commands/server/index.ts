@@ -9,5 +9,8 @@ export default {
   name: 'server',
   description: 'Start/stop/status the built-in private gateway (LAN remote control)',
   supportsNonInteractive: true,
+  // 会话回合进行中也立即执行（不排队等 stop point）。模型 API 流直连不经网关，
+  // restart 中途执行安全；WS 断连由 gatewayClient 自动重连 + reportCurrentModel 自愈。
+  immediate: true,
   load: () => import('./server.js'),
 } satisfies Command

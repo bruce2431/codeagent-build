@@ -7,6 +7,9 @@
  *   - Media-size rejection (image >5MB base64 / many-image dimension / PDF
  *     page limit) → strip the offending media blocks in memory and retry, no
  *     summary API call needed.
+ *   - Usage-policy refusal (stop_reason 'refusal') → strip ALL media blocks
+ *     in memory and retry (the API refuses the whole request every turn while
+ *     the offending content — usually an image — stays in history).
  *
  * The compile-time `feature('REACTIVE_COMPACT')` gate at the require sites
  * (query.ts / commands/compact/compact.ts) guarantees this module is only
@@ -38,6 +41,7 @@ import { getTranscriptPath } from '../../utils/sessionStorage.js'
 import {
   isMediaSizeErrorMessage,
   isPromptTooLongMessage,
+  isUsagePolicyRefusalMessage,
 } from '../api/errors.js'
 import {
   annotateBoundaryWithPreservedSegment,
@@ -45,6 +49,7 @@ import {
   createPlanAttachmentIfNeeded,
   ERROR_MESSAGE_NOT_ENOUGH_MESSAGES,
   ERROR_MESSAGE_PROMPT_TOO_LONG,
+  stripImagesFromMessages,
   type CompactionResult,
 } from './compact.js'
 import { estimateMessageTokens } from './microCompact.js'
@@ -70,6 +75,10 @@ export function isWithheldPromptTooLong(msg: AssistantMessage): boolean {
 
 export function isWithheldMediaSizeError(msg: AssistantMessage): boolean {
   return isReactiveCompactEnabled() && isMediaSizeErrorMessage(msg)
+}
+
+export function isWithheldUsagePolicyRefusal(msg: AssistantMessage): boolean {
+  return isReactiveCompactEnabled() && isUsagePolicyRefusalMessage(msg)
 }
 
 export type ReactiveCompactReason =
@@ -111,6 +120,15 @@ export async function tryReactiveCompact({
     // Media rejection: strip the offending blocks in memory and retry — no
     // summary API call required.
     return stripRetry(messages, last, cacheSafeParams)
+  }
+
+  if (isUsagePolicyRefusalMessage(last)) {
+    // Usage-policy refusal: the API refuses the whole request because of
+    // conversation content it will re-see verbatim on every retry — most
+    // commonly a policy-violating image in history. Strip ALL media in
+    // memory and retry once (hasAttempted guards the spiral; if the text
+    // alone still triggers a refusal, the error surfaces as-is).
+    return policyStripRetry(messages, cacheSafeParams)
   }
 
   if (isPromptTooLongMessage(last)) {
@@ -192,6 +210,55 @@ async function stripRetry(
     stripped.imagesRemoved,
     cacheSafeParams,
   )
+}
+
+/**
+ * Usage-policy refusal retry: strip ALL media blocks (via the compaction-path
+ * stripper — images/documents replaced with text markers, including those
+ * nested in tool_result content) and rebuild with the suffix-preserving
+ * result. Refusals don't identify the offending block, so every media block
+ * is stripped. Returns null when history holds no media — the refusal is
+ * text-based and surfaces as-is instead of retrying a doomed request.
+ */
+async function policyStripRetry(
+  messages: Message[],
+  cacheSafeParams: CacheSafeParams,
+): Promise<CompactionResult | null> {
+  // Drop the trailing synthetic refusal message itself before stripping.
+  const filtered = messages.filter(
+    message => !(message.type === 'assistant' && message.isApiErrorMessage),
+  )
+  const mediaRemoved = countMediaBlocks(filtered)
+  if (mediaRemoved === 0) return null
+  const stripped = stripImagesFromMessages(filtered)
+  if (stripped.length === 0) return null
+  return buildStripCompactionResult(
+    stripped,
+    mediaRemoved,
+    cacheSafeParams,
+    `Filtered ${mediaRemoved} media block${
+      mediaRemoved === 1 ? '' : 's'
+    } that triggered a usage-policy refusal.`,
+  )
+}
+
+function countMediaBlocks(messages: Message[]): number {
+  let count = 0
+  for (const message of messages) {
+    if (message.type !== 'user') continue
+    const content = message.message.content
+    if (!Array.isArray(content)) continue
+    for (const block of content) {
+      if (block.type === 'image' || block.type === 'document') {
+        count++
+      } else if (block.type === 'tool_result' && Array.isArray(block.content)) {
+        for (const item of block.content) {
+          if (item.type === 'image' || item.type === 'document') count++
+        }
+      }
+    }
+  }
+  return count
 }
 
 /**
@@ -311,6 +378,7 @@ async function buildStripCompactionResult(
   messages: Message[],
   imagesRemoved: number,
   cacheSafeParams: CacheSafeParams,
+  summaryNote?: string,
 ): Promise<CompactionResult> {
   const preCompactTokenCount = estimateMessageTokens(messages)
   const boundaryMarker = createCompactBoundaryMessage(
@@ -320,9 +388,11 @@ async function buildStripCompactionResult(
   )
 
   const transcriptPath = getTranscriptPath()
-  const summaryContent = `Removed ${imagesRemoved} image${
-    imagesRemoved === 1 ? '' : 's'
-  } that exceeded the API's media-size limits.`
+  const summaryContent =
+    summaryNote ??
+    `Removed ${imagesRemoved} image${
+      imagesRemoved === 1 ? '' : 's'
+    } that exceeded the API's media-size limits.`
   const summaryMessages: UserMessage[] = [
     createUserMessage({
       content: getCompactUserSummaryMessage(

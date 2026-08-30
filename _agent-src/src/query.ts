@@ -817,6 +817,12 @@ async function* queryLoop(
             ) {
               withheld = true
             }
+            if (
+              mediaRecoveryEnabled &&
+              reactiveCompact?.isWithheldUsagePolicyRefusal(message)
+            ) {
+              withheld = true
+            }
             if (isWithheldMaxOutputTokens(message)) {
               withheld = true
             }
@@ -1082,6 +1088,12 @@ async function* queryLoop(
       const isWithheldMedia =
         mediaRecoveryEnabled &&
         reactiveCompact?.isWithheldMediaSizeError(lastMessage)
+      // Usage-policy refusal (stop_reason 'refusal'): same in-memory media
+      // strip-retry as media-size errors — the offending image would poison
+      // every subsequent turn otherwise.
+      const isWithheldPolicyRefusal =
+        mediaRecoveryEnabled &&
+        reactiveCompact?.isWithheldUsagePolicyRefusal(lastMessage)
       if (isWithheld413) {
         // First: drain all staged context-collapses. Gated on the PREVIOUS
         // transition not being collapse_drain_retry — if we already drained
@@ -1116,7 +1128,7 @@ async function* queryLoop(
           }
         }
       }
-      if ((isWithheld413 || isWithheldMedia) && reactiveCompact) {
+      if ((isWithheld413 || isWithheldMedia || isWithheldPolicyRefusal) && reactiveCompact) {
         const compacted = await reactiveCompact.tryReactiveCompact({
           hasAttempted: hasAttemptedReactiveCompact,
           querySource,
@@ -1172,7 +1184,12 @@ async function* queryLoop(
         // → retry → error → … (the hook injects more tokens each cycle).
         yield lastMessage
         void executeStopFailureHooks(lastMessage, toolUseContext)
-        return { reason: isWithheldMedia ? 'image_error' : 'prompt_too_long' }
+        return {
+          reason:
+            isWithheldMedia || isWithheldPolicyRefusal
+              ? 'image_error'
+              : 'prompt_too_long',
+        }
       } else if (feature('CONTEXT_COLLAPSE') && isWithheld413) {
         // reactiveCompact compiled out but contextCollapse withheld and
         // couldn't recover (staged queue empty/stale). Surface. Same

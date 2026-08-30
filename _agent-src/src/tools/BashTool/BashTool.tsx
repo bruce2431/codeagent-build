@@ -420,6 +420,9 @@ async function applySedEdit(simulatedEdit: {
 export const BashTool = buildTool({
   name: BASH_TOOL_NAME,
   searchHint: 'execute shell commands',
+  // Fork: defer core tool — GLM-compatible upstreams drop undiscovered inline
+  // core tools; ToolSearch (select:) is the reliable fetch path.
+  shouldDefer: true,
   // 30K chars - tool result persistence threshold
   maxResultSizeChars: 30_000,
   strict: true,

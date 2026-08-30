@@ -3,10 +3,10 @@
  *
  * 网关现在是独立进程（同一 exe 的 --gateway 模式，/server on spawn）。每个交互式 CLI
  * 进程（非网关宿主）启动后由本模块：
- *  1. 探测本机网关（GET /api/health，地址 = FLOIRA_GATEWAY 或回退 127.0.0.1:8124）；
+ *  1. 探测本机网关（GET /gateway/health，地址 = FLOIRA_GATEWAY 或回退 127.0.0.1:8124）；
  *     网关未起则后台定时重试（网关后起也能连上），全程静默不打扰；
  *  2. 读盘 token（网关进程启动时写入便携根 .claude/gateway-token）→ setGatewayToken，
- *     让 conversationDisplay 的 HTTP 上报（/api/conversation、/api/activity）也带 token；
+ *     让 conversationDisplay 的 HTTP 上报（/gateway/conversation、/gateway/activity）也带 token；
  *  3. 以 WebSocket 客户端连 /clients?token=&session=<getSessionId()> 注册自己的会话；
  *  4. 收到网关转发来的遥测端消息（{type:'send', text}）→ enqueue 注入本进程 REPL
  *     （与打字同路径，复用 messageQueueManager.enqueue + bridgeOrigin:true）。
@@ -21,9 +21,10 @@ import {
 } from '../bridge/gatewayPermissionRelay.js'
 import type { BridgePermissionCallbacks, BridgePermissionResponse } from '../bridge/bridgePermissionCallbacks.js'
 import { getMainLoopModel } from './model/model.js'
-import { enqueue } from './messageQueueManager.js'
+import { enqueue, getCommandQueueSnapshot, subscribeToCommandQueue } from './messageQueueManager.js'
 import { getGatewayToken, loadGatewayTokenFromDisk, setGatewayToken } from './gatewayToken.js'
 import type { QueuedCommand } from '../types/textInputTypes.js'
+import { feature } from 'bun:bundle'
 
 const HEALTH_TIMEOUT_MS = 1500
 const PROBE_RETRY_MS = 10_000
@@ -48,10 +49,43 @@ let started = false
 let ws: WebSocket | null = null
 let timer: NodeJS.Timeout | null = null
 let attempt = 0
+// 当前 WS 注册到网关 /clients 的 sessionId（openSocket 时快照）。
+// /resume、/clear、/branch 等 switchSession 换了 sessionId 后网关注册表仍挂旧 sid →
+// web 发送按旧 id 路由 miss → 网关误判会话离线 → 冷启动弹第二个窗口（同会话双进程）。
+let registeredSid = ''
+let sidWatchAttached = false
+
+/**
+ * 2026-08-28 遥测端图片 → pastedContents（结构对齐 utils/config.ts PastedContent：
+ * {id, type:'image', content(base64), mediaType, filename}）。占位符 [Image #N] 由前端
+ * 拼进 text、id 从 1 递增与之一一对应；文本无占位时 handlePromptSubmit 会把孤儿图片过滤掉。
+ * 返回 undefined = 无合法图片，enqueue 不带 pastedContents 字段（纯文本消息零开销）。
+ */
+function pastedContentsFromImages(
+  raw: unknown,
+): Record<number, { id: number; type: 'image'; content: string; mediaType?: string; filename?: string }> | undefined {
+  if (!Array.isArray(raw) || !raw.length) return undefined
+  const out: Record<number, { id: number; type: 'image'; content: string; mediaType?: string; filename?: string }> = {}
+  let id = 0
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue
+    const it = item as { content?: unknown; mediaType?: unknown; filename?: unknown }
+    if (typeof it.content !== 'string' || !it.content) continue
+    id++
+    out[id] = {
+      id,
+      type: 'image',
+      content: it.content,
+      mediaType: typeof it.mediaType === 'string' && it.mediaType ? it.mediaType : 'image/png',
+      ...(typeof it.filename === 'string' && it.filename ? { filename: it.filename } : {}),
+    }
+  }
+  return id ? out : undefined
+}
 
 async function isGatewayUp(): Promise<boolean> {
   try {
-    const res = await fetch(`${baseUrl()}/api/health`, { signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS) })
+    const res = await fetch(`${baseUrl()}/gateway/health`, { signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS) })
     if (!res.ok) return false
     const d = (await res.json()) as { mode?: string }
     return d.mode === 'gateway'
@@ -60,10 +94,28 @@ async function isGatewayUp(): Promise<boolean> {
   }
 }
 
+/**
+ * 2026-08-28 网关缺失自愈：探测失败（网关确证不在）时自动拉起独立网关进程。
+ * 此前网关 crash/空闲回收退出后 REPL 只会静默无限重连，遥测端永远连不上，需手动 /server on
+ * （2026-08-28 遥测端断连事故根因之一）。ensureGatewayAutoStart 内部 60s 节流 + 不强抢端口，
+ * spawn 后下一轮 PROBE_RETRY 自然连上。feature 内联门控保 PRIVATE_GATEWAY 关闭时 tree-shake。
+ */
+async function autoStartGateway(): Promise<void> {
+  try {
+    if (feature('PRIVATE_GATEWAY')) {
+      const { ensureGatewayAutoStart } = await import('../commands/server/server.js')
+      await ensureGatewayAutoStart()
+    }
+  } catch {
+    /* 拉起失败静默，下轮探测重试 */
+  }
+}
+
 /** 探测网关 → 读盘 token → 连 /clients。网关未起则定时重试（gateway 后起也能连上）。 */
 async function probeAndConnect(): Promise<void> {
   if (ws) return
   if (!(await isGatewayUp())) {
+    void autoStartGateway()
     schedule(PROBE_RETRY_MS)
     return
   }
@@ -81,6 +133,7 @@ async function probeAndConnect(): Promise<void> {
 function openSocket(token: string): void {
   const { host, port } = wsHostPort()
   const sid = getSessionId()
+  registeredSid = sid
   const url = `ws://${host}:${port}/clients?token=${encodeURIComponent(token)}&session=${encodeURIComponent(sid)}`
   let sock: WebSocket
   try {
@@ -131,11 +184,13 @@ function openSocket(token: string): void {
   sock.on('open', () => {
     attempt = 0
     setGatewayPermissionCallbacks(permissionCallbacks)
-    // 2026-08-24 中继握手：告知网关本 CLI 带审批/提问中继代码（网关 /api/diagnostics trail 记 cli-hello，
+    // 2026-08-24 中继握手：告知网关本 CLI 带审批/提问中继代码（网关 /gateway/diagnostics trail 记 cli-hello，
     // 用于判断「cliClients 有会话但不中继」是旧进程还是新代码 bug）。
     sock.send(JSON.stringify({ type: 'cli-hello', relay: true }))
     // 2026-08-24 模型 web/CLI 同步：连接后上报一次当前实际模型（网关存 sessionId→model 供 web 读取）
     reportCurrentModel()
+    // 2026-08-30 队列快照：重连后补发一次当前排队状态（订阅期间的断线窗口靠它对齐）
+    sendQueueState()
   })
   sock.on('message', (data) => {
     try {
@@ -147,6 +202,7 @@ function openSocket(token: string): void {
         response?: BridgePermissionResponse
         sessionId?: string
         title?: string
+        images?: unknown
       }
       // 2026-08-24 审批双操作：floria 的审批结果经网关回传 → 唤醒交互权限弹窗的 bridge 竞速分支
       if (msg.type === 'approval-response' && msg.requestId) {
@@ -170,13 +226,13 @@ function openSocket(token: string): void {
         pendingResponses.delete(msg.requestId)
         return
       }
-      // 2026-08-22 模型/思考等级控制消息：网关 POST /api/model 后广播给在线 CLI，
+      // 2026-08-22 模型/思考等级控制消息：网关 POST /gateway/model 后广播给在线 CLI，
       // 走 controlOverrideHandle → REPL 侧 setAppState（与官方 useReplBridge.onSetModel 同语义）。
       if (msg.type === 'model' || msg.type === 'effort') {
         invokeControlOverride(msg.type, msg.value)
         return
       }
-      // 2026-08-25 web 重命名 → CLI 实时同步：网关 /api/session/rename 后按会话精确路由
+      // 2026-08-25 web 重命名 → CLI 实时同步：网关 /gateway/session/rename 后按会话精确路由
       // {type:'rename', sessionId, title} 给在线 CLI（routeToClient），更新内存标题缓存 +
       // 输入栏徽标，无需重启 CLI 即可看到新名字。
       if (msg.type === 'rename' && typeof msg.sessionId === 'string' && typeof msg.title === 'string') {
@@ -184,7 +240,17 @@ function openSocket(token: string): void {
         return
       }
       if (msg.type === 'send' && typeof msg.text === 'string' && msg.text.trim()) {
-        enqueue({ value: msg.text, mode: 'prompt', skipSlashCommands: true, bridgeOrigin: true } as QueuedCommand)
+        // 2026-08-28 遥测端图片：网关透传 images（base64 无 data: 前缀）→ 构造 pastedContents，
+        // 与本地粘贴图片完全同链路（enqueue → handlePromptSubmit：仅当文本 [Image #N] 占位与
+        // 图片 id 匹配才发送、执行时才 resize；孤儿图片被过滤兜底）。
+        const pasted = pastedContentsFromImages(msg.images)
+        enqueue({
+          value: msg.text,
+          mode: 'prompt',
+          skipSlashCommands: true,
+          bridgeOrigin: true,
+          ...(pasted ? { pastedContents: pasted } : {}),
+        } as QueuedCommand)
       }
     } catch {
       /* 忽略坏帧 */
@@ -218,11 +284,61 @@ function schedule(ms: number): void {
 }
 
 /**
+ * 2026-08-30 共同后端队列快照（接力文档清单#2）：commandQueue 变化 → /clients WS 发
+ * {type:'queue-state', items:[{content, ts}]} → 网关存 per-session 并 SSE 群发，web 置底
+ * 排队区数据源。只报 mode==='prompt'（用户输入；task-notification/系统项不进排队区）。
+ * content：string 直用；blocks 取 text join，纯图给占位。非关键路径，失败全静默。
+ */
+function queueItemsFromSnapshot(): Array<{ content: string; ts: number }> {
+  return getCommandQueueSnapshot()
+    .filter(cmd => cmd.mode === 'prompt')
+    .map(cmd => {
+      let content = ''
+      if (typeof cmd.value === 'string') {
+        content = cmd.value
+      } else if (Array.isArray(cmd.value)) {
+        const texts = cmd.value
+          .filter((b): b is { type: 'text'; text: string } => b?.type === 'text' && typeof b.text === 'string')
+          .map(b => b.text)
+        content = texts.join('\n') || '[图片]'
+      }
+      return { content, ts: cmd.enqueuedAt ?? Date.now() }
+    })
+}
+
+function sendQueueState(): void {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    try {
+      ws.send(JSON.stringify({ type: 'queue-state', items: queueItemsFromSnapshot() }))
+    } catch {
+      /* 断开忽略 */
+    }
+  }
+}
+
+let queueSubscriptionAttached = false
+
+/**
  * 启动网关探测 + 客户端连接（幂等单例）。在交互 REPL 新会话启动点 fire-and-forget 调用。
  */
 export function startGatewayProbeAndConnect(): void {
   if (started) return
   started = true
+  if (!queueSubscriptionAttached) {
+    queueSubscriptionAttached = true
+    subscribeToCommandQueue(() => sendQueueState())
+  }
+  // 2026-08-30 会话切换注册自愈：sessionId 变化点分散（/resume、/clear、/branch、adopt…），
+  // 事件点逐个接线易漏 → 周期自检兜底：注册 sid ≠ 当前 sid → 重注册（probeAndConnect 的
+  // openSocket 天然带新 id；ws 为 null 时无需处理，重连流程本身就读当前 sid）。
+  if (!sidWatchAttached) {
+    sidWatchAttached = true
+    setInterval(() => {
+      if (ws && registeredSid && registeredSid !== getSessionId()) {
+        refreshGatewayRegistration()
+      }
+    }, 10_000)
+  }
   void probeAndConnect()
 }
 
@@ -246,9 +362,9 @@ export function refreshGatewayRegistration(): void {
 /**
  * 上报当前会话实际模型给网关（2026-08-24 模型 web/CLI 同步）。
  *
- * 每会话模型 override（mainLoopModelOverride）只存在于本进程内存，网关 /api/models 只返回凭据池
+ * 每会话模型 override（mainLoopModelOverride）只存在于本进程内存，网关 /gateway/models 只返回凭据池
  * 全局默认 activeModel，web 模型 seat 因此与 CLI 实际使用不一致。本函数在 WS 连接后与模型切换点
- * 各调用一次，网关存 sessionId→model（TTL 10min），web 端 /api/session 读取校准。带 token query
+ * 各调用一次，网关存 sessionId→model（TTL 10min），web 端 /gateway/session 读取校准。带 token query
  *（对齐 conversationDisplay.ts 的 gatewayApiUrl 模式）；网关未起 / 未在线时静默失败。
  */
 export function reportCurrentModel(): void {
@@ -260,7 +376,7 @@ export function reportCurrentModel(): void {
     const model = getMainLoopModel()
     if (!model) return
     void fetch(
-      `${baseUrl()}/api/model-report?token=${encodeURIComponent(token)}`,
+      `${baseUrl()}/gateway/model-report?token=${encodeURIComponent(token)}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

@@ -180,6 +180,60 @@ export function removeProvider(name: string): boolean {
 }
 
 /**
+ * Find which provider's model list contains the given model.
+ * Active provider is checked first (ties resolve to it), then config order.
+ * Returns null if no provider lists the model.
+ */
+export function findModelProvider(model: string): string | null {
+  const creds = loadCredentials()
+  const cur = creds.activeProvider ? creds.providers[creds.activeProvider] : undefined
+  if (cur && Array.isArray(cur.models) && cur.models.includes(model)) {
+    return creds.activeProvider
+  }
+  for (const [name, cfg] of Object.entries(creds.providers)) {
+    if (Array.isArray(cfg.models) && cfg.models.includes(model)) return name
+  }
+  return null
+}
+
+/**
+ * 2026-08-29 直接切模型自动切供应商：模型属其它供应商 → 全局切 activeProvider
+ * 并写该供应商 activeModel（保持池状态一致）；同供应商 → 原样不动（会话级切换不写池）。
+ * 返回归属供应商名；模型不在任何供应商清单 → null。
+ */
+export function ensureProviderForModel(model: string): string | null {
+  const owner = findModelProvider(model)
+  if (!owner) return null
+  const creds = loadCredentials()
+  if (creds.activeProvider === owner) return owner
+  creds.activeProvider = owner
+  const cfg = creds.providers[owner]
+  if (cfg && Array.isArray(cfg.models) && cfg.models.includes(model)) {
+    cfg.activeModel = model
+  }
+  saveCredentials(creds)
+  return owner
+}
+
+/**
+ * Switch model globally: resolve the owning provider, switch to it and write
+ * its activeModel. Always writes (unlike ensureProviderForModel).
+ * Returns false if no provider lists the model.
+ */
+export function switchModelAuto(model: string): boolean {
+  const owner = findModelProvider(model)
+  if (!owner) return false
+  const creds = loadCredentials()
+  creds.activeProvider = owner
+  const cfg = creds.providers[owner]
+  if (cfg && Array.isArray(cfg.models) && cfg.models.includes(model)) {
+    cfg.activeModel = model
+  }
+  saveCredentials(creds)
+  return true
+}
+
+/**
  * Switch to a model within the current provider.
  */
 export function switchModel(model: string): boolean {

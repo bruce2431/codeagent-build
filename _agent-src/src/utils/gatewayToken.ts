@@ -1,8 +1,8 @@
 /**
  * gatewayToken.ts —— 内置网关 token 的共享访问点（2026-08-15 安全加固）。
  *
- * 安全修复后 HTTP 数据接口（/api/*、/preview/*）与 WS 升级一致要求 token，而 CLI 侧上报
- * （conversationDisplay.ts POST /api/conversation、/api/activity）与 localGateway.ts 同进程。
+ * 安全修复后 HTTP 数据接口（/gateway/*、/preview/*）与 WS 升级一致要求 token，而 CLI 侧上报
+ * （conversationDisplay.ts POST /gateway/conversation、/gateway/activity）与 localGateway.ts 同进程。
  * 为避免两模块互相 import 形成循环依赖（localGateway import conversationDisplay 的
  * filterConversationForDisplay），token 存到本小模块，双方各自读写即可。
  *
@@ -25,7 +25,7 @@ let diskLoadTime = 0
 // 根因=网关常比 CLI 晚起（/server on detached spawn）或 /server off→on 换新 token，而 CLI 在
 // 网关未起时首次读盘会把「空串」永久缓存（diskLoaded=true），之后 loadGatewayTokenFromDisk 永远
 // 返回空 → gatewayClient 用空 token 连 /clients 被 401 拒绝（cliClients 空 → web 消息无法注入）、
-// conversationDisplay 上报 /api/activity 同样 401（会话状态恒 None）。加 TTL 后周期性重读，
+// conversationDisplay 上报 /gateway/activity 同样 401（会话状态恒 None）。加 TTL 后周期性重读，
 // 网关后起 / 重启换 token 都能拿到新值。
 const DISK_TOKEN_TTL_MS = 3000
 const MEMORY_TOKEN_TTL_MS = 5000
@@ -105,4 +105,87 @@ export function getGatewayToken(): string {
     return disk
   }
   return currentToken
+}
+
+// ---------- 2026-08-28 设备认证配对（floria 设备授权，用户定案：完全删除 token 授权链） ----------
+// 浏览器侧不再有任何 token 授权：设备访问若未授权 → 前端门显示「设备请求码」（localStorage 持久，
+// 同一设备恒定）；用户在 PC `/server auth add <请求码>` 手动授权（不可自动化）→ 设备端
+// GET /gateway/activate?code=<码>（网关校验该码在授权名单 → 种 HttpOnly floria_auth cookie，票证=码
+// 本身）→ 永久通过统一地址 floria.home 连接。票证落盘 `.claude/gateway-tickets`（{id,created} 数组，
+// 存量 string 兼容），/server off 清盘全设备掉线。CLI 内部链路的 gateway-token（上报/WS/关闭）
+// 与浏览器认证无关，保留不动。
+const ticketsFilePath = () => join(getPortableRoot(), '.claude', 'gateway-tickets')
+let tickets: GatewayTicket[] = []
+let ticketsLoaded = false
+let ticketsLoadedAt = 0
+// 2026-08-28 修复「auth add 后设备一直未授权」：票证读盘一次性缓存改 TTL 刷新（照 gateway-token
+// 2026-08-22 同构先例）。根因=CLI 命令进程（/server auth add）与独立网关进程是两个进程，网关启动后
+// 首次校验读盘拿到空名单即永久缓存，之后 CLI 写盘的新票证网关永不重读 → /gateway/activate 永远 403。
+const TICKETS_TTL_MS = 3000
+
+interface GatewayTicket {
+  id: string
+  created: number
+}
+
+function ensureTicketsLoaded(): void {
+  const now = Date.now()
+  if (ticketsLoaded && now - ticketsLoadedAt < TICKETS_TTL_MS) return
+  ticketsLoaded = true
+  ticketsLoadedAt = now
+  try {
+    const p = ticketsFilePath()
+    if (existsSync(p)) {
+      // 存量格式 string[]（首版无 created）→ 归一化 created=0
+      const raw: unknown = JSON.parse(readFileSync(p, 'utf8'))
+      tickets = (Array.isArray(raw) ? raw : [])
+        .map((x) => (typeof x === 'string' ? { id: x, created: 0 } : (x as GatewayTicket)))
+        .filter((t) => t && typeof t.id === 'string')
+    }
+  } catch {
+    tickets = []
+  }
+}
+
+function persistTickets(): void {
+  try {
+    const p = ticketsFilePath()
+    mkdirSync(join(p, '..'), { recursive: true })
+    writeFileSync(p, JSON.stringify(tickets), 'utf8')
+  } catch {
+    /* 忽略 */
+  }
+}
+
+/** cookie 票证校验（网关 isProtected 与 WS 升级共用）。授权永久，撤销只经 /server auth off。 */
+export function isGatewayTicket(t: string): boolean {
+  if (!t) return false
+  ensureTicketsLoaded()
+  return tickets.some((x) => x.id === t)
+}
+
+/** 手动授权设备（/server auth add <请求码>）：把码加入授权名单并落盘。上限 64 个防无限增长。 */
+export function addGatewayTicket(t: string): void {
+  if (!t) return
+  ensureTicketsLoaded()
+  if (tickets.some((x) => x.id === t)) return
+  tickets.push({ id: t, created: Date.now() })
+  if (tickets.length > 64) tickets = tickets.slice(-64)
+  persistTickets()
+}
+
+/** 撤销设备授权（/server auth off <n>）。返回是否找到。 */
+export function removeGatewayTicket(t: string): boolean {
+  ensureTicketsLoaded()
+  const next = tickets.filter((x) => x.id !== t)
+  if (next.length === tickets.length) return false
+  tickets = next
+  persistTickets()
+  return true
+}
+
+/** 设备票证列表（/server auth 展示用，返回副本）。 */
+export function listGatewayTickets(): GatewayTicket[] {
+  ensureTicketsLoaded()
+  return tickets.map((t) => ({ ...t }))
 }

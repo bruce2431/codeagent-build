@@ -57,6 +57,9 @@ export type Output = z.infer<OutputSchema>
 export const GlobTool = buildTool({
   name: GLOB_TOOL_NAME,
   searchHint: 'find files by name pattern or wildcard',
+  // Fork: defer core tool — GLM-compatible upstreams drop undiscovered inline
+  // core tools; ToolSearch (select:) is the reliable fetch path.
+  shouldDefer: true,
   maxResultSizeChars: 100_000,
   async description() {
     return DESCRIPTION

@@ -126,7 +126,7 @@ export function recheckCommandQueue(): void {
  * Defaults priority to 'next' (processed before task notifications).
  */
 export function enqueue(command: QueuedCommand): void {
-  commandQueue.push({ ...command, priority: command.priority ?? 'next' })
+  commandQueue.push({ ...command, priority: command.priority ?? 'next', enqueuedAt: command.enqueuedAt ?? Date.now() })
   notifySubscribers()
   logOperation(
     'enqueue',
@@ -140,7 +140,7 @@ export function enqueue(command: QueuedCommand): void {
  * is never starved by system messages.
  */
 export function enqueuePendingNotification(command: QueuedCommand): void {
-  commandQueue.push({ ...command, priority: command.priority ?? 'later' })
+  commandQueue.push({ ...command, priority: command.priority ?? 'later', enqueuedAt: command.enqueuedAt ?? Date.now() })
   notifySubscribers()
   logOperation(
     'enqueue',

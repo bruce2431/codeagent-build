@@ -1181,6 +1181,29 @@ export function categorizeRetryableAPIError(
   return 'unknown'
 }
 
+// Fixed copy fragment shared by both refusal variants in
+// getErrorMessageIfRefusal — the only reliable marker, since refusal error
+// messages carry no errorDetails.
+export const USAGE_POLICY_REFUSAL_MARKER = 'violate our Usage Policy'
+
+/**
+ * Detect the synthetic assistant error message emitted for API refusals
+ * (stop_reason === 'refusal', see getErrorMessageIfRefusal). The request is
+ * not individually identifiable — the refusal is triggered by conversation
+ * content (commonly a policy-violating image) that will be re-sent verbatim
+ * on every subsequent turn, so callers use this to attempt recovery.
+ */
+export function isUsagePolicyRefusalMessage(msg: AssistantMessage): boolean {
+  return (
+    msg.isApiErrorMessage === true &&
+    msg.message.content.some(
+      block =>
+        block.type === 'text' &&
+        block.text.includes(USAGE_POLICY_REFUSAL_MARKER),
+    )
+  )
+}
+
 export function getErrorMessageIfRefusal(
   stopReason: BetaStopReason | null,
   model: string,

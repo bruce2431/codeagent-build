@@ -301,6 +301,8 @@ export type QueuedCommand = {
   mode: PromptInputMode
   /** Defaults to the priority implied by `mode` when enqueued. */
   priority?: QueuePriority
+  /** 入队时刻（ms，2026-08-30 队列快照上报链：web 排队区小气泡排序/展示用） */
+  enqueuedAt?: number
   uuid?: UUID
   orphanedPermission?: OrphanedPermission
   /** Raw pasted contents including images. Images are resized at execution time. */

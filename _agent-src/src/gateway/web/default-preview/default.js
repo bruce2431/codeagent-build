@@ -1,4 +1,4 @@
-// default.js —— 默认项目预览页（GitHub 仓库风格）：从网关 /api/project 拉项目数据，
+// default.js —— 默认项目预览页（GitHub 仓库风格）：从网关 /gateway/project 拉项目数据，
 // 渲染 文件树 + README + About + 会话列表；会话点击 postMessage 通知父级（app.js）打开会话。
 (function () {
   'use strict'
@@ -195,7 +195,7 @@
   )
 
   // ---------------- 拉取数据 ----------------
-  const api = '/api/project?label=' + encodeURIComponent(label) + (token ? '&token=' + encodeURIComponent(token) : '')
+  const api = '/gateway/project?label=' + encodeURIComponent(label) + (token ? '&token=' + encodeURIComponent(token) : '')
   fetch(api)
     .then((r) => {
       if (!r.ok) throw new Error('HTTP ' + r.status)

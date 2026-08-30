@@ -5,10 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>floria</title>
   <meta name="theme-color" content="#ffffff" />
-  <link rel="manifest" href="manifest.json" />
-  <link rel="icon" href="icon.ico" type="image/x-icon" />
-  <link rel="apple-touch-icon" href="icon.ico" />
-  <link rel="stylesheet" href="styles.css?v=132" />
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="icon" href="/icon.ico" type="image/x-icon" />
+  <link rel="apple-touch-icon" href="/icon.ico" />
+  <!-- 2026-08-28 资源改绝对路径：SPA 路径路由（/session/<hash> 等）下相对路径会解析到子路径 404 -->
+  <link rel="stylesheet" href="/styles.css?v=185" />
 </head>
 <body>
 <div id="app">
@@ -35,7 +36,7 @@
       <div class="panel-inner">
         <div class="panel-header">
           <a class="floria-logo" href="#/">
-            <img class="brand-ico" src="icon.ico" alt="Floria" />
+            <img class="brand-ico" src="/icon.ico" alt="Floria" />
             <span>Floria</span><span id="floria-conn"></span>
           </a>
           <div class="panel-actions">
@@ -99,18 +100,22 @@
     <div id="gate-screen" hidden>
       <div class="g-stage" id="g-stage">
         <div class="g-media">
-          <img id="g-token" class="g-ph" src="gate/state-token.webp?v=2" alt="请求 Token"/>
+          <img id="g-token" class="g-ph" src="/gate/state-token.webp?v=2" alt="请求 Token"/>
           <video id="g-video" class="g-ph" muted playsinline preload="auto">
-            <source src="gate/transition.webm?v=2" type="video/webm"/>
-            <source src="gate/transition.mp4?v=2" type="video/mp4"/>
+            <source src="/gate/transition.webm?v=2" type="video/webm"/>
+            <source src="/gate/transition.mp4?v=2" type="video/mp4"/>
           </video>
-          <img id="g-new" class="g-ph" src="gate/state-newchat.webp?v=2" alt="新对话"/>
+          <img id="g-new" class="g-ph" src="/gate/state-newchat.webp?v=2" alt="新对话"/>
         </div>
         <div class="g-ui">
           <!-- 阶段1：token 表单嵌角色白板内（无边界纯隐藏胶囊输入栏，回车提交） -->
           <div id="g-card">
             <div class="g-bar">
-              <input id="g-token-input" type="text" placeholder="请求 Token…" autocomplete="off"/>
+              <!-- 2026-08-28 设备认证配对：不再输入 token，门显示设备请求码，PC /server auth add 后自动进入 -->
+              <div id="g-pair">
+                <div id="g-pair-code">— — — —</div>
+                <div class="g-pair-hint">PC 端运行 /server auth add &lt;请求码&gt; 完成授权</div>
+              </div>
             </div>
           </div>
           <!-- 阶段2：过渡视频（验证提示已按用户要求移除 2026-08-18） -->
@@ -125,7 +130,7 @@
          仅已开始的对话（#chat-area.in-session）+ 侧栏折叠（#sidebar 无 .open）+ 宽屏时显示，
          首页新对话不显示；pointer-events:none 不挡交互。
          2026-08-15 临时隐藏中：styles.css #char display:none（代码保留空跑），删除该行即恢复 -->
-    <img id="char" src="char/1.jpg" alt="AI 形象" draggable="false" />
+    <img id="char" src="/char/1.jpg" alt="AI 形象" draggable="false" />
     <div id="chat-scroll"><div id="messages"></div></div>
     <!-- 空态（token 门验证后）：与 SubPj3 阶段3 一致——居中正方形趴栏图铺满；
          输入栏（#input-wrap）在 stage 内真相对定位（SubPj3 同款：top=台面 76.75% − 半高 26px），
@@ -133,7 +138,7 @@
     <div id="empty-hint">
       <div class="g-stage">
         <div class="g-media">
-          <img class="g-ph empty-ico" src="gate/state-newchat.webp?v=2" alt="Floria" />
+          <img class="g-ph empty-ico" src="/gate/state-newchat.webp?v=2" alt="Floria" />
         </div>
         <!-- 项目新建会话指示：项目「+」先到初始化界面（同笔），首条消息才真正建会话；此处显示目标项目 -->
         <div id="new-proj-chip" class="new-proj-chip" hidden></div>
@@ -143,9 +148,12 @@
                右 .trailing = .trigger 模型·推理座 + .primary 发送]。
                2026-08-21 用户纠正：完全移植源码，不再自作主张加 upload/think/mic 胶囊） -->
           <div id="input-bar">
+            <!-- 图片附件胶囊（2026-08-28）：待发送图片缩略图行；入口在 + 浮窗「图片」tab（vision 门控） -->
+            <div id="img-pills" hidden></div>
             <div id="input" contenteditable="true" role="textbox" aria-multiline="true" data-ph="输入消息，Enter 发送"></div>
             <div class="row">
               <div class="tools">
+                <input id="img-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden />
                 <button id="cmd-btn" class="add" title="命令" aria-label="命令" aria-haspopup="listbox"></button>
                 <div class="modes"></div>
               </div>
@@ -220,6 +228,6 @@
   </div>
 </div>
 <div id="toast" class="toast" hidden></div>
-<script src="app.js?v=133"></script>
+<script src="/app.js?v=185"></script>
 </body>
 </html>

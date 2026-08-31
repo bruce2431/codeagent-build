@@ -87,6 +87,7 @@ import { extractTag, isCompactBoundaryMessage } from './messages.js'
 import {
   extractJsonStringField,
   extractLastJsonStringField,
+  findLastCustomTitleCached,
   LITE_READ_BUF_SIZE,
   readHeadAndTail,
   readTranscriptForLoad,
@@ -4742,6 +4743,7 @@ async function readLiteMetadata(
   filePath: string,
   fileSize: number,
   buf: Buffer,
+  mtimeMs: number,
 ): Promise<LiteMetadata> {
   const { head, tail } = await readHeadAndTail(filePath, fileSize, buf)
   if (!head) return { firstPrompt: '', isSidechain: false }
@@ -4770,11 +4772,28 @@ async function readLiteMetadata(
   // User titles (customTitle field, from custom-title entries) win over
   // AI titles (aiTitle field, from ai-title entries). The distinct field
   // names mean extractLastJsonStringField naturally disambiguates.
-  const customTitle =
+  let customTitle =
     extractLastJsonStringField(tail, 'customTitle') ??
     extractLastJsonStringField(head, 'customTitle') ??
     extractLastJsonStringField(tail, 'aiTitle') ??
     extractLastJsonStringField(head, 'aiTitle')
+
+  // B2 镜像（2026-08-31，对齐网关 localGateway.ts parseMeta 的二次修正触发条件）：
+  // 巨型消息（贴图 base64 单行 MB 级，磁盘实证 d258ef23：1.05MB 行 2 + 行 4 标题）可把
+  // custom-title 记录推出 head/tail 两个 64KB 窗口，且运行中/异常退出会话尾部无 re-append
+  // 标题 → 双窗皆空 → 列表回退 firstPrompt。仅当尾窗无 custom-title 且文件大于单窗时才
+  // 反向扫描——尾窗内任意 custom-title 必为文件最后一条（记录按位置递增），无需扫描；
+  // 反向扫描命中用户标题时覆盖 aiTitle 回退链（用户标题 > AI 标题）。
+  if (
+    tail !== head &&
+    extractJsonStringField(tail, 'customTitle') === undefined
+  ) {
+    const last = await findLastCustomTitleCached(filePath, {
+      size: fileSize,
+      mtime: mtimeMs,
+    })
+    if (last) customTitle = last
+  }
   const summary = extractLastJsonStringField(tail, 'summary')
   const tag = extractLastJsonStringField(tail, 'tag')
   const gitBranch =
@@ -5028,7 +5047,12 @@ async function enrichLog(
 ): Promise<LogOption | null> {
   if (!log.isLite || !log.fullPath) return log
 
-  const meta = await readLiteMetadata(log.fullPath, log.fileSize ?? 0, readBuf)
+  const meta = await readLiteMetadata(
+    log.fullPath,
+    log.fileSize ?? 0,
+    readBuf,
+    log.modified.getTime(),
+  )
 
   const enriched: LogOption = {
     ...log,

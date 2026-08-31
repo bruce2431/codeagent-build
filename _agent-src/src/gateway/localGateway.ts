@@ -22,7 +22,7 @@
  */
 import { createServer, request as httpRequest, type Server } from 'node:http'
 import { readFileSync, writeFileSync, existsSync, statSync, readdirSync, openSync, closeSync, truncateSync, watch, type FSWatcher } from 'node:fs'
-import { open as fsOpen, stat } from 'node:fs/promises'
+import { stat } from 'node:fs/promises'
 import { join, resolve, extname, basename, sep, isAbsolute } from 'node:path'
 import { randomBytes, randomUUID } from 'node:crypto'
 import type { UUID } from 'crypto'
@@ -35,7 +35,7 @@ import { getPortableRoot, getClaudeConfigHomeDir } from '../utils/envUtils.js'
 import { getProjectRoot } from '../bootstrap/state.js'
 import {
   extractJsonStringField,
-  extractLastJsonStringField,
+  findLastCustomTitleCached,
   readSessionLite,
 } from '../utils/sessionStoragePortable.js'
 import { parseSessionInfoFromLite } from '../utils/listSessionsImpl.js'
@@ -78,6 +78,12 @@ const sockets = new Set<WebSocket>()
 // 2026-08-17 网关独立化：CLI 进程（非网关宿主）作为 WS 客户端连 /clients 注册自己的
 // sessionId。遥测端发消息时网关按 sessionId 路由转发给对应 CLI，由 CLI 注入其 REPL。
 const cliClients = new Map<string, WebSocket>()
+// 2026-08-31 防双进程（遥测端同步异常根修）：/clients 注册时间戳（每会话最近一次）。
+// 普通 CLI 断连重连的 ~1s 窗口内 cliClients 暂 miss，此前 resume 链路直接 spawn → 与重连中的
+// 原进程形成同会话双进程（每秒互踢乒乓 + 双写 jsonl，永不自愈，2026-08-30 92bbd49b 实锤）。
+// 10s 内有注册痕迹 = 活进程在重连 → 复用不 spawn。痕迹不清理（仅时间戳，内存开销可忽略）。
+const cliRegisterAt = new Map<string, number>()
+const CLI_RECENT_REGISTER_MS = 10_000
 const sseClients = new Set<{ res: import('node:http').ServerResponse }>()
 let ssePrimed = false
 const sseSizes = new Map<string, { size: number; mtime: number }>()
@@ -278,33 +284,14 @@ function webSessionProjectRoot(project: string | undefined): string {
   return getPortableRoot()
 }
 
-// web 会话 exe 定位（2026-08-24 用户定案）：
-//  - project 指定（项目 label）→ 该项目根下找 cli-dev*.exe（带时间戳的 PRIVATE_GATEWAY 版本优先，取时间戳最大）
-//    例：Pj14 → @WrokSpace\Pj14-AI动画制作\cli-dev-20260816212109-PRIVATE_GATEWAY.exe
-//  - 未指定（笔/首页消息发送）→ 全局根（便携根 getPortableRoot()）下找 cli-dev*.exe
-//    例：@WrokSpace\cli-dev-20260820192634-PRIVATE_GATEWAY.exe
-//  - 找不到 → 回退网关自身 exe（process.execPath）
-function webSessionExe(project: string | undefined): string {
-  const candidates: string[] = []
-  if (project && project.trim()) {
-    const g = findProjects(getPortableRoot()).find((x) => x.scope === 'project' && x.label === project)
-    if (g) candidates.push(resolve(g.dir, '..', '..'))
-  } else {
-    candidates.push(getPortableRoot())
-  }
-  for (const dir of candidates) {
-    let files: string[] = []
-    try {
-      files = readdirSync(dir).filter((f) => /^cli-dev.*\.exe$/i.test(f))
-    } catch {
-      continue
-    }
-    if (!files.length) continue
-    // 带时间戳的 PRIVATE_GATEWAY 版本优先（按名称排序取最大时间戳）；否则任意 cli-dev*.exe
-    const stamped = files.filter((f) => /cli-dev-\d{14}-PRIVATE_GATEWAY\.exe/i.test(f)).sort().pop()
-    const chosen = stamped ?? files[0]
-    return join(dir, chosen)
-  }
+// web 会话 exe 定位（2026-08-31 根修，取代 2026-08-24 目录扫描旧案）：
+//  一律用网关自身 exe（process.execPath）——与网关同二进制，探测/注册协议必然匹配。
+//  旧案「笔=全局根/项目=项目根下扫 cli-dev*.exe」废弃：08-30 网关 API 前缀迁 /gateway/* 且根
+//  /api 撤空后，目录里的旧 exe（全局根仅 08-29 版 140859，Pj1/Pj11/Pj14/Pj17/Pj2 项目根更旧）
+//  探测 /api/health 404 → 永不注册 → wsession 20s 超时 =「遥测端无法启动新会话」
+//  （20260830222122 委派，异常1/2 双会话独立实锤）。会话落盘位置与 exe 来源无关
+//  （cwd 由 webSessionProjectRoot 决定，08-24 落盘定案不受影响）。
+function webSessionExe(): string {
   return process.execPath
 }
 
@@ -381,7 +368,7 @@ function lanAddress(): string | null {
 // 的 A 查询，返回本机全部局域网 IPv4 —— 任何同 WiFi/热点设备打开 http://floria.local:<port>/
 // 即免配置连入（Apple/Windows 原生 mDNS 解析 .local；Android 浏览器支持差，IP 直连兜底）。
 // 地址发现与 HTTP 绑定解耦：HTTP 仍绑 0.0.0.0，mDNS 只解决「设备怎么找到本机 IP」——
-// 应答时实时读网卡，IP/网络变化自动跟随，无需配置路由器 DNS（热点场景同样工作）。
+// 应答时实时读网卡，无需配置路由器 DNS（热点场景同样工作）。
 // 手写最小应答器（查询解析 + A 记录构造），不引 multicast-dns 依赖（bun compile 下
 // dgram 多播 bind/addMembership/send 已实测可用）；5353 被其它 mDNS 服务占用时静默
 // 放弃（自动路径禁抢端口，回落 IP 直连）。
@@ -391,7 +378,16 @@ const MDNS_PORT = 5353
 const MDNS_GROUP = '224.0.0.251'
 // 120s：IP 变化后旧缓存两分钟过期，设备重新查询即拿新地址
 const MDNS_RECORD_TTL = 120
-let mdnsSocket: ReturnType<typeof createSocket> | null = null
+// 2026-08-31 多接口根修：旧版单 socket bind 首个 LAN 地址，Windows 上绑定具体单播 IP 的
+// socket 只收该接口的组播（addMembership 指定其它接口对其无效）——热点（移动热点虚拟适配器
+// 192.168.137.1）与 WLAN 并存时，热点侧 iPad 的查询 WLAN socket 收不到 → floria.local 永不
+// 解析。改为每 LAN IP 一个 socket（bind 该 IP + 该接口入组）：应答从查询到达的 socket 发出，
+// 源 IP/出接口天然正确；A 记录只回该 socket 的 bind IP（查询来自哪个网段就回哪个可达地址，
+// 不再让设备先试到别的网段 IP 拖慢/失败）。
+const mdnsSockets = new Map<string, ReturnType<typeof createSocket>>() // bind IP → socket
+// 网络切换自愈（2026-08-30 热点根修）：30s 轮询实时读网卡，LAN 地址集合变化即全量重建。
+let mdnsWatchTimer: ReturnType<typeof setInterval> | null = null
+const MDNS_WATCH_INTERVAL = 30_000
 
 function mdnsLanAddrs(): string[] {
   const out: string[] = []
@@ -432,60 +428,66 @@ function mdnsReadName(buf: Buffer, offset: number): { name: string; next: number
 }
 
 function mdnsStart(): void {
-  if (mdnsSocket) return
+  if (mdnsSockets.size) return
+  // 每个 LAN IP 一个 socket（多接口根修，见 mdnsSockets 注释）。Meta TUN（198.18.0.1）等
+  // 已被 mdnsLanAddrs 过滤，bind 恒为真实接口地址（2026-08-29 Meta TUN 根修延续：Windows 上
+  // 绑定特定单播地址压过多播路由 metric，bun 的 setMulticastInterface 无效）。
+  // 无 LAN 地址（DHCP 未就绪等）不建 socket，等 mdnsWatch 下轮重试（旧版降级 bind 0.0.0.0
+  // 会被 Meta TUN 吸走多播，弃用）。
+  for (const ip of mdnsLanAddrs()) mdnsStartOne(ip)
+  // timer 无条件启动（2026-08-31 自旋根修）：bind 是异步的，mdnsStart 返回时 mdnsSockets 尚空，
+  // 旧条件 `mdnsSockets.size &&` 恒 false → watch 从未启动 → 网络切换后应答器永远绑死旧地址
+  // （热点场景 floria.local 永不解析的直接根因）。watch 对比集合自动收敛，无需 map 非空前置。
+  if (!mdnsWatchTimer) mdnsWatchTimer = setInterval(mdnsWatch, MDNS_WATCH_INTERVAL)
+}
+
+function mdnsStartOne(ip: string): void {
   const sock = createSocket({ type: 'udp4', reuseAddr: true })
   sock.on('error', () => {
-    // 5353 被占/防火墙拒绝等：静默放弃（回落 IP 直连），不拖垮网关
+    // 5353 被占/防火墙拒绝等：该接口静默退出（其余接口照常），不拖垮网关
     try {
       sock.close()
     } catch {
       /* 忽略 */
     }
-    if (mdnsSocket === sock) mdnsSocket = null
-    console.error('[gateway] mDNS 应答器启动失败（floria.local 不可用，回落 IP 直连）')
+    if (mdnsSockets.get(ip) === sock) mdnsSockets.delete(ip)
+    console.error(`[gateway] mDNS 应答器启动失败（${ip}，该接口回落 IP 直连）`)
   })
   sock.on('message', (msg: Buffer, rinfo: RemoteInfo) => {
     try {
-      mdnsHandleQuery(sock, msg, rinfo)
+      mdnsHandleQuery(sock, ip, msg, rinfo)
     } catch {
       /* 忽略坏包 */
     }
   })
-  // 绑定到真实 LAN 地址（2026-08-29 Meta TUN 根修）：Windows 上 socket 绑定特定单播地址时，
-  // 多播默认出接口 = 该地址所属接口，压过 224.0.0.0/4 路由 metric 选择——Meta TUN（198.18.0.1，
-  // metric 0 默认路由 + 多播 256 < WLAN 286）在线时 bind 0.0.0.0 的多播应答整个被吸进隧道，
-  // 查询入站正常、应答从未上 WLAN 空气（受控实验实证：应答 src 变 198.18.0.1 且仅本地回环）。
-  // bun 的 setMulticastInterface 在 Windows 无效（不抛错但不生效），bind 具体地址实测有效。
-  // 无 LAN 地址（DHCP 未就绪等）回退 0.0.0.0（行为同旧版）。
-  const bindAddr = mdnsLanAddrs()[0]
-  const onMdnsBound = () => {
+  sock.bind(MDNS_PORT, ip, () => {
     try {
-      sock.addMembership(MDNS_GROUP)
-      // 多网卡：每个局域网接口都入组，WiFi/热点并存时任一网段的查询都能收到
-      for (const ip of mdnsLanAddrs()) {
-        try {
-          sock.addMembership(MDNS_GROUP, ip)
-        } catch {
-          /* 单接口失败不致命 */
-        }
-      }
-      mdnsSocket = sock
-      console.log('[gateway] mDNS 应答器就绪：floria.local → 本机局域网地址')
+      sock.addMembership(MDNS_GROUP, ip)
+      mdnsSockets.set(ip, sock)
+      console.log(`[gateway] mDNS 应答器就绪：floria.local → ${ip}`)
     } catch (e) {
       try {
         sock.close()
       } catch {
         /* 忽略 */
       }
-      if (mdnsSocket === sock) mdnsSocket = null
-      console.error(`[gateway] mDNS 入组失败: ${(e as Error).message}`)
+      if (mdnsSockets.get(ip) === sock) mdnsSockets.delete(ip)
+      console.error(`[gateway] mDNS 入组失败（${ip}）: ${(e as Error).message}`)
     }
-  }
-  if (bindAddr) sock.bind(MDNS_PORT, bindAddr, onMdnsBound)
-  else sock.bind(MDNS_PORT, onMdnsBound)
+  })
 }
 
-function mdnsHandleQuery(sock: ReturnType<typeof createSocket>, msg: Buffer, rinfo: RemoteInfo): void {
+// 轮询检测网络切换：LAN 地址集合与当前 socket 集合不同即全量重建（增删接口都覆盖）。
+// 无地址（断网抖动瞬间）不动，保持旧 socket 自生自灭，避免中途降级。
+function mdnsWatch(): void {
+  const cur = mdnsLanAddrs()
+  if (cur.join(',') === [...mdnsSockets.keys()].join(',')) return
+  console.log(`[gateway] 检测到网络切换（${[...mdnsSockets.keys()].join('/') || '无'} → ${cur.join('/') || '无'}），重建 mDNS 应答器`)
+  mdnsStop()
+  mdnsStart()
+}
+
+function mdnsHandleQuery(sock: ReturnType<typeof createSocket>, bindIp: string, msg: Buffer, rinfo: RemoteInfo): void {
   if (msg.length < 12 + 5) return
   // QR=1（应答）不处理：无参 addMembership 落在默认多播接口（Meta TUN 时 = 198.18.0.1），
   // 本机自发的多播应答经 IP_MULTICAST_LOOP 回环后会被自己收到——无此检查会形成应答→再应答
@@ -511,9 +513,9 @@ function mdnsHandleQuery(sock: ReturnType<typeof createSocket>, msg: Buffer, rin
     off = parsed.next + 4
   }
   if (hitStart < 0) return
-  const addrs = mdnsLanAddrs()
-  if (!addrs.length) return
-  // 应答：header(QR=1 AA=1) + 原样问题段（仅匹配问题）+ N 条 A 记录（NAME 用压缩指针
+  // A 记录只回查询到达接口的 bind IP（多接口根修）：设备从哪个网段问，就答哪个网段的可达地址
+  const addrs = [bindIp]
+  // 应答：header(QR=1 AA=1) + 原样问题段（仅匹配问题）+ 1 条 A 记录（NAME 用压缩指针
   // 0xc00c 指向应答包内偏移 12 = 问题起始，问题段虽来自打包查询中段，指针仍指向正确）
   const header = Buffer.alloc(12)
   header.writeUInt16BE(0x8400, 2)
@@ -541,14 +543,18 @@ function mdnsHandleQuery(sock: ReturnType<typeof createSocket>, msg: Buffer, rin
 }
 
 function mdnsStop(): void {
-  if (!mdnsSocket) return
-  const sock = mdnsSocket
-  mdnsSocket = null
-  try {
-    sock.close()
-  } catch {
-    /* 忽略 */
+  if (mdnsWatchTimer) {
+    clearInterval(mdnsWatchTimer)
+    mdnsWatchTimer = null
   }
+  for (const sock of mdnsSockets.values()) {
+    try {
+      sock.close()
+    } catch {
+      /* 忽略 */
+    }
+  }
+  mdnsSockets.clear()
 }
 
 // 静态资源根：SubPj1 前端优先，SubPj2 本地 public 兜底。
@@ -690,72 +696,11 @@ function countUserAssistant(text: string): number {
 
 type SessionMeta = { sidechain: true } | { title: string; messageCount: number; updatedAt: number }
 
-// 大文件兜底：head/tail 64KB 窗口可能不含最后一条 custom-title（CLI 进程未正常退出
-// 或最后一次 rename 后又追加大量消息，re-append 保证失效）。反向分块扫描文件，
-// 找最后一条 {"type":"custom-title",...} 记录。命中即返回；未命中至多反向扫一遍。
-const CUSTOM_TITLE_MARKER = '"type":"custom-title"'
-async function findLastCustomTitle(file: string): Promise<string | undefined> {
-  const CHUNK = 512 * 1024
-  const OVERLAP = 64 * 1024
-  const fh = await fsOpen(file, 'r')
-  try {
-    const { size } = await fh.stat()
-    let end = size
-    while (end > 0) {
-      const start = Math.max(0, end - CHUNK)
-      const len = end - start
-      const buf = Buffer.allocUnsafe(len)
-      const { bytesRead } = await fh.read(buf, 0, len, start)
-      const chunk = buf.toString('utf8', 0, bytesRead)
-      let idx = chunk.lastIndexOf(CUSTOM_TITLE_MARKER)
-      while (idx >= 0) {
-        const lineStart = chunk.lastIndexOf('\n', idx - 1) + 1
-        const lineEnd = chunk.indexOf('\n', idx)
-        const line = lineEnd >= 0 ? chunk.slice(lineStart, lineEnd) : chunk.slice(lineStart)
-        // 只认真正的 custom-title 记录行（避免消息内容里恰好出现的相似文本）
-        if (!line.trimStart().startsWith('{"type":"custom-title"')) {
-          idx = chunk.lastIndexOf(CUSTOM_TITLE_MARKER, idx - 1)
-          continue
-        }
-        const t = extractLastJsonStringField(line, 'customTitle')
-        if (t) return t
-        idx = chunk.lastIndexOf(CUSTOM_TITLE_MARKER, idx - 1)
-      }
-      // 重叠向前推进，避免记录跨块边界被切漏
-      end = start + OVERLAP
-    }
-    return undefined
-  } finally {
-    await fh.close()
-  }
-}
-
-// B2（2026-08-26）：运行中/异常退出时，最新 custom-title 可能被后续大量消息推出
-// readLiteMetadata 的 head/tail 64KB 窗口，列表显示 head 里的旧标题（B1 磁盘实证
-// d95e3566）。findLastCustomTitle 反向扫描能拿到文件里最后一条 custom-title，但对
-// 大文件全量扫描有代价——这里按 (size, mtime) 缓存，文件未变化则复用扫描结果。
+// B2（2026-08-26）大文件兜底（反向扫描 findLastCustomTitle 及其 (size, mtime) 缓存）
+// 2026-08-31 迁入共享权威 sessionStoragePortable.ts（findLastCustomTitleCached），
+// 与 CLI readLiteMetadata 同源；共享版并修复原本地副本在 start===0 时
+// end=start+OVERLAP 的自旋缺陷（无任何 custom-title 记录的文件会死循环）。
 // 标题写入仍只由 sessionStorage.ts 的 saveCustomTitle/saveAgentName 负责，网关不另造标题存储。
-const lastCustomTitleCache = new Map<
-  string,
-  { size: number; mtime: number; title?: string }
->()
-async function findLastCustomTitleCached(
-  file: string,
-  lite: { size: number; mtime: number },
-): Promise<string | undefined> {
-  const cached = lastCustomTitleCache.get(file)
-  if (cached && cached.size === lite.size && cached.mtime === lite.mtime) {
-    return cached.title
-  }
-  const title = await findLastCustomTitle(file)
-  lastCustomTitleCache.set(file, { size: lite.size, mtime: lite.mtime, title })
-  if (lastCustomTitleCache.size > 500) {
-    // 防无限增长：清掉最旧一半（Map 保持插入序）
-    const keys = [...lastCustomTitleCache.keys()]
-    for (const k of keys.slice(0, 250)) lastCustomTitleCache.delete(k)
-  }
-  return title
-}
 
 async function parseMeta(file: string): Promise<SessionMeta | null> {
   const lite = await readSessionLite(file)
@@ -2124,11 +2069,20 @@ function resumeAndDeliver(
     resumingSessions.set(sessionId, p)
   }
   p.then(() => {
-    const t = cliClients.get(sessionId)
-    if (t && t.readyState === WebSocket.OPEN) {
-      t.send(JSON.stringify(images.length ? { type: 'send', text, images } : { type: 'send', text }))
+    // 2026-08-31 防双进程路径：复用的活进程可能仍在断连重连（cliClients 暂 miss）——
+    // 轮询等其重新注册再注入（最长 5s，400ms 间隔），替代原「miss 即报未注入」单次判定。
+    const t0 = Date.now()
+    const tryInject = (): void => {
+      const t = cliClients.get(sessionId)
+      if (t && t.readyState === WebSocket.OPEN) {
+        t.send(JSON.stringify(images.length ? { type: 'send', text, images } : { type: 'send', text }))
+      } else if (Date.now() - t0 < 5000) {
+        setTimeout(tryInject, 400)
+      } else {
+        ws.send(JSON.stringify({ type: 'status', state: '会话恢复后仍未连接，消息未注入' }))
+      }
     }
-    else ws.send(JSON.stringify({ type: 'status', state: '会话恢复后仍未连接，消息未注入' }))
+    tryInject()
   }).catch((e) => {
     ws.send(JSON.stringify({ type: 'status', state: '恢复会话失败：' + (e.message || e) }))
   })
@@ -2639,6 +2593,15 @@ function spawnWebSession(resume?: string, project?: string): Promise<string> {
     if (existing) existing.lastActive = Date.now()
     return Promise.resolve(resume)
   }
+  // 2026-08-31 防双进程根修：近期有 /clients 注册痕迹 = 活进程在断连重连 → 复用不 spawn
+  //（双进程乒乓根因，见 cliRegisterAt 注释）。wsession（点开会话）与 resumeAndDeliver（发送
+  // 即 resume）两个调用路径同时受保护。边界：进程刚死 10s 内 resume 会误判复用 → 注入轮询
+  // 5s miss 后报「未注入」，重发即正常（痕迹超窗）。若真进程活着，它重连回来即恢复路由。
+  const lastReg = resume ? cliRegisterAt.get(resume) : undefined
+  if (resume && lastReg && Date.now() - lastReg < CLI_RECENT_REGISTER_MS) {
+    console.log(`[gateway] wsession: 近期注册痕迹（${Date.now() - lastReg}ms 前），复用活进程不 spawn sid=${resume}`)
+    return Promise.resolve(resume)
+  }
   // resume 未显式指定项目时，按磁盘会话文件定位项目（项目会话切回后仍落在原项目，web/CLI 一视同仁）
   let effectiveProject = project
   if (resume && !effectiveProject) {
@@ -2652,11 +2615,14 @@ function spawnWebSession(resume?: string, project?: string): Promise<string> {
     // 可见交互窗口：PowerShell Start-Process -PassThru（console 程序默认开新终端窗口，stdio 连窗口）。
     // 单引号 PS 字符串无转义（仅 '' 表示字面 '），复用 terminalLauncher.psQuote 同款策略。
     const psQuote = (s: string): string => `'${s.replace(/'/g, "''")}'`
-    // 2026-08-24 用户定案：exe 按会话来源选择——笔（无 project）= 全局根下 cli-dev exe；
-    // 项目 = 项目目录内 cli-dev exe；未找到 → 回退网关自身 exe。
-    const exe = webSessionExe(effectiveProject)
+    // 2026-08-31 根修：exe 一律网关自身（协议必然匹配；目录扫描旧案已废，见 webSessionExe 注释）
+    const exe = webSessionExe()
     // 注入 FLOIRA_GATEWAY（CLI 探测网关地址；网关换过端口时回退 127.0.0.1:8124 会探测失败）
     const gwUrl = `http://127.0.0.1:${currentPort}`
+    // 2026-08-31 取证日志（20260830222122 事故：spawn 全程零日志，「日志无失败记录」是假象）
+    console.log(
+      `[gateway] wsession: spawn 开始 resume=${resume ?? '新建'} sid=${sid} project=${effectiveProject ?? '(笔/全局根)'} exe=${exe} cwd=${cwd}`,
+    )
     const ps = [
       `$env:FLOIRA_GATEWAY = ${psQuote(gwUrl)};`,
       `$p = Start-Process -FilePath ${psQuote(exe)} -ArgumentList ${args.map(psQuote).join(',')} -WorkingDirectory ${psQuote(cwd)} -PassThru;`,
@@ -2688,6 +2654,7 @@ function spawnWebSession(resume?: string, project?: string): Promise<string> {
     const timer = setInterval(() => {
       if (cliClients.has(sid)) {
         clearInterval(timer)
+        console.log(`[gateway] wsession: 注册成功 sid=${sid} 耗时=${((Date.now() - startedAt) / 1000).toFixed(1)}s`)
         const cliPid = Number(outBuf.trim())
         const proc: WebSessionProc = {
           sessionId: sid,
@@ -2704,6 +2671,9 @@ function spawnWebSession(resume?: string, project?: string): Promise<string> {
       }
       if (Date.now() - startedAt > REGISTER_TIMEOUT_MS) {
         clearInterval(timer)
+        console.error(
+          `[gateway] wsession: 注册超时 sid=${sid} exe=${exe}（${REGISTER_TIMEOUT_MS / 1000}s 内未完成 /clients 注册，CLI 启动失败或探测不到网关）`,
+        )
         if (child.pid && isPidAlive(child.pid)) killTree(child.pid)
         reject(new Error(`web 会话启动超时（${REGISTER_TIMEOUT_MS / 1000}s 内未完成网关注册）`))
       }
@@ -2715,6 +2685,7 @@ function spawnWebSession(resume?: string, project?: string): Promise<string> {
       const cliPid = Number(outBuf.trim())
       if (code !== 0 && !cliPid && !webSessions.has(sid)) {
         clearInterval(timer)
+        console.error(`[gateway] wsession: 打开 CLI 窗口失败 sid=${sid} powershell exit=${code ?? '?'}`)
         reject(new Error(`打开本地 CLI 窗口失败（powershell exit ${code ?? '?'}）`))
       }
     })
@@ -2785,7 +2756,30 @@ function scheduleIdleShutdown(): void {
   idleTimer.unref?.()
 }
 
+// 2026-08-31 取证强化：网关日志逐行加 [MM-DD HH:MM:SS] 时间戳。落盘是 fd 重定向（server.ts
+// spawnGatewayProcess stdio 直传 fd），无法在落盘侧加前缀 → 输出侧劫持 console。startLocalGateway
+// 仅 --gateway 独立进程调用（cli.tsx fast-path），不影响 CLI 进程自身输出。2026-08-30 新会话
+// 事故：日志无时间戳严重妨碍取证（「多次重启发生在何时」无法判读）。
+let gatewayConsoleStamped = false
+function stampGatewayConsole(): void {
+  if (gatewayConsoleStamped) return
+  gatewayConsoleStamped = true
+  const p2 = (n: number): string => String(n).padStart(2, '0')
+  const stamp = (): string => {
+    const d = new Date()
+    return `${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`
+  }
+  const wrap =
+    (orig: (...a: unknown[]) => void) =>
+    (...a: unknown[]) =>
+      orig(`[${stamp()}]`, ...a)
+  console.log = wrap(console.log)
+  console.error = wrap(console.error)
+  console.warn = wrap(console.warn)
+}
+
 export function startLocalGateway(opts?: { host?: string; port?: number; token?: string }): LocalGatewayInfo {
+  stampGatewayConsole()
   gatewayStopping = false
   if (server) {
     const lan = lanAddress()
@@ -2872,6 +2866,9 @@ export function startLocalGateway(opts?: { host?: string; port?: number; token?:
       wss?.handleUpgrade(req, socket, head, (ws) => {
         const prev = cliClients.get(sid)
         if (prev && prev !== ws) {
+          // 2026-08-31 取证（同步异常根修）：重复注册顶替旧连接此前零日志（盲区）——高频出现
+          // 即「同会话双进程乒乓」（两进程注册同一 sid 互踢，消息路由 50% miss，2026-08-30 92bbd49b 实锤）。
+          console.log(`[gateway] /clients 重复注册顶替旧连接 sid=${sid}（高频出现=同会话双进程乒乓）`)
           try {
             prev.close()
           } catch {
@@ -2879,6 +2876,7 @@ export function startLocalGateway(opts?: { host?: string; port?: number; token?:
           }
         }
         cliClients.set(sid, ws)
+        cliRegisterAt.set(sid, Date.now())
         approvalTrailPush('cli-register', sid)
         ensureSseWatches(root) // P0：新 CLI 会话上线（web spawn / 终端在全新项目首开会话）→ 补齐其落盘目录 watch
         scheduleIdleShutdown()

@@ -406,9 +406,9 @@
       if (m.role === 'system' || m.role === 'progress' || m.role === 'attachment') continue
       if (isRealUser(m)) return true // 刚发的用户消息（assistant 回复未到）= 处理中
       if (m.role === 'assistant') {
-        // 2026-08-26：stopReason 精确判定（stop_reason=null 的旁白/工具=处理中，end_turn=结束）；
+        // 2026-08-26：stopReason 精确判定（stop_reason=null 的旁白/工具=处理中，end_turn/stop_sequence=结束）；
         // 字段缺失（旧数据 undefined）回落旧启发式
-        if (m.stopReason !== undefined) return m.stopReason !== 'end_turn'
+        if (m.stopReason !== undefined) return !isEndStop(m.stopReason)
         const hasText = m.blocks.some((b) => b.kind === 'text' && b.text && b.text.trim())
         const hasTool = m.blocks.some((b) => b.kind === 'tool_use')
         return !(hasText && !hasTool)
@@ -1219,6 +1219,14 @@
     return m.blocks.some((b) => (b.kind === 'text' && b.text && b.text.trim()) || b.kind === 'image')
   }
 
+  // 回合终止性 stopReason（2026-08-31）：官方 end_turn 之外，第三方商正常终止可能返回
+  // 'stop_sequence'（CLI 未配置 stop_sequence 参数，纯文本回复即自然结束；jsonl 实证其后无
+  // assistant 记录 = CLI 已按回合结束收尾）。只认 end_turn 会把这类已完成的回合刷新后误判
+  // 「正在处理」重新计时、回复沉进折叠体（实测 2471f361/6f1f48fb）。'tool_use'/null 仍=处理中。
+  function isEndStop(sr) {
+    return sr === 'end_turn' || sr === 'stop_sequence'
+  }
+
   // 用户气泡正文（2026-08-30 图片渲染，用户定案：图在气泡外）：
   // 带 imageId 的 image 块 → 气泡只出文本（剥掉文本里已渲染图的 [Image #N] 占位），
   // 图由 userImgsHtml 渲染在气泡框外；字节走网关 GET /gateway/image-cache/<会话uuid>/<id>
@@ -1528,8 +1536,8 @@
         else if (b.kind === 'text' && hasTool && b.text && b.text.trim()) {
           // 工具消息里的旁白文本：按块原位插入 items（保持 content 数组顺序——旁白在其对应工具调用之上），
           // 不统一沉到段尾；纯文本消息（无 tool_use）仍在循环后整体追加（保持同消息多 text 块拼接为一条的语义）。
-          // end_turn 正式回复（理论不带 tool_use，防御分支）→ 流内 reply 气泡，不进 texts
-          if (m.stopReason === 'end_turn') {
+          // end_turn/stop_sequence 正式回复（理论不带 tool_use，防御分支）→ 流内 reply 气泡，不进 texts
+          if (isEndStop(m.stopReason)) {
             seg.items.push({ kind: 'reply', html: replyBubbleHtml(seg.key, b.text), text: b.text })
             seg.replyTs = m.timestamp
           } else {
@@ -1566,12 +1574,12 @@
         }
       }
       if (hasText && !hasTool) {
-        // 纯文本消息：end_turn 正式回复 → 流内 assistant 气泡（reply 项，B 缺陷根治：end_turn 后
+        // 纯文本消息：end_turn/stop_sequence 正式回复 → 流内 assistant 气泡（reply 项，B 缺陷根治：end_turn 后
         // 继续有工具调用时回复不再被沉进折叠体；多轮 end_turn 各自原位气泡）。旧数据无 stopReason
         // 字段 → 纯文本=回复（与现行 finished 启发式同口径迁移）。其余为过程旁白 → 占位进 items，
         // closeSeg 时原位填充。
         const text = m.blocks.filter((b) => b.kind === 'text').map((b) => b.text).join('')
-        if (m.stopReason === 'end_turn' || m.stopReason === undefined) {
+        if (m.stopReason === undefined || isEndStop(m.stopReason)) {
           seg.items.push({ kind: 'reply', html: replyBubbleHtml(seg.key, text), text })
           seg.replyTs = m.timestamp
         } else {
@@ -1581,12 +1589,13 @@
         seg.lastStep = 'text' // 纯文本旁白/回复（无 tool_use 的消息）≠ 思考
       }
       // finished = 段已收尾判定。2026-08-26 起优先用 stopReason（源码 conversationDisplay 新增，
-      // 'end_turn' = 正式回复 = 回合结束；'tool_use'/null = 处理中，旁白/工具步保持「正在处理」）——
+      // 'end_turn'/'stop_sequence' = 正式回复 = 回合结束（stop_sequence=第三方商正常终止，
+      // 2026-08-31 补）；'tool_use'/null = 处理中，旁白/工具步保持「正在处理」）——
       // 精确区分「过程旁白纯文本」与「正式回复」，根治旁白中段误判成已处理（实时折叠闪「已处理」）。
       // 注意：stopReason=null（旁白，JSON 保留 null）也要算「处理中」；仅字段缺失（旧数据 undefined）回落
       // 旧启发式：纯文本回复（无 tool_use）= 收尾。
       if (m.role === 'assistant') {
-        seg.finished = m.stopReason !== undefined ? (m.stopReason === 'end_turn' ? 1 : 0) : (hasText && !m.blocks.some((b) => b.kind === 'tool_use') ? 1 : 0)
+        seg.finished = m.stopReason !== undefined ? (isEndStop(m.stopReason) ? 1 : 0) : (hasText && !m.blocks.some((b) => b.kind === 'tool_use') ? 1 : 0)
       }
       if (m.timestamp) seg.lastTs = m.timestamp
     }

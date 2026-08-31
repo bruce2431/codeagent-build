@@ -55,6 +55,39 @@ let attempt = 0
 let registeredSid = ''
 let sidWatchAttached = false
 
+// 2026-08-31 应答处理器表提升模块级（原 openSocket 内 per-connection）：重启前挂起的弹窗把
+// onResponse 注册在旧 socket 的表上，重连后新 socket 的表查不到 → web 作答送达也被丢。
+// 跨重连保留后，approval-response 在新连接上仍能命中 handler，唤醒重启前的交互弹窗。
+const pendingResponses = new Map<string, (response: BridgePermissionResponse) => void>()
+
+// 2026-08-31 跨网关重启 pending 补发：审批/提问请求只在弹窗出现瞬间发一次，网关重启清空内存
+// pendingApprovals 后，存活 CLI 重连 /clients 却不重发 → web subscribe 重放查空，只剩 jsonl
+// 只读兜底卡无法作答（08-31 实测）。sendRequest 记入本表，WS（重）连 open 后逐条重发（走网关
+// 现有暂存+broadcast 链路，网关零改动）；解决点（本地 resolve / web 应答消费 / 退订）逐处移除。
+type PendingApprovalPayload = {
+  requestId: string
+  toolName: string
+  input: Record<string, unknown>
+  toolUseId: string
+  description: string
+  suggestions?: unknown
+  blockedPath?: string
+}
+const pendingApprovalRequests = new Map<string, PendingApprovalPayload>()
+
+function sendApprovalRequest(sock: WebSocket, p: PendingApprovalPayload): void {
+  if (sock.readyState !== WebSocket.OPEN) return
+  try {
+    sock.send(JSON.stringify({ type: 'approval-request', ...p }))
+  } catch {
+    /* 断开忽略 */
+  }
+}
+
+function resendPendingApprovalRequests(sock: WebSocket): void {
+  for (const p of pendingApprovalRequests.values()) sendApprovalRequest(sock, p)
+}
+
 /**
  * 2026-08-28 遥测端图片 → pastedContents（结构对齐 utils/config.ts PastedContent：
  * {id, type:'image', content(base64), mediaType, filename}）。占位符 [Image #N] 由前端
@@ -147,28 +180,28 @@ function openSocket(token: string): void {
   // 交互权限弹窗出现时 handleInteractivePermission 经本对象把请求发给网关（→ floria 审批卡），
   // floria 的 approve/deny 经网关回传 approval-response → 本地 onResponse handler 竞速生效；
   // 本地先操作（onAllow/onReject/onAbort）→ sendResponse/cancelRequest 通知网关撤卡。
-  const pendingResponses = new Map<string, (response: BridgePermissionResponse) => void>()
   const permissionCallbacks: BridgePermissionCallbacks = {
     sendRequest(requestId, toolName, input, toolUseId, description, permissionSuggestions, blockedPath) {
-      if (sock.readyState === WebSocket.OPEN) {
-        sock.send(JSON.stringify({
-          type: 'approval-request',
-          requestId,
-          toolName,
-          input,
-          toolUseId,
-          description,
-          suggestions: permissionSuggestions,
-          blockedPath,
-        }))
+      const payload: PendingApprovalPayload = {
+        requestId,
+        toolName,
+        input,
+        toolUseId,
+        description,
+        suggestions: permissionSuggestions,
+        blockedPath,
       }
+      pendingApprovalRequests.set(requestId, payload) // 2026-08-31 跨重启补发：记入待重发表
+      sendApprovalRequest(sock, payload)
     },
     sendResponse(requestId, response) {
+      pendingApprovalRequests.delete(requestId) // 本地已解决 → 不再补发
       if (sock.readyState === WebSocket.OPEN) {
         sock.send(JSON.stringify({ type: 'approval-local-resolved', requestId, response }))
       }
     },
     cancelRequest(requestId) {
+      pendingApprovalRequests.delete(requestId) // 已解决/撤销 → 不再补发
       pendingResponses.delete(requestId)
       if (sock.readyState === WebSocket.OPEN) {
         sock.send(JSON.stringify({ type: 'approval-cancel', requestId }))
@@ -178,6 +211,8 @@ function openSocket(token: string): void {
       pendingResponses.set(requestId, handler)
       return () => {
         if (pendingResponses.get(requestId) === handler) pendingResponses.delete(requestId)
+        // 2026-08-31 abort 清理路径（turn 中止只退订不 cancelRequest）→ 一并撤出补发表
+        pendingApprovalRequests.delete(requestId)
       }
     },
   }
@@ -191,6 +226,9 @@ function openSocket(token: string): void {
     reportCurrentModel()
     // 2026-08-30 队列快照：重连后补发一次当前排队状态（订阅期间的断线窗口靠它对齐）
     sendQueueState()
+    // 2026-08-31 跨网关重启 pending 补发：仍挂起的审批/提问逐条重发 → 网关重新暂存+broadcast，
+    // web 补弹可交互卡（重启前弹的卡随网关内存清空丢失，此前只剩只读兜底卡无法作答）
+    resendPendingApprovalRequests(sock)
   })
   sock.on('message', (data) => {
     try {
@@ -206,6 +244,7 @@ function openSocket(token: string): void {
       }
       // 2026-08-24 审批双操作：floria 的审批结果经网关回传 → 唤醒交互权限弹窗的 bridge 竞速分支
       if (msg.type === 'approval-response' && msg.requestId) {
+        pendingApprovalRequests.delete(msg.requestId) // 2026-08-31 web 已作答 → 撤出补发表（含 handler miss 的死请求）
         const handler = pendingResponses.get(msg.requestId)
         if (handler) {
           pendingResponses.delete(msg.requestId)
@@ -260,7 +299,9 @@ function openSocket(token: string): void {
     if (ws === sock) {
       ws = null
       setGatewayPermissionCallbacks(null)
-      pendingResponses.clear()
+      // 2026-08-31 pendingResponses 提升模块级后断开不再 clear（原 per-connection 表断开即清）：
+      // 重启前挂起弹窗的 handler 必须跨重连保留，approval-response 在新连接上才能命中。
+      // 残留由 onResponse 退订 / approval-response 消费 / approval-cancel 逐点回收。
       schedule(reconnectDelay())
     }
   })

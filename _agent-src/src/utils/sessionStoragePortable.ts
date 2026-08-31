@@ -295,6 +295,98 @@ export async function readSessionLite(
 }
 
 // ---------------------------------------------------------------------------
+// Reverse scan for the last custom-title record
+// ---------------------------------------------------------------------------
+
+/**
+ * Reverse chunked scan for the last `{"type":"custom-title",...}` record.
+ *
+ * The head/tail 64KB windows miss the latest title when a huge message (e.g.
+ * a multi-MB pasted-image line, disk evidence d258ef23: 1.05MB line 2) pushes
+ * the title entry out of the head window, or when a running/crashed CLI never
+ * re-appended it to the tail. Scans backwards from EOF; the first valid
+ * top-level custom-title record wins. Returns undefined when the file holds
+ * no custom-title record.
+ *
+ * Single shared authority for CLI readLiteMetadata (sessionStorage.ts) and
+ * the gateway's parseMeta (localGateway.ts, B2 2026-08-26) — the former local
+ * gateway copy recomputed `end = start + OVERLAP` at start === 0 and spun
+ * forever on files without any title record; this version stops once the
+ * head is covered.
+ */
+const CUSTOM_TITLE_MARKER = '"type":"custom-title"'
+export async function findLastCustomTitle(
+  file: string,
+): Promise<string | undefined> {
+  const CHUNK = 512 * 1024
+  const OVERLAP = 64 * 1024
+  const fh = await fsOpen(file, 'r')
+  try {
+    const { size } = await fh.stat()
+    let end = size
+    while (end > 0) {
+      const start = Math.max(0, end - CHUNK)
+      const len = end - start
+      const buf = Buffer.allocUnsafe(len)
+      const { bytesRead } = await fh.read(buf, 0, len, start)
+      const chunk = buf.toString('utf8', 0, bytesRead)
+      let idx = chunk.lastIndexOf(CUSTOM_TITLE_MARKER)
+      while (idx >= 0) {
+        const lineStart = chunk.lastIndexOf('\n', idx - 1) + 1
+        const lineEnd = chunk.indexOf('\n', idx)
+        const line =
+          lineEnd >= 0 ? chunk.slice(lineStart, lineEnd) : chunk.slice(lineStart)
+        // Only trust real custom-title record lines — the marker text can
+        // appear inside message content
+        if (!line.trimStart().startsWith('{"type":"custom-title"')) {
+          idx = chunk.lastIndexOf(CUSTOM_TITLE_MARKER, idx - 1)
+          continue
+        }
+        const t = extractLastJsonStringField(line, 'customTitle')
+        if (t) return t
+        idx = chunk.lastIndexOf(CUSTOM_TITLE_MARKER, idx - 1)
+      }
+      // Overlap the previous window so records cut across chunk seams are
+      // still seen. start === 0 means the head is covered — stop.
+      if (start === 0) break
+      end = start + OVERLAP
+    }
+    return undefined
+  } finally {
+    await fh.close()
+  }
+}
+
+/**
+ * (size, mtime)-keyed memo for findLastCustomTitle. Enrich / resume-picker /
+ * gateway refreshes re-read the same unchanged files; the reverse scan is
+ * only worth paying once per file revision. Same key design as the gateway's
+ * sessionMetaCache: transcripts are append-only, so any append bumps size —
+ * no false hits.
+ */
+const lastCustomTitleCache = new Map<
+  string,
+  { size: number; mtime: number; title?: string }
+>()
+export async function findLastCustomTitleCached(
+  file: string,
+  lite: { size: number; mtime: number },
+): Promise<string | undefined> {
+  const cached = lastCustomTitleCache.get(file)
+  if (cached && cached.size === lite.size && cached.mtime === lite.mtime) {
+    return cached.title
+  }
+  const title = await findLastCustomTitle(file)
+  lastCustomTitleCache.set(file, { size: lite.size, mtime: lite.mtime, title })
+  if (lastCustomTitleCache.size > 500) {
+    // Bound growth: drop the oldest half (Map preserves insertion order)
+    const keys = [...lastCustomTitleCache.keys()]
+    for (const k of keys.slice(0, 250)) lastCustomTitleCache.delete(k)
+  }
+  return title
+}
+
+// ---------------------------------------------------------------------------
 // Path sanitization
 // ---------------------------------------------------------------------------
 

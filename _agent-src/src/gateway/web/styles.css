@@ -485,27 +485,6 @@ a { text-decoration: none; color: inherit; }
    中间那坨趴栏 webp（opacity:0 残留）拦截鼠标 → 会话内容点不动。会话态 stage 一并关闭。 */
 #chat-area.in-session #empty-hint .g-stage { pointer-events: none; }
 
-/* 2026-08-25 项目新建会话指示：项目「+」先到初始化界面（同笔），首条消息才真正建会话。
-   chip 浮在趴栏台面上方（输入栏锚点 76.75% 之上），显示「在 <项目> 新建会话」，可点 X 取消回全局。
-   注意：必须默认 display:none 且仅 :not([hidden]) 时 flex——否则 display:flex 会覆盖 hidden 属性
-   （作者样式优先级 > UA [hidden]{display:none}），导致普通首页也渲染空白胶囊（2026-08-25 修复）。 */
-#empty-hint .new-proj-chip {
-  position: absolute; left: 50%; transform: translateX(-50%); top: calc(62% - 14px);
-  z-index: 6; white-space: nowrap;
-  display: none;
-  padding: 6px 10px 6px 12px; border-radius: 999px;
-  background: var(--bg); border: 1px solid var(--border);
-  box-shadow: var(--shadow-sm); font-size: 12.5px; color: var(--text);
-}
-#empty-hint .new-proj-chip:not([hidden]) { display: flex; align-items: center; gap: 8px; }
-#empty-hint .new-proj-chip .c-ico { display: inline-flex; color: var(--blue); }
-#empty-hint .new-proj-chip .c-name { font-weight: 600; color: var(--blue); }
-#empty-hint .new-proj-chip .c-clear {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 16px; height: 16px; border-radius: 50%; cursor: pointer; color: var(--text-3);
-}
-#empty-hint .new-proj-chip .c-clear:hover { background: var(--hover); color: var(--text); }
-
 /* 输入栏（2026-08-21 dsh InputBar 完全移植，逐字对齐 deepseek-harness：
    InputBar.module.css(.card/.row/.tools/.trailing/.add/.primary) +
    ModelSelect.module.css(.root/.trigger/.triggerLabel/.triggerEffort/.chevron) +
@@ -590,7 +569,7 @@ a { text-decoration: none; color: inherit; }
 #cmd-btn.add svg { width: 14px; height: 14px; display: block; }
 /* 图片附件胶囊（2026-08-28；2026-08-30 对齐 dsh InputBar 附件行）：#input 上方缩略图行，
    64px 圆角缩略图（dsh 同级尺寸）+ 悬浮右上 × 移除 + 横排 10px 间距、与文本行 12px 呼吸感。
-   默认 display:none、:not([hidden]) 才 flex（同 #new-proj-chip 定案）——否则作者 display:flex
+   默认 display:none、:not([hidden]) 才 flex——否则作者 display:flex
    覆盖 UA [hidden]{display:none}，无图时 hidden 失效，8px margin + 12px flex gap 凭空撑高输入栏。
    2026-08-30 三轮间距对称：原 margin-bottom:12px 与 #input-bar flex gap:12px 叠加成下方 24px、
    上方仅 bar padding-top 10px（缩略图贴顶）。改 margin-top 2px（上间距=10+2=12px）+ 删
@@ -740,6 +719,49 @@ a { text-decoration: none; color: inherit; }
   white-space: nowrap; max-width: 100%;
 }
 
+/* ===== 项目选择器 #proj-root（2026-09-02）：初始界面工具行 + 右侧目标项目切换 =====
+   外观=dsh .trigger 同族（28px chip）；弹层=cmd-pop 同表面（r12 白底 shadow-lv3，向上弹出）。
+   空态=目标项目选择（可点切换）；会话态（#chat-area.in-session）=工作文件夹标识保留显示
+   但锁定不可改（.locked 去箭头/禁 hover，白底常驻）；管理/预览态挂载点不在 chat-area 自动隐藏 */
+#proj-root { position: relative; display: none; }
+#empty-hint #proj-root { display: flex; }
+#chat-area.in-session #proj-root { display: flex; }
+#proj-seat {
+  display: inline-flex; align-items: center; gap: 4px;
+  height: 28px; padding: 0 8px;
+  border: none; border-radius: 999px; background: #fff; color: #0f1115;
+  font-size: 13px; font-weight: 500; line-height: 20px; cursor: pointer;
+}
+#proj-seat:hover { background: #f1f3f5; }
+#proj-seat.locked { cursor: default; }
+#proj-seat.locked:hover { background: #fff; }
+#proj-seat.locked .chevron { display: none; }
+#proj-seat .projIco { display: inline-flex; flex: none; color: #81858c; }
+#proj-seat .projIco svg { width: 14px; height: 14px; display: block; }
+#proj-seat .projLabel { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#proj-seat .chevron { display: inline-flex; flex: none; color: #adb2b8; }
+#proj-seat .chevron svg { width: 14px; height: 14px; display: block; }
+#proj-pop {
+  position: absolute; left: 0; bottom: calc(100% + 8px);
+  z-index: 100; padding: 4px;
+  display: flex; flex-direction: column;
+  /* 宽度基准注意：包含块 #proj-root 是窄 chip，100% 会把弹层压死 → 用 max-content+固定下限 */
+  width: max-content; min-width: 220px; max-width: min(320px, calc(100vw - 48px));
+  max-height: 320px; overflow-y: auto;
+  border-radius: 12px; background: #fff;
+  box-shadow: 0 0 1px 0 rgba(0, 0, 0, 0.2), 0 0 4px 0 rgba(0, 0, 0, 0.02), 0 12px 32px 0 rgba(0, 0, 0, 0.08);
+}
+#proj-pop[hidden] { display: none; }
+#proj-pop .row {
+  display: flex; align-items: center; gap: 8px; padding: 6px 8px;
+  border-radius: 8px; font-size: 13px; color: #0f1115; cursor: pointer; white-space: nowrap;
+}
+#proj-pop .row:hover { background: rgba(38, 49, 72, 0.06); }
+#proj-pop .row .pIco { display: inline-flex; flex: none; color: #81858c; }
+#proj-pop .row .pIco svg { width: 14px; height: 14px; display: block; }
+#proj-pop .row .pLabel { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+#proj-pop .row .check { display: inline-flex; flex: none; color: #0f1115; }
+#proj-pop .row .check svg { width: 16px; height: 16px; display: block; }
 /* ===== 命令菜单 #cmd-pop（dsh PopupSelectView shell 完全移植：PopupSelectView.module.css）=====
    定位 = dsh .card（absolute、bottom:calc(100%+4px)、left:0、z100、padding 4px）；
    表面 = r12 + 透明 hairline + shadow-lv3 菜单表面。内部 .search 输入 + .status/.error + .viewport 行列表 */
@@ -1018,7 +1040,7 @@ body.token-gate #input-wrap { display: none; }
    用 transform 滑入/滑出渐进式浮出；token 门验证完成侧栏弹出不再因挤占宽度使 webp 右移跳动。 */
 #sidebar {
   display: flex; height: 100%; position: relative; z-index: 10;
-  width: var(--rail-w);
+  width: var(--rail-w); background: #fff;
   transition: width 0.28s cubic-bezier(0.22, 0.61, 0.36, 1), transform 0.35s cubic-bezier(0.22, 0.61, 0.36, 1), opacity 0.3s ease, visibility 0.3s;
 }
 #sidebar.open { width: var(--panel-w); }
@@ -1090,17 +1112,26 @@ body.token-gate #input-wrap { display: none; }
     position: absolute; top: 0; left: 0; bottom: 0; width: var(--rail-w); z-index: 2;
     transition: opacity 0.15s ease, visibility 0.15s;
   }
+  /* 折叠时 rail 延迟淡入（2026-09-02 修「折叠途中 rail 与收缩中的 panel 短暂同现」）：
+     0.13s 延迟 + 0.15s 淡入 = 0.28s，与 sidebar 宽度动画同步结束；
+     过渡取目标态（:not(.open)）的 transition 值，展开侧仍走无延迟立即淡出。 */
+  #sidebar:not(.open) #rail { transition: opacity 0.15s ease 0.13s, visibility 0.15s 0.13s; }
   #sidebar.open #rail { display: flex; opacity: 0; visibility: hidden; pointer-events: none; }
   #panel {
     width: auto; flex: 1 1 auto; min-width: 0;
     border-right: 1px solid transparent;
-    transition: border-color 0.28s cubic-bezier(0.22, 0.61, 0.36, 1);
+    transition: border-color 0.28s cubic-bezier(0.22, 0.61, 0.36, 1), opacity 0.1s ease, visibility 0.1s;
   }
   #sidebar.open #panel { width: auto; border-right-color: var(--border); }
+  /* 折叠二轮根修（2026-09-02「还是有一点」）：rail 延迟淡入只挡了前半程，panel 本体全程可见仍与
+     rail 淡入段重叠。现 panel 折叠时 0.1s 快速淡出+visibility 隐藏（rail 0.13s 才淡入 → 时间轴零
+     交集）；#sidebar 加白底（panel/rail 同 #fff）兜底防淡出中透出主区。展开侧 panel 0.1s 淡入、
+     visibility 立即恢复，rail 仍无延迟立即淡出。 */
+  #sidebar:not(.open) #panel { opacity: 0; visibility: hidden; }
 }
 
 .panel-header { display: flex; align-items: center; justify-content: space-between; padding: 14px 12px 10px 16px; }
-.floria-logo { display: flex; align-items: center; gap: 7px; font-size: 19px; font-weight: 800; letter-spacing: -0.3px; color: var(--text); }
+.floria-logo { display: flex; align-items: center; gap: 7px; font-size: 19px; font-weight: 800; letter-spacing: -0.3px; color: var(--text); background: none; border: 0; padding: 0; cursor: pointer; font-family: inherit; }
 #floria-conn { margin-left: 2px; font-size: 12px; font-weight: 400; letter-spacing: 0.2px; color: var(--text-3); }
 .brand-ico { width: 22px; height: 22px; border-radius: 5px; }
 .panel-actions { display: flex; align-items: center; gap: 2px; }

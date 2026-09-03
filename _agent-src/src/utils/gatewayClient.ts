@@ -23,6 +23,7 @@ import type { BridgePermissionCallbacks, BridgePermissionResponse } from '../bri
 import { getMainLoopModel } from './model/model.js'
 import { enqueue, getCommandQueueSnapshot, subscribeToCommandQueue } from './messageQueueManager.js'
 import { getGatewayToken, loadGatewayTokenFromDisk, setGatewayToken } from './gatewayToken.js'
+import { compressImageBuffer } from './imageResizer.js'
 import type { QueuedCommand } from '../types/textInputTypes.js'
 import { feature } from 'bun:bundle'
 
@@ -99,12 +100,23 @@ function pastedContentsFromImages(
 ): Record<number, { id: number; type: 'image'; content: string; mediaType?: string; filename?: string }> | undefined {
   if (!Array.isArray(raw) || !raw.length) return undefined
   const out: Record<number, { id: number; type: 'image'; content: string; mediaType?: string; filename?: string }> = {}
-  let id = 0
+  let nextId = 0
   for (const item of raw) {
     if (!item || typeof item !== 'object') continue
-    const it = item as { content?: unknown; mediaType?: unknown; filename?: unknown }
+    const it = item as { content?: unknown; mediaType?: unknown; filename?: unknown; id?: unknown }
     if (typeof it.content !== 'string' || !it.content) continue
-    id++
+    // 2026-09-02 图片 id 防撞号：web 前端分配全会话唯一 id（对齐 CLI 本地粘贴 getInitialPasteId
+    // 语义）——显式合法 id 直接用（占位 [Image #id] 与之一一对应）；无显式 id（旧版前端）回落
+    // 自造递增。原恒从 1 起，同会话第二条带图消息互覆 image-cache 字节 → 历史图错图。
+    const explicit = it.id
+    let id =
+      typeof explicit === 'number' && Number.isInteger(explicit) && explicit > 0 ? explicit : 0
+    if (!id || out[id]) {
+      do {
+        nextId++
+      } while (out[nextId])
+      id = nextId
+    }
     out[id] = {
       id,
       type: 'image',
@@ -113,7 +125,36 @@ function pastedContentsFromImages(
       ...(typeof it.filename === 'string' && it.filename ? { filename: it.filename } : {}),
     }
   }
-  return id ? out : undefined
+  return Object.keys(out).length ? out : undefined
+}
+
+/**
+ * P3 图片压缩前移（2026-08-31，20260828145952-内存增长根因与代码层修改建议.md）：
+ * web 注入图 >2MB（raw）先压缩再入 pastedContents——pastedContents / 消息历史 / 落盘
+ * 全链收敛为小图，避免大图 base64 会话内多副本驻留放大。CLI 本地粘贴链已有执行时
+ * resize（processUserInput maybeResizeAndDownsampleImageBlock），此处理的是 web 端
+ * 直传原图无压缩的缺口。压缩失败回退原图（入历史前 processUserInput resize 兜底）。
+ */
+const WEB_IMAGE_MAX_BYTES = 2 * 1024 * 1024
+async function compressPastedContentsFromImages(
+  raw: unknown,
+): Promise<Record<number, { id: number; type: 'image'; content: string; mediaType?: string; filename?: string }> | undefined> {
+  const base = pastedContentsFromImages(raw)
+  if (!base) return base
+  for (const img of Object.values(base)) {
+    try {
+      // base64 长度快速预判（raw ≈ len*3/4），小图零开销直通
+      if (img.content.length <= (WEB_IMAGE_MAX_BYTES * 4) / 3) continue
+      const buffer = Buffer.from(img.content, 'base64')
+      if (buffer.length <= WEB_IMAGE_MAX_BYTES) continue
+      const compressed = await compressImageBuffer(buffer, WEB_IMAGE_MAX_BYTES, img.mediaType)
+      img.content = compressed.base64
+      img.mediaType = compressed.mediaType
+    } catch {
+      /* 压缩失败保留原图 */
+    }
+  }
+  return base
 }
 
 async function isGatewayUp(): Promise<boolean> {
@@ -230,7 +271,7 @@ function openSocket(token: string): void {
     // web 补弹可交互卡（重启前弹的卡随网关内存清空丢失，此前只剩只读兜底卡无法作答）
     resendPendingApprovalRequests(sock)
   })
-  sock.on('message', (data) => {
+  sock.on('message', async (data) => {
     try {
       const msg = JSON.parse(data.toString()) as {
         type?: string
@@ -281,8 +322,8 @@ function openSocket(token: string): void {
       if (msg.type === 'send' && typeof msg.text === 'string' && msg.text.trim()) {
         // 2026-08-28 遥测端图片：网关透传 images（base64 无 data: 前缀）→ 构造 pastedContents，
         // 与本地粘贴图片完全同链路（enqueue → handlePromptSubmit：仅当文本 [Image #N] 占位与
-        // 图片 id 匹配才发送、执行时才 resize；孤儿图片被过滤兜底）。
-        const pasted = pastedContentsFromImages(msg.images)
+        // 图片 id 匹配才发送、孤儿图片被过滤兜底）。2026-08-31 P3 起 >2MB 图先压缩再入链。
+        const pasted = await compressPastedContentsFromImages(msg.images)
         enqueue({
           value: msg.text,
           mode: 'prompt',

@@ -184,8 +184,67 @@ export function removeGatewayTicket(t: string): boolean {
   return true
 }
 
-/** 设备票证列表（/server auth 展示用，返回副本）。 */
-export function listGatewayTickets(): GatewayTicket[] {
+/** 设备票证列表（/server auth 展示用，返回副本，合并设备情况）。 */
+export function listGatewayTickets(): (GatewayTicket & DeviceInfo)[] {
   ensureTicketsLoaded()
-  return tickets.map((t) => ({ ...t }))
+  ensureDevicesLoaded()
+  return tickets.map((t) => ({ ...t, ...(devices[t.id] ?? {}) }))
+}
+
+// ---------- 2026-09-01 设备情况（独立文件 gateway-devices，跨进程竞态根修） ----------
+// 首版把 ua/lastIp/lastSeen 塞进 gateway-tickets：网关进程 touch 写盘后，常驻 CLI 进程
+// （add/off）用自己 3s TTL 过期的内存副本整体覆盖写回，把设备情况抹掉——用户实测见到
+// 「Windows · Chrome」一瞬即逝、落盘又回退成裸 {id,created}。根修=读写路径分离：
+// 授权名单（gateway-tickets，CLI 写）与设备情况（gateway-devices，仅网关进程写）各存各的，
+// 展示时按 id 合并。devices 文件两进程都读（TTL 3s 刷新），只有网关进程写（内存副本权威）。
+interface DeviceInfo {
+  ua?: string // 最近一次见到的 User-Agent 原文（截断 200；展示层渲染成「iPad · Safari」摘要）
+  lastIp?: string // 最近一次活跃的来源 IPv4
+  lastSeen?: number // 最近一次活跃时间戳
+}
+
+const devicesFilePath = () => join(getPortableRoot(), '.claude', 'gateway-devices')
+const DEVICES_TTL_MS = 3000
+let devices: Record<string, DeviceInfo> = {}
+let devicesLoaded = false
+let devicesLoadedAt = 0
+
+function ensureDevicesLoaded(): void {
+  const now = Date.now()
+  if (devicesLoaded && now - devicesLoadedAt < DEVICES_TTL_MS) return
+  devicesLoaded = true
+  devicesLoadedAt = now
+  try {
+    const p = devicesFilePath()
+    if (existsSync(p)) {
+      const raw: unknown = JSON.parse(readFileSync(p, 'utf8'))
+      if (raw && typeof raw === 'object' && !Array.isArray(raw)) devices = raw as Record<string, DeviceInfo>
+    }
+  } catch {
+    if (!devicesLoaded || Object.keys(devices).length === 0) devices = {}
+  }
+}
+
+const TOUCH_PERSIST_MS = 60_000
+const touchPersistAt = new Map<string, number>()
+
+/** 设备活跃回写（仅网关进程调用：受保护 HTTP 请求 + WS 升级）。写盘节流 60s/票。 */
+export function touchGatewayTicket(id: string, ua?: string, ip?: string): void {
+  if (!id) return
+  ensureDevicesLoaded()
+  const d = devices[id] ?? (devices[id] = {})
+  const now = Date.now()
+  d.lastSeen = now
+  if (ua) d.ua = ua.slice(0, 200)
+  if (ip) d.lastIp = ip
+  if (now - (touchPersistAt.get(id) ?? 0) > TOUCH_PERSIST_MS) {
+    touchPersistAt.set(id, now)
+    try {
+      const p = devicesFilePath()
+      mkdirSync(join(p, '..'), { recursive: true })
+      writeFileSync(p, JSON.stringify(devices), 'utf8')
+    } catch {
+      /* 忽略 */
+    }
+  }
 }

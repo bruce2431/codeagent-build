@@ -9,7 +9,7 @@
   <link rel="icon" href="/icon.ico" type="image/x-icon" />
   <link rel="apple-touch-icon" href="/icon.ico" />
   <!-- 2026-08-28 资源改绝对路径：SPA 路径路由（/session/<hash> 等）下相对路径会解析到子路径 404 -->
-  <link rel="stylesheet" href="/styles.css?v=187" />
+  <link rel="stylesheet" href="/styles.css?v=196" />
 </head>
 <body>
 <div id="app">
@@ -35,10 +35,10 @@
     <aside id="panel">
       <div class="panel-inner">
         <div class="panel-header">
-          <a class="floria-logo" href="#/">
+          <button class="floria-logo" title="折叠侧栏">
             <img class="brand-ico" src="/icon.ico" alt="Floria" />
             <span>Floria</span><span id="floria-conn"></span>
-          </a>
+          </button>
           <div class="panel-actions">
             <button id="panel-search" class="act-btn" title="搜索会话"></button>
             <button id="panel-collapse" class="act-btn" title="折叠侧栏"></button>
@@ -140,8 +140,6 @@
         <div class="g-media">
           <img class="g-ph empty-ico" src="/gate/state-newchat.webp?v=2" alt="Floria" />
         </div>
-        <!-- 项目新建会话指示：项目「+」先到初始化界面（同笔），首条消息才真正建会话；此处显示目标项目 -->
-        <div id="new-proj-chip" class="new-proj-chip" hidden></div>
         <div id="input-wrap">
           <!-- 输入栏（2026-08-21 dsh InputBar 完全移植：照抄 deepseek-harness InputBar.module.css .card 布局——
                textarea(#input) 顶部 + 底部 .row 工具行[左 .tools = .add(+命令) + .modes（只读无权限数据→空） +
@@ -155,6 +153,15 @@
               <div class="tools">
                 <input id="img-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden />
                 <button id="cmd-btn" class="add" title="命令" aria-label="命令" aria-haspopup="listbox"></button>
+                <!-- 项目选择器（2026-09-02）：空态=右侧切换目标项目（=侧栏项目「+」同链路 state.newProject，
+                     首条消息按它落项目）；会话态=工作文件夹标识保留显示但锁定只读（.locked 白底无箭头，
+                     #chat-area.in-session 门控；管理/预览态挂载点不在 chat-area 自动隐藏） -->
+                <div id="proj-root" class="proj-root">
+                  <button id="proj-seat" class="proj-seat" title="目标项目" aria-label="目标项目" aria-haspopup="menu">
+                    <span class="projIco"></span><span class="projLabel">全局</span><span class="chevron"></span>
+                  </button>
+                  <div id="proj-pop" hidden></div>
+                </div>
                 <div class="modes"></div>
               </div>
               <div class="trailing">
@@ -228,6 +235,6 @@
   </div>
 </div>
 <div id="toast" class="toast" hidden></div>
-<script src="/app.js?v=187"></script>
+<script src="/app.js?v=196"></script>
 </body>
 </html>

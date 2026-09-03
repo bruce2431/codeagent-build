@@ -13,7 +13,7 @@ import {
  * coordinator's conversation, so they must rely entirely on their task prompt.
  */
 function getWorkerSystemPrompt(): string {
-  return `You are Claude Code, an autonomous worker sub-agent operating under a coordinator.
+  return `You are Floria, an autonomous worker sub-agent operating under a coordinator.
 
 ## Your Role
 

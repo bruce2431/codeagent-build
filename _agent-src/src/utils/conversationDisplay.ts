@@ -63,6 +63,13 @@ export type DisplayMessage = {
    * 仅 user 消息携带。
    */
   injected?: boolean
+  /**
+   * 源消息 uuid（2026-08-31 P2 增量上报）：filterConversationForDisplay 每条投影带其源
+   * 消息（normalizeMessages 拆分后经 deriveUUID 派生，确定性幂等）的 uuid。CLI 侧增量
+   * 对齐键（exportConversationToServer 用 fresh[0].uuid 在已上报缓存中定位 base 水位）。
+   * 网关/web 消费端忽略未知字段，无兼容影响。
+   */
+  uuid?: string
 }
 
 export type DisplayMode = 'prompt' | 'transcript' | 'prompt-tail-think'
@@ -279,7 +286,16 @@ function tsMs(ts: number | string | undefined): number | undefined {
   return typeof ts === 'number' && Number.isFinite(ts) ? ts : undefined
 }
 
-export function filterConversationForDisplay(messages: readonly SourceMessage[], mode: DisplayMode): DisplayMessage[] {
+export function filterConversationForDisplay(
+  messages: readonly SourceMessage[],
+  mode: DisplayMode,
+  /**
+   * P2 增量投影续算（2026-08-31）：initialLastModel = 上次扫描终点模型（「已切换模型」
+   * 派生提示的跨扫描状态，窗口切片投影与全量投影一致的前提）；lastModelOut = 出参容器，
+   * 扫描结束后回传末态供缓存。两参均可选，既有调用方（网关 jsonl 直读/全量导出）零改动。
+   */
+  opts?: { initialLastModel?: string; lastModelOut?: { lastModel?: string } },
+): DisplayMessage[] {
   const isTranscript = mode === 'transcript'
   const isTailThink = mode === 'prompt-tail-think'
   // 中断标记消息要保留（转 role:'system' 居中提示），不能被 isNotEmptyMessage 判空丢弃
@@ -291,10 +307,10 @@ export function filterConversationForDisplay(messages: readonly SourceMessage[],
   const tailPassId = isTailThink ? computeTailThinkingPassId(normalized) : null
 
   const out: DisplayMessage[] = []
-  let lastModel: string | undefined
+  let lastModel: string | undefined = opts?.initialLastModel
   /** 居中灰字系统提示行（2026-08-27 定案：指令信息/中断/模型切换统一此形态，role:'system' 下发） */
-  const pushSystemHint = (text: string, ts: number | string | undefined): void => {
-    out.push({ role: 'system', blocks: [{ kind: 'text', text }], timestamp: tsMs(ts) })
+  const pushSystemHint = (text: string, ts: number | string | undefined, uuid?: string): void => {
+    out.push({ role: 'system', blocks: [{ kind: 'text', text }], timestamp: tsMs(ts), ...(uuid ? { uuid } : {}) })
   }
   // 非中断系统提示开关（2026-08-28 用户定案：居中灰字提示仅保留「用户中断了对话」，
   // 其余全部隐藏，保留接口以便后续更改）。false = 不下发命令类（命令行 echo/local_command
@@ -315,12 +331,12 @@ export function filterConversationForDisplay(messages: readonly SourceMessage[],
       const name = extractXmlTag(raw, COMMAND_NAME_TAG)
       if (name) {
         const args = extractXmlTag(raw, COMMAND_ARGS_TAG)?.trim()
-        pushSystemHint(args ? `${name} ${args}` : name, timestamp)
+        pushSystemHint(args ? `${name} ${args}` : name, timestamp, msg.uuid)
       }
       const stdout = extractXmlTag(raw, LOCAL_COMMAND_STDOUT_TAG)
-      if (stdout?.trim()) pushSystemHint(stdout.trim(), timestamp)
+      if (stdout?.trim()) pushSystemHint(stdout.trim(), timestamp, msg.uuid)
       const stderr = extractXmlTag(raw, LOCAL_COMMAND_STDERR_TAG)
-      if (stderr?.trim()) pushSystemHint(stderr.trim(), timestamp)
+      if (stderr?.trim()) pushSystemHint(stderr.trim(), timestamp, msg.uuid)
       continue
     }
 
@@ -356,7 +372,7 @@ export function filterConversationForDisplay(messages: readonly SourceMessage[],
               }
             }
           }
-          if (blocks.length) out.push({ role: 'user', blocks, timestamp, injected: true })
+          if (blocks.length) out.push({ role: 'user', blocks, timestamp, injected: true, uuid: msg.uuid })
         }
       }
       continue
@@ -367,7 +383,7 @@ export function filterConversationForDisplay(messages: readonly SourceMessage[],
 
     if (msg.type === 'user') {
       if (isInterruptUserMessage(msg)) {
-        pushSystemHint('用户中断了对话', timestamp)
+        pushSystemHint('用户中断了对话', timestamp, msg.uuid)
         continue
       }
       // 后台任务通知（2026-08-27 定案转居中提示）：转录把系统通知记成无 isMeta 的 user 记录
@@ -383,7 +399,7 @@ export function filterConversationForDisplay(messages: readonly SourceMessage[],
       if (isTaskNotify) {
         if (SHOW_NON_INTERRUPT_HINTS) {
           const summary = extractXmlTag(notifyTexts.join('\n'), 'summary')?.trim()
-          pushSystemHint(summary ? `后台任务完成：${summary}` : '后台任务通知', timestamp)
+          pushSystemHint(summary ? `后台任务完成：${summary}` : '后台任务通知', timestamp, msg.uuid)
         }
         continue
       }
@@ -400,7 +416,7 @@ export function filterConversationForDisplay(messages: readonly SourceMessage[],
             const name = extractXmlTag(db.text, COMMAND_NAME_TAG)
             if (name) {
               const args = extractXmlTag(db.text, COMMAND_ARGS_TAG)?.trim()
-              pushSystemHint(args ? `${name.trim()} ${args}` : name.trim(), timestamp)
+              pushSystemHint(args ? `${name.trim()} ${args}` : name.trim(), timestamp, msg.uuid)
             }
           }
           continue
@@ -408,7 +424,7 @@ export function filterConversationForDisplay(messages: readonly SourceMessage[],
         if (db?.kind === 'text' && db.text && db.text.includes('<bash-input>')) {
           if (SHOW_NON_INTERRUPT_HINTS) {
             const cmd = extractXmlTag(db.text, 'bash-input')
-            if (cmd?.trim()) pushSystemHint(`$ ${cmd.trim()}`, timestamp)
+            if (cmd?.trim()) pushSystemHint(`$ ${cmd.trim()}`, timestamp, msg.uuid)
           }
           continue
         }
@@ -432,7 +448,7 @@ export function filterConversationForDisplay(messages: readonly SourceMessage[],
         if (isImageOnly && prevText && ids.every(id => prevText.includes(`[Image #${id}]`))) {
           prev.blocks.push(...blocks)
         } else {
-          out.push({ role: 'user', blocks, timestamp })
+          out.push({ role: 'user', blocks, timestamp, uuid: msg.uuid })
         }
       }
       continue
@@ -464,12 +480,13 @@ export function filterConversationForDisplay(messages: readonly SourceMessage[],
         const db = toDisplayBlock(b)
         if (db) blocks.push(db)
       }
-      if (blocks.length) out.push({ role: 'assistant', blocks, timestamp, stopReason: msg.message?.stop_reason as string | undefined })
+      if (blocks.length) out.push({ role: 'assistant', blocks, timestamp, stopReason: msg.message?.stop_reason as string | undefined, uuid: msg.uuid })
       continue
     }
 
     // tool / progress / 其它 system 子类型：CLI 已把 tool_result 收进 user 消息，此处跳过
   }
+  if (opts?.lastModelOut) opts.lastModelOut.lastModel = lastModel
   return out
 }
 
@@ -488,29 +505,92 @@ function gatewayApiUrl(base: string, path: string): string {
   return `${b}${path}${path.includes('?') ? '&' : '?'}token=${encodeURIComponent(tok)}`
 }
 
-export async function sendConversationToServer(sessionId: string, display: DisplayMessage[]): Promise<boolean> {
-  const base = process.env.FLOIRA_GATEWAY || 'http://127.0.0.1:8124'
+export async function sendConversationToServer(
+  sessionId: string,
+  display: DisplayMessage[],
+  /** P2 增量水位（2026-08-31）：传入 = 网关保留缓存前 base 条、替换其后内容；缺省 = 全量替换。 */
+  base?: number,
+): Promise<boolean> {
+  const base0 = process.env.FLOIRA_GATEWAY || 'http://127.0.0.1:8124'
   try {
-    const res = await fetch(gatewayApiUrl(base, '/gateway/conversation'), {
+    const res = await fetch(gatewayApiUrl(base0, '/gateway/conversation'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId, messages: display }),
+      body: JSON.stringify({ sessionId, messages: display, ...(base !== undefined ? { base } : {}) }),
       signal: AbortSignal.timeout(3000),
     })
-    return res.ok
+    if (!res.ok) return false
+    if (base !== undefined) {
+      // 增量模式校验网关合并结果（cached = 合并后总长）：不符 = 网关重启/缓存被 sweep 等
+      // 失步 → 返回 false，上层置失步标下轮全量对账。响应解析失败宽松放行（网关同版打包）。
+      try {
+        const j = (await res.json()) as { cached?: number }
+        if (typeof j.cached === 'number' && j.cached !== base + display.length) return false
+      } catch {}
+    }
+    return true
   } catch {
     return false
   }
 }
 
-/** 组合入口：过滤 + 发送一步完成，返回过滤结果（REPL 渲染处调用）。 */
+/**
+ * 已上报展示投影缓存（P2 增量上报的 CLI 侧基线，2026-08-31）：
+ * 键 = `${sessionId}:${mode}`（transcript/prompt 两种投影独立维护）。sent = 已成功上报的
+ * 完整投影序列（增量对齐基线）；lastModel = 上次扫描终点模型（窗口投影续算「已切换模型」
+ * 提示的跨扫描状态）；needFullSync = 网关失步，下轮全量直传对账。只存轻量展示投影
+ * （过滤后的 blocks），与网关 conversationDisplays 同源同量级，进程退出即清。
+ */
+type DisplayCacheEntry = { sent: DisplayMessage[]; lastModel?: string; needFullSync?: boolean }
+const displayCacheBySession = new Map<string, DisplayCacheEntry>()
+
+/** 组合入口：过滤 + 增量发送一步完成，返回过滤结果（REPL 渲染处调用）。
+ * P2（2026-08-31，20260828145952-内存增长根因与代码层修改建议.md）：全量上报改为
+ * 「已上报水位对齐 + 尾部窗口投影」——输入经 P1 cap 恒为尾部窗口（≤200 条），单轮
+ * 构建/序列化/传输峰值全部有界；网关 /gateway/conversation 按 base 聚合为全量，
+ * 遥测端全量语义不变、web 前端零改动。已知名义缺口：CLI 进程重启后 cache 空且窗口
+ * 首条对不上网关缓存时走窗口全量替换（前缀短暂缺失），jsonl 权威在盘可恢复。 */
 export async function exportConversationToServer(
   messages: readonly SourceMessage[],
   sessionId: string,
   mode: DisplayMode,
 ): Promise<DisplayMessage[]> {
-  const display = filterConversationForDisplay(messages, mode)
+  const cacheKey = `${sessionId}:${mode}`
+  const cache = displayCacheBySession.get(cacheKey)
+  const lastModelOut: { lastModel?: string } = {}
+  const display = filterConversationForDisplay(messages, mode, {
+    initialLastModel: cache?.lastModel,
+    lastModelOut,
+  })
+  const lastModel = lastModelOut.lastModel
+
+  // 失步后的强制全量对账：sent 已在失步轮本地合并（含前缀），直传恢复网关完整
+  if (cache?.needFullSync && cache.sent.length > 0) {
+    if (await sendConversationToServer(sessionId, cache.sent)) cache.needFullSync = false
+    return display
+  }
+
+  if (cache && display.length > 0 && display[0]!.uuid) {
+    const base = cache.sent.findIndex(m => m.uuid === display[0]!.uuid)
+    if (base >= 0) {
+      const mergedSent = base === 0 ? display : [...cache.sent.slice(0, base), ...display]
+      if (await sendConversationToServer(sessionId, display, base)) {
+        cache.sent = mergedSent
+        cache.lastModel = lastModel
+      } else {
+        // 发送异常（网关不在）或网关失步（cached 校验不符）：本地先合并基线并置失步标，
+        // 下轮全量直传对账（网关重启/sweep 场景都能恢复完整）。
+        cache.sent = mergedSent
+        cache.lastModel = lastModel
+        cache.needFullSync = true
+      }
+      return display
+    }
+  }
+
+  // 常规全量路径：首报 / 对齐未命中（CLI 重启后 cache 空、窗口滑出基线记忆）
   await sendConversationToServer(sessionId, display)
+  displayCacheBySession.set(cacheKey, { sent: display, lastModel })
   return display
 }
 

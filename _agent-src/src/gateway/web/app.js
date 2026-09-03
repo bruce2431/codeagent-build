@@ -150,7 +150,7 @@
   let ALL = []
   let timer = null
   // 阶段1 实时同步：SSE 变更驱动的去重/防抖状态
-  const live = { es: null, listSig: '', curSig: '', listT: null, sessT: null, lastUserSig: '', pinnedUserSig: '', lastMsgLen: null, lastDataTs: 0, curUuid: null, queueRemote: [] }
+  const live = { es: null, listSig: '', curSig: '', listT: null, sessT: null, lastUserSig: '', pinnedUserSig: '', lastMsgLen: null, lastDataTs: 0, curUuid: null, queueRemote: [], maxImgId: 0 }
 
   // ---------- 工具 ----------
   const esc = (s) =>
@@ -439,6 +439,15 @@
         live.curUuid = file ? file.replace(/\.jsonl$/, '') : live.curUuid
         live.queueRemote = queued
         live.lastDataTs = (messages.length && messages[messages.length - 1].timestamp) || live.lastDataTs
+        // 2026-09-02 排队图 id 防撞：扫描当前会话 display 已用最大 imageId（CLI getInitialPasteId
+        // 同法），gwSend 分配 id 从 max+1 起——同会话多条带图消息 id 互不复用，image-cache 字节
+        // 不再互覆（原恒从 1 起，第二条覆盖第一条 → 历史图错图）
+        live.maxImgId = 0
+        for (const m of messages) {
+          for (const b of m.blocks || []) {
+            if (b.kind === 'image' && typeof b.imageId === 'number' && b.imageId > live.maxImgId) live.maxImgId = b.imageId
+          }
+        }
         applySessionModel(model, modelTs) // 2026-08-24：实时刷新同样按 CLI 上报模型校准 seat
         renderCtxMeter(context)
         // 2026-08-29 待落盘乐观消息吸收判定：jsonl 已出现该文本（单条落盘或 drainCommandQueue
@@ -755,31 +764,9 @@
     messagesEl.innerHTML = ''
     setChar(1) // 首页空态 → 默认形象
     renderCtxMeter(null) // 首页空态 → 隐藏上下文环
-    renderNewProjChip()
+    renderProjSeat()
     chatArea.classList.remove('mgr-on')
     flipInput(true) // docked/in-session 移除 + 挂回 stage 一并由 FLIP 处理（旧位取变更前矩形）
-  }
-
-  // 2026-08-25 项目新建会话指示：项目「+」先到初始化界面（同笔），首条消息才真正建会话。
-  // state.newProject 有值 → 显示「在 <项目> 新建会话」chip（可点 X 取消回全局）；无值 → 隐藏。
-  function renderNewProjChip() {
-    const chip = $('new-proj-chip')
-    if (!chip) return
-    if (!state.newProject) {
-      chip.hidden = true
-      chip.textContent = ''
-      return
-    }
-    chip.hidden = false
-    chip.innerHTML =
-      '<span class="c-ico">' + I.folder + '</span>' +
-      '<span>在 <span class="c-name">' + esc(state.newProject) + '</span> 新建会话</span>' +
-      '<span class="c-clear" role="button" tabindex="-1" title="取消，改为全局新建">' + I.dshClose + '</span>'
-    chip.querySelector('.c-clear').addEventListener('click', (e) => {
-      e.stopPropagation()
-      state.newProject = null
-      renderNewProjChip()
-    })
   }
 
   function renderSession(hash) {
@@ -797,6 +784,8 @@
     modelUserPicked = false // 切换会话：允许 /gateway/session 上报的会话模型校准 seat
     pinRelease()
     clearTakeover() // 切换会话：清掉残留的提问/审批 takeover（输入栏恢复）
+    closeProjPop() // 切换会话：项目选择器弹层一并收起（初始界面专属件）
+    renderProjSeat() // 会话态：工作文件夹标识按当前会话项目重渲（锁定只读）
     chatArea.classList.remove('mgr-on')
     flipInput(false) // 输入栏移回 #chat-area 沉底（FLIP 像素级补间）
     const s = findSession(hash)
@@ -2513,6 +2502,8 @@
     if (cmd.open && !cmdPop.contains(e.target) && !$('cmd-btn').contains(e.target)) closeCmdPop()
     // 模型菜单：点 root 外（模型 trigger 除外，其 click toggle 接管开合）= 关闭（dsh ModelSelect mousedown + rootRef.contains）
     if (msel.open && !modelPop.contains(e.target) && !modelSeatEl.contains(e.target)) closeModelPop()
+    // 项目选择器：点 root 外（seat 除外，其 click toggle 接管开合）= 关闭
+    if (psel.open && !projPop.contains(e.target) && !projSeatEl.contains(e.target)) closeProjPop()
   })
   // 点击空白关闭弹层（@ 浮窗 / 整理会话 / 最近气泡 / 已处理折叠收起）
   document.addEventListener('click', (e) => {
@@ -2620,9 +2611,9 @@
     lastNavHash = null
     route()
   })
-  // 左上 logo 是 <a href="#/">：pushState 下仅改 hash 不切视图 → 拦截走 navigate
-  const logoLink = document.querySelector('.floria-logo')
-  if (logoLink) logoLink.addEventListener('click', (e) => { e.preventDefault(); navigate('#/') })
+  // 展开态头部 floria 头像 = 折叠侧栏按钮（2026-09-02 调整：不再回首页新建会话）
+  const logoBtn = document.querySelector('.floria-logo')
+  if (logoBtn) logoBtn.addEventListener('click', () => setPanel(false))
   // 默认项目主页（default-preview iframe）点会话 → 父级打开该会话（hash = 会话 uuid）
   window.addEventListener('message', (e) => {
     const d = e.data || {}
@@ -3093,6 +3084,67 @@
   const cmdPop = $('cmd-pop')
   const modelPop = $('model-pop')
   const modelSeatEl = $('model-seat')
+
+  // ---- 项目选择器（2026-09-02）：初始界面工具行 + 右侧切换目标项目 ----
+  // 数据源=侧栏项目同款（ALL 按 projectLabel 分组派生，最近活跃降序）；选中=state.newProject
+  // （与侧栏项目「+」同链路：首条消息发送时 /gateway/wsession 带 project → 会话落该项目根）。
+  // 全局行=清回默认（同 chip X）。仅初始界面显示（CSS：#empty-hint 内才 display:flex）。
+  const psel = { open: false }
+  const projPop = $('proj-pop')
+  const projSeatEl = $('proj-seat')
+  projSeatEl.querySelector('.projIco').innerHTML = I.folder
+  projSeatEl.querySelector('.chevron').innerHTML = I.dshChevDown
+  function projList() {
+    const byProject = {}
+    for (const s of ALL) if (s.projectScope === 'project' && s.projectLabel && !isArchived(s)) (byProject[s.projectLabel] = byProject[s.projectLabel] || []).push(s)
+    return Object.keys(byProject).sort((a, b) => {
+      const la = Math.max(0, ...byProject[a].map((s) => s.updatedAt))
+      const lb = Math.max(0, ...byProject[b].map((s) => s.updatedAt))
+      return lb - la
+    })
+  }
+  function renderProjSeat() {
+    // 会话态=只读工作文件夹标识（显示当前会话所属项目全称，.locked 锁不可改）；空态=目标项目选择
+    const locked = !!state.currentHash
+    const s = locked ? findSession(state.currentHash) : null
+    const label = locked
+      ? (s && s.projectScope === 'project' && s.projectLabel ? s.projectLabel : '全局')
+      : (state.newProject || '全局')
+    projSeatEl.querySelector('.projLabel').textContent = label
+    projSeatEl.title = locked ? '工作文件夹：' + label : (state.newProject ? '目标项目：' + state.newProject : '目标项目：全局（默认）')
+    projSeatEl.classList.toggle('locked', locked)
+  }
+  function renderProjPop() {
+    if (!psel.open) return
+    const rows = ['<div class="row" data-p=""><span class="pIco">' + I.pen + '</span><span class="pLabel">全局（默认）</span>' + (state.newProject ? '' : '<span class="check">' + I.dshCheck + '</span>') + '</div>']
+    for (const l of projList()) {
+      rows.push('<div class="row" data-p="' + esc(l) + '" title="' + esc(l) + '"><span class="pIco">' + I.folder + '</span><span class="pLabel">' + esc(l) + '</span>' + (state.newProject === l ? '<span class="check">' + I.dshCheck + '</span>' : '') + '</div>')
+    }
+    projPop.innerHTML = rows.join('')
+    projPop.querySelectorAll('.row').forEach((r) =>
+      r.addEventListener('click', () => {
+        state.newProject = r.dataset.p || null
+        renderProjSeat()
+        closeProjPop()
+      }))
+    projPop.hidden = false
+  }
+  function openProjPop() {
+    if (cmd.open) closeCmdPop()
+    if (msel.open) closeModelPop()
+    closeMentionPop()
+    psel.open = true
+    renderProjPop()
+  }
+  function closeProjPop() {
+    if (!psel.open) return
+    psel.open = false
+    projPop.hidden = true
+  }
+  projSeatEl.addEventListener('click', () => {
+    if (state.currentHash) return // 会话态锁定：工作文件夹标识只读，不弹选择层
+    psel.open ? closeProjPop() : openProjPop()
+  })
 
   // ---- 命令菜单（dsh PopupSelectController 移植：open→加载一次→本地过滤→高亮→选择→确认门）----
   function cmdFiltered() {
@@ -4727,13 +4779,19 @@
     const imgs = pendingImages.slice()
     if (!text && !imgs.length) { inputEl.focus(); return true }
     if (!gws || gws.readyState !== 1) { toast('未连接，无法发送'); return true }
-    // 2026-08-28 图片占位：[Image #N] 与 pastedContents id（CLI 侧按 images 数组序生成）一一对应
+    // 2026-08-28 图片占位：[Image #N] 与 pastedContents id 一一对应。
+    // 2026-09-02 防撞根修：id 由本端分配全会话唯一（从已用最大 imageId+1 起，对齐 CLI
+    // getInitialPasteId 语义），随 images 显式上行——CLI pastedContentsFromImages 尊重显式 id。
+    // 原恒从 1 起：同会话第二条带图消息互覆 image-cache 字节 → 历史图错图。
     if (imgs.length) {
-      const ph = imgs.map((_, i) => `[Image #${i + 1}]`).join(' ')
+      const base = live.maxImgId || 0
+      imgs.forEach((im, i) => { im.id = base + 1 + i })
+      live.maxImgId = base + imgs.length
+      const ph = imgs.map((im) => `[Image #${im.id}]`).join(' ')
       text = text ? text + ' ' + ph : ph
     }
     const imgPayload = imgs.length
-      ? { images: imgs.map(p => ({ content: p.content, mediaType: p.mediaType, filename: p.filename })) }
+      ? { images: imgs.map(p => ({ id: p.id, content: p.content, mediaType: p.mediaType, filename: p.filename })) }
       : {}
     // 2026-08-24 首页空态首条消息触发：未在具体会话（#/ 空态）输入第一条消息
     // → 先创建 web 会话（网关 spawn 本地可见 CLI 窗口，返回后 CLI 已连 /clients），
@@ -4746,7 +4804,6 @@
       if (webCreating) { toast('正在创建会话，请稍候…'); return true }
       const tgt = state.newProject
       state.newProject = null
-      renderNewProjChip()
       // 丝滑过渡（2026-08-30）：不等 wsession 返回（spawn CLI 窗口+注册常 >1s，期间空态冻结
       // 是「不丝滑」根源）——发送瞬间即进会话视觉：输入栏 FLIP 沉底 + 趴栏淡出 + 首条消息
       // 乐观上屏（气泡+正在处理折叠）。pre 标记 + hash 暂空：renderSession 创建中不洗
@@ -4767,7 +4824,6 @@
         inputEl.textContent = text
         syncGwSend()
         state.newProject = tgt
-        renderNewProjChip()
         inputEl.focus()
         return true
       }

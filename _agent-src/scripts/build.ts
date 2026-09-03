@@ -175,7 +175,7 @@ const defines = {
   'MACRO.NATIVE_PACKAGE_URL': 'undefined',
   'MACRO.FEEDBACK_CHANNEL': JSON.stringify('github'),
   'MACRO.ISSUES_EXPLAINER': JSON.stringify(
-    'This reconstructed source snapshot does not include Anthropic internal issue routing.',
+    'use the /feedback command to report a feature request or bug.',
   ),
   'MACRO.VERSION_CHANGELOG': JSON.stringify(
     dev ? getVersionChangelog() : 'https://github.com/paoloanzn/claude-code',

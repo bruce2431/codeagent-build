@@ -222,6 +222,9 @@ description: <何时用/怎么用，一句话，供 Skill 工具自动命中>
 | 构建 | npm 官方发布流程 | `bun --compile --bytecode` 自包含单文件 |
 | 项目 `.claude/` | trust/onboarding 触发创建 | **惰性创建**（首次写项目设置才 mkdir；会话存储的 `.claude/projects/` 写会话时自动建） |
 | 会话/记忆存储 | 全局 `~/.claude/projects/` 统一 | **会话/自动记忆均项目级、平铺**：会话 `<项目>/.claude/projects/*.jsonl`，记忆 `<项目>/.claude/projects/memory/` |
+| 权限规则 `@/` 前缀 | 无此语法 | **自定义特性，生效中**：`@/` 解析到便携根（`.claude-portable` 标记所在 `.claude` 的父目录 = `@WrokSpace`），Edit/Read 的 allow/deny 规则均有效（`filesystem.ts` `patternWithRoot`） |
+| `.claude` 目录编辑 | 可直接编辑 | **危险目录守卫**：路径任意段 = `.claude`（`.claude/worktrees` 除外）→ acceptEdits 与项目级 allow 被无视，强制弹「编辑自己配置」审批；唯一豁免 = **会话级** allow 规则 `/.claude/**` 或 `~/.claude/**`（审批框选项 2 即写入，会话结束失效） |
+| 品牌身份 | Claude Code / Anthropic | **白标 Floria**（2026-09-01 P0 落实：身份句族 11 处 + env 假情报 3 句 + 主提示散句 + 工具描述 + guide agent 改造为 Floria guide；`CLAUDE_CODE_ATTRIBUTION_HEADER` 全局关；D 层功能性标识 `.claude`/`CLAUDE_*`/工具协议等不动） |
 
 ## 12. 常见坑速查
 
@@ -231,6 +234,7 @@ description: <何时用/怎么用，一句话，供 Skill 工具自动命中>
 - **项目级 `.claude/` 启动不自动建** → 只在首次写项目设置（`/permissions`、`/config`、MCP 审批、插件装项目 scope）才惰性创建；要手动放 `CLAUDE.md` 或空 `settings.json`。
 - **settings.json hooks 用 CWD 相对路径**（`.claude/...`）→ 在 `@WrokSpace\[项目]\` 等子目录会话里 `recall_hook.py`/`statusline.mjs` 静默跳过（RAG 自动触发失效），只在 `@WrokSpace` 根目录跑才命中。
 - **MCP/插件/hook 改动不热加载** → 必须重启会话。
+- **编辑 `.claude` 下文件总弹审批** → 是危险目录守卫（`isDangerousFilePathToAutoEdit`）在拦，不是权限规则失效；审批框选项 2 = 写会话级 `/.claude/**` 豁免（会话结束失效）。`@/` 前缀规则本身有效，勿建议改写成绝对路径（违反便携红线）。
 - **MCP 序列化** → 禁裸 `json.dump(indent=2)`，用管线序列化器，否则 float32 崩溃。
 
 ## 13. 项目预览页 Web 容器（backend 容器）标准

@@ -45,6 +45,7 @@ import {
   saveGatewayTokenToDisk,
   clearGatewayTokenFromDisk,
   isGatewayTicket,
+  touchGatewayTicket,
 } from '../utils/gatewayToken.js'
 
 // 复用官方凭据池：模型校验与 CLI 同一来源（credentials.json activeProvider.models），
@@ -385,22 +386,52 @@ const MDNS_RECORD_TTL = 120
 // 源 IP/出接口天然正确；A 记录只回该 socket 的 bind IP（查询来自哪个网段就回哪个可达地址，
 // 不再让设备先试到别的网段 IP 拖慢/失败）。
 const mdnsSockets = new Map<string, ReturnType<typeof createSocket>>() // bind IP → socket
+const mdnsPendingBinds = new Set<string>() // bind 异步期间占位，防 watch 轮询重复发起
 // 网络切换自愈（2026-08-30 热点根修）：30s 轮询实时读网卡，LAN 地址集合变化即全量重建。
 let mdnsWatchTimer: ReturnType<typeof setInterval> | null = null
 const MDNS_WATCH_INTERVAL = 30_000
+// 单播 announce（2026-09-01 iPhone 热点根修）：iPhone 个人热点/AP 隔离网络吞 mDNS 多播，
+// 设备查询永远到不了 PC（现场实测：iPad↔PC IP 直连通、floria.local 恒不解析）——应答器
+// 空转。不再等查询：周期性向各 LAN IP 所在子网全部主机地址单播推送 announce（cache-flush
+// A 记录，目的端口 5353），单播穿多播抑制，iOS mDNSResponder 收到即建/刷缓存，floria.local
+// 免查询恒可解析；设备接入/锁屏唤醒后最多一个周期自动恢复。周期取 TTL 之半保无断档。
+let mdnsAnnounceTimer: ReturnType<typeof setInterval> | null = null
+const MDNS_ANNOUNCE_INTERVAL = 60_000
+// 查询触发回推的节流表（源 IP → 上次回推时刻）
+const mdnsAnnounceSeen = new Map<string, number>()
+// 名字内联编码（announce 无问题段，压缩指针无处可指）：\x06floria\x05local\x00
+const MDNS_NAME_ENC = Buffer.concat([
+  Buffer.from([6]),
+  Buffer.from('floria', 'latin1'),
+  Buffer.from([5]),
+  Buffer.from('local', 'latin1'),
+  Buffer.from([0]),
+])
 
-function mdnsLanAddrs(): string[] {
-  const out: string[] = []
+interface MdnsIf {
+  address: string
+  netmask: string
+}
+
+function mdnsLanIfs(): MdnsIf[] {
+  const out: MdnsIf[] = []
   for (const list of Object.values(networkInterfaces())) {
     for (const ni of list ?? []) {
-      if (ni.family === 'IPv4' && !ni.internal) out.push(ni.address)
+      if (ni.family === 'IPv4' && !ni.internal) out.push({ address: ni.address, netmask: ni.netmask })
     }
   }
   // 过滤不可用网段（169.254 link-local、198.18 benchmark 段、Tailscale 100.64-127 CGNAT 段），
   // 避免设备先试到不可达地址拖慢连接
   return out.filter(
-    (a) => !a.startsWith('169.254.') && !/^198\.18\./.test(a) && !/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(a),
+    (x) =>
+      !x.address.startsWith('169.254.') &&
+      !/^198\.18\./.test(x.address) &&
+      !/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(x.address),
   )
+}
+
+function mdnsLanAddrs(): string[] {
+  return mdnsLanIfs().map((x) => x.address)
 }
 
 // 读 DNS 报文 QNAME（标签序列 + 压缩指针防御）：返回点分名与问题段结束所需 next 偏移
@@ -439,12 +470,20 @@ function mdnsStart(): void {
   // 旧条件 `mdnsSockets.size &&` 恒 false → watch 从未启动 → 网络切换后应答器永远绑死旧地址
   // （热点场景 floria.local 永不解析的直接根因）。watch 对比集合自动收敛，无需 map 非空前置。
   if (!mdnsWatchTimer) mdnsWatchTimer = setInterval(mdnsWatch, MDNS_WATCH_INTERVAL)
+  if (!mdnsAnnounceTimer) {
+    mdnsAnnounceTimer = setInterval(() => {
+      for (const ip of mdnsSockets.keys()) mdnsAnnounceOne(ip, false)
+    }, MDNS_ANNOUNCE_INTERVAL)
+  }
 }
 
 function mdnsStartOne(ip: string): void {
+  if (mdnsPendingBinds.has(ip) || mdnsSockets.has(ip)) return
+  mdnsPendingBinds.add(ip)
   const sock = createSocket({ type: 'udp4', reuseAddr: true })
   sock.on('error', () => {
     // 5353 被占/防火墙拒绝等：该接口静默退出（其余接口照常），不拖垮网关
+    mdnsPendingBinds.delete(ip)
     try {
       sock.close()
     } catch {
@@ -461,10 +500,15 @@ function mdnsStartOne(ip: string): void {
     }
   })
   sock.bind(MDNS_PORT, ip, () => {
+    mdnsPendingBinds.delete(ip)
     try {
       sock.addMembership(MDNS_GROUP, ip)
       mdnsSockets.set(ip, sock)
       console.log(`[gateway] mDNS 应答器就绪：floria.local → ${ip}`)
+      // RFC 6762 §8.3 announce 应连发 ≥2 次（间隔 ≥1s）：三连发覆盖新设备刚入网窗口，
+      // UDP 丢包不必等 60s 周期（周期轮保持单发）
+      for (const delay of [0, 1000, 2000]) setTimeout(() => mdnsAnnounceOne(ip, false), delay)
+      console.log(`[gateway] mDNS 单播 announce 推发启动：floria.local → ${ip}（3 连发）`)
     } catch (e) {
       try {
         sock.close()
@@ -477,14 +521,30 @@ function mdnsStartOne(ip: string): void {
   })
 }
 
-// 轮询检测网络切换：LAN 地址集合与当前 socket 集合不同即全量重建（增删接口都覆盖）。
+// 轮询检测网络变化：与 socket 集合 diff 增量增删（2026-09-01 抖动根修：旧版集合不等即
+// 全量 stop/start——日志实证热点 IP 每分钟在 172.20.10.x 与其它接口间抖动，一次抖动就把
+// 健康接口一起拆掉，服务网段出现 30s 无人应答窗口；增量化后未变化接口的 socket/announce
+// 常驻，仅补缺失、关多余）。
 // 无地址（断网抖动瞬间）不动，保持旧 socket 自生自灭，避免中途降级。
 function mdnsWatch(): void {
-  const cur = mdnsLanAddrs()
-  if (cur.join(',') === [...mdnsSockets.keys()].join(',')) return
-  console.log(`[gateway] 检测到网络切换（${[...mdnsSockets.keys()].join('/') || '无'} → ${cur.join('/') || '无'}），重建 mDNS 应答器`)
-  mdnsStop()
-  mdnsStart()
+  const cur = new Set(mdnsLanAddrs())
+  let changed = false
+  for (const [ip, sock] of [...mdnsSockets]) {
+    if (cur.has(ip)) continue
+    changed = true
+    try {
+      sock.close()
+    } catch {
+      /* 忽略 */
+    }
+    mdnsSockets.delete(ip)
+  }
+  for (const ip of cur) {
+    if (mdnsSockets.has(ip) || mdnsPendingBinds.has(ip)) continue
+    changed = true
+    mdnsStartOne(ip)
+  }
+  if (changed) console.log(`[gateway] mDNS 接口变化，现绑：${[...mdnsSockets.keys()].join('/') || '无'}`)
 }
 
 function mdnsHandleQuery(sock: ReturnType<typeof createSocket>, bindIp: string, msg: Buffer, rinfo: RemoteInfo): void {
@@ -493,7 +553,16 @@ function mdnsHandleQuery(sock: ReturnType<typeof createSocket>, bindIp: string, 
   // 本机自发的多播应答经 IP_MULTICAST_LOOP 回环后会被自己收到——无此检查会形成应答→再应答
   // 的本地反馈循环（2026-08-29 实证：单条查询收到 2 条应答）
   if (msg.readUInt16BE(2) & 0x8000) return
+  // 任一 mDNS 查询到达即单播回推 announce（30s/源节流）：设备刚入网/亮屏时 iOS 先发系统
+  // 服务查询（_companion-link/_rdlink 等），此刻回推让 floria.local 缓存立即建立，不等周期
+  const lastSeen = mdnsAnnounceSeen.get(rinfo.address) ?? 0
+  if (Date.now() - lastSeen > 30_000) {
+    mdnsAnnounceSeen.set(rinfo.address, Date.now())
+    console.log(`[gateway] mDNS 单播回推 announce → ${rinfo.address}（30s/源节流）`)
+    mdnsAnnounceToPeer(bindIp, rinfo.address)
+  }
   const qdcount = msg.readUInt16BE(4)
+  console.log(`[gateway] mDNS 查询到达：${rinfo.address}:${rinfo.port}（QD=${qdcount}）`)
   if (qdcount < 1) return
   // 逐问题扫描（2026-08-29 打包查询根修）：iOS mDNSResponder 会把 floria.local 与
   // _companion-link/_rdlink 等系统服务发现打包进同一查询（QD>1），floria.local 常不在首位；
@@ -542,11 +611,120 @@ function mdnsHandleQuery(sock: ReturnType<typeof createSocket>, bindIp: string, 
   sock.send(reply, rinfo.port, rinfo.address, () => {})
 }
 
+// ---- 单播 announce（2026-09-01，见 mdnsAnnounceTimer 注释）----
+
+// announce 报文（2026-09-01 legacy 格式化）：header(QR=1 AA=1, QD=1 AN=1) + 问题段
+// floria.local A IN + 1 条 A 记录（0xc00c 压缩指针指向偏移 12 问题段起始）。
+// 带问题段是关键：无问题段的纯 answer 单播属 unsolicited，iPad mDNSResponder 实测无视
+// （08-31 无 announce 与 09-01 纯 answer announce 两次热点实测均不解析，其余链路相同）；
+// 带问题段的 legacy unicast response 走 mDNSResponder 常规应答通道（商用 mDNS 网关同款做法）。
+function mdnsAnnouncePacket(bindIp: string): Buffer {
+  const octets = bindIp.split('.').map(Number)
+  const question = Buffer.concat([MDNS_NAME_ENC, Buffer.from([0, 1, 0, 1])]) // QTYPE=A QCLASS=IN
+  const rec = Buffer.alloc(16)
+  rec.writeUInt16BE(0xc00c, 0) // NAME → 问题段起始
+  rec.writeUInt16BE(1, 2) // TYPE A
+  // CLASS IN：RFC 6762 §18.11 单播应答中 cache-flush 位必须为 0（0x8001 仅多播合法，
+  // iOS mDNSResponder 严格实现会拒收）——单播 announce 不依赖该位，靠周期重发保新鲜
+  rec.writeUInt16BE(1, 4)
+  rec.writeUInt32BE(MDNS_RECORD_TTL, 6)
+  rec.writeUInt16BE(4, 10) // RDLENGTH
+  for (let i = 0; i < 4; i++) rec[12 + i] = octets[i] & 0xff
+  const header = Buffer.alloc(12)
+  header.writeUInt16BE(0x8400, 2) // QR=1 AA=1（ID=0：legacy 应答无匹配查询时规范值）
+  header.writeUInt16BE(1, 4) // QDCOUNT=1
+  header.writeUInt16BE(1, 6) // ANCOUNT=1
+  return Buffer.concat([header, question, rec])
+}
+
+const ipToU32 = (s: string) =>
+  s.split('.').reduce((acc, o) => (acc << 8) + (Number(o) & 0xff), 0) >>> 0
+
+function mdnsSameSubnet(a: string, b: string, netmask: string): boolean {
+  const m = ipToU32(netmask)
+  return ((ipToU32(a) & m) >>> 0) === ((ipToU32(b) & m) >>> 0)
+}
+
+// 同子网全部主机地址（排除网络地址/广播地址/自身）；网段总地址数 > 512 返回空——
+// 大网段（校园网 /16 等）全网枚举推送纯属浪费，定向推（mdnsPushToReachableClient）不受此限
+function mdnsSubnetPeers(ip: string, netmask: string): string[] {
+  const ipN = ipToU32(ip)
+  const maskN = ipToU32(netmask)
+  const base = (ipN & maskN) >>> 0
+  const size = (~maskN >>> 0) + 1
+  if (size > 512) return []
+  const out: string[] = []
+  for (let n = 1; n < size - 1; n++) {
+    const a = (base + n) >>> 0
+    if (a === ipN) continue
+    out.push([(a >>> 24) & 0xff, (a >>> 16) & 0xff, (a >>> 8) & 0xff, a & 0xff].join('.'))
+  }
+  return out
+}
+
+function mdnsAnnounceOne(bindIp: string, log: boolean): void {
+  const sock = mdnsSockets.get(bindIp)
+  if (!sock) return
+  const netmask = mdnsLanIfs().find((x) => x.address === bindIp)?.netmask
+  if (!netmask) return
+  const pkt = mdnsAnnouncePacket(bindIp)
+  const peers = mdnsSubnetPeers(bindIp, netmask)
+  for (const peer of peers) sock.send(pkt, MDNS_PORT, peer, () => {})
+  if (log) {
+    console.log(`[gateway] mDNS 单播 announce：floria.local → ${bindIp} → ${peers.length} 个地址（热点吞多播场景免查询可达）`)
+  }
+}
+
+// 单播推送一份 announce 到指定地址（收到该设备任一 mDNS 查询时用）
+function mdnsAnnounceToPeer(bindIp: string, peer: string): void {
+  const sock = mdnsSockets.get(bindIp)
+  if (!sock) return
+  sock.send(mdnsAnnouncePacket(bindIp), MDNS_PORT, peer, () => {})
+}
+
+// 请求来源 IPv4 归一化：剥 ::ffff: 前缀，非 IPv4（IPv6/Unix socket）返回空串。
+// mDNS 定向推与设备票证回写（touchGatewayTicket）共用。
+function remoteIPv4(raw: string | undefined): string {
+  const ip = (raw ?? '').replace(/^::ffff:/, '')
+  return /^\d+\.\d+\.\d+\.\d+$/.test(ip) ? ip : ''
+}
+
+// 直连客户端定向推送（2026-09-01 校园网单播互通场景）：设备（iPad/iPhone）的 mDNS 多播被
+// AP 吞（查询到不了 PC、PC 多播应答回不去），但设备 HTTP 直连 8124 证明**单播双向可达**
+// （iPad 分流实证：IP 直连页面正常打开）——此刻向该客户端定向单播推 legacy announce（3 连发
+// 覆盖丢包），设备 mDNSResponder 收到后 floria.local 免查询可解析，形成「直连一次 → 域名
+// 永通」的自愈闭环。回环/非同网段地址跳过；30s/IP 节流（与查询回推共用 mdnsAnnounceSeen）。
+// 全网枚举推（mdnsAnnounceOne）在校园网 /16 因 >512 跳过，定向推不受该限——只推已知可达地址。
+function mdnsPushToReachableClient(remoteIpRaw: string): void {
+  const remoteIp = remoteIPv4(remoteIpRaw)
+  if (!remoteIp) return // IPv6 等非 IPv4 跳过
+  if (remoteIp.startsWith('127.')) return // 本机访问（PC 端有 hosts 兜底，无需 mDNS）
+  for (const bindIp of mdnsSockets.keys()) {
+    const netmask = mdnsLanIfs().find((x) => x.address === bindIp)?.netmask
+    if (!netmask || !mdnsSameSubnet(remoteIp, bindIp, netmask)) continue
+    const lastSeen = mdnsAnnounceSeen.get(remoteIp) ?? 0
+    if (Date.now() - lastSeen > 30_000) {
+      mdnsAnnounceSeen.set(remoteIp, Date.now())
+      console.log(`[gateway] mDNS 定向推（直连客户端 ${remoteIp}）：floria.local → 3 连发`)
+      for (const delay of [0, 1000, 2000]) {
+        setTimeout(() => mdnsAnnounceToPeer(bindIp, remoteIp), delay)
+      }
+    }
+    return
+  }
+}
+
 function mdnsStop(): void {
   if (mdnsWatchTimer) {
     clearInterval(mdnsWatchTimer)
     mdnsWatchTimer = null
   }
+  if (mdnsAnnounceTimer) {
+    clearInterval(mdnsAnnounceTimer)
+    mdnsAnnounceTimer = null
+  }
+  mdnsAnnounceSeen.clear()
+  mdnsPendingBinds.clear()
   for (const sock of mdnsSockets.values()) {
     try {
       sock.close()
@@ -1372,6 +1550,13 @@ function sendReportBodyError(res: ServerResponse, error: unknown): void {
 
 async function handleRequest(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse, root: string): Promise<void> {
   const url = new URL(req.url ?? '/', `http://${req.headers.host || 'localhost'}`)
+  // 直连客户端自愈：凡同网段 IPv4 设备发来 HTTP 请求即定向推 legacy announce（iPad 多播被吞
+  // 场景，直连 8124 即建立 floria.local 解析——见 mdnsPushToReachableClient）
+  try {
+    mdnsPushToReachableClient(req.socket.remoteAddress ?? '')
+  } catch {
+    /* 推送失败不影响请求 */
+  }
   // 安全加固（2026-08-15）：HTTP 数据接口与 WS 升级一致要求 token。
   //  - /gateway/health 保持公开探活（/server status、前端 detectGateway 只读 mode），响应已精简不含路径泄露；
   //  - 其余 /gateway/*（会话/插件/SSE/上报写接口）与 /preview/* 一律校验「query token 或 cookie 票证」，失败 401。
@@ -1385,13 +1570,18 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
   //    它获得授权；浏览器 URL 也不再出现 token）。
   const qToken = url.searchParams.get('token')
   const qOk = qToken != null && qToken !== '' && qToken === currentToken
-  const cookieOk = isGatewayTicket(parseCookieHeader(req.headers.cookie)[AUTH_COOKIE_NAME])
+  const cookieVal = parseCookieHeader(req.headers.cookie)[AUTH_COOKIE_NAME]
+  const cookieOk = isGatewayTicket(cookieVal)
   const isProtected =
     (url.pathname.startsWith('/gateway/') && url.pathname !== '/gateway/health' && url.pathname !== '/gateway/activate') ||
     url.pathname.startsWith('/preview/')
   if (isProtected && !qOk && !cookieOk) {
     sendJson(res, 401, { error: 'unauthorized' })
     return
+  }
+  // 授权设备活跃回写（2026-09-01 /server auth 设备情况展示：UA/IP/lastSeen，60s 写盘节流）
+  if (isProtected && cookieOk) {
+    touchGatewayTicket(cookieVal, req.headers['user-agent'], remoteIPv4(req.socket.remoteAddress))
   }
   // 设备配对激活（公开端点，防枚举靠请求码熵）：码在授权名单（/server auth add）→ 种 HttpOnly
   // floria_auth cookie（票证=码本身，1 年）；不在名单 → 403。前端门态轮询此端点实现「授权后自动进入」。
@@ -1750,7 +1940,12 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
     } catch {
       /* 保留原文 */
     }
-    const pvRel = (pvMatch[2] || '').replace(/^\//, '') || 'index.html'
+    let pvRel = (pvMatch[2] || '').replace(/^\//, '') || 'index.html'
+    try {
+      pvRel = decodeURIComponent(pvRel)
+    } catch {
+      /* 保留原文，existsSync 不命中自然 404 兜底 */
+    }
     const pvProj = findProjects(root).find((g) => g.scope === 'project' && g.label === pvLabel && g.hasPreview)
     if (!pvProj) {
       res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' })
@@ -1793,7 +1988,12 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
       res.end('Not Found')
       return
     }
-    const dpRel = (dpMatch[2] || '').replace(/^\//, '') || 'index.html'
+    let dpRel = (dpMatch[2] || '').replace(/^\//, '') || 'index.html'
+    try {
+      dpRel = decodeURIComponent(dpRel)
+    } catch {
+      /* 保留原文，readWebAsset 不命中自然 404 兜底 */
+    }
     const dpBuf = readWebAsset(`default-preview/${dpRel}`)
     if (!dpBuf) {
       res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' })
@@ -1881,9 +2081,22 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: impo
         sendJson(res, 400, { error: 'invalid body' })
         return
       }
-      conversationDisplays.set(sid, { messages: msgs, updatedAt: Date.now() })
+      // P2 增量上报聚合（2026-08-31，20260828145952-内存增长根因与代码层修改建议.md）：
+      // body.base 为非负整数 = 增量语义——CLI 侧已确认缓存前 base 条不变，本批 messages
+      // 替换第 base 条起的内容（尾部 thinking 可见性/图片并回等投影回改天然覆盖）。
+      // base 越界（网关重启/缓存被 sweep）→ 按窗口投影展示，CLI 校验响应 cached 长度不符
+      // 后下轮自动全量对账恢复完整。无 base = 全量替换（旧语义，兼容）。TTL/sweep 不变。
+      const base = typeof parsed.base === 'number' && Number.isInteger(parsed.base) && parsed.base >= 0 ? parsed.base : -1
+      let merged = msgs
+      if (base >= 0) {
+        const prev = conversationDisplays.get(sid)?.messages
+        if (Array.isArray(prev) && base <= prev.length) {
+          merged = prev.slice(0, base).concat(msgs)
+        }
+      }
+      conversationDisplays.set(sid, { messages: merged, updatedAt: Date.now() })
       sweepStaleMaps()
-      sendJson(res, 200, { ok: true })
+      sendJson(res, 200, { ok: true, cached: merged.length })
     } catch (error) {
       sendReportBodyError(res, error)
     }
@@ -2613,6 +2826,12 @@ function spawnWebSession(resume?: string, project?: string): Promise<string> {
     // cwd = 项目根（指定项目 → 该项目根）：会话 jsonl 落盘到 <项目根>/.claude/projects/<sessionId>.jsonl（与 CLI 同目录）
     const cwd = webSessionProjectRoot(effectiveProject)
     // 可见交互窗口：PowerShell Start-Process -PassThru（console 程序默认开新终端窗口，stdio 连窗口）。
+    // 2026-09-02 三次定稿：不带任何 -WindowStyle。同日两版实测——初版 Minimized=WT 拒托管回落独立 conhost
+    // 老式黑窗（用户所见「管理员窗口」且无法并入 WT；本地双击无样式 flag 不受影响）；二版 Hidden=SW_HIDE 被
+    // WT 委托链尊重 → 进程正常启动并注册但窗口完全不可见（「根本不启动窗口了」）。同链 cmd 探针 A/B/C 实验
+    // （归档 .trash/2026-09-02/20260902174824-wt-delegate-test.ps1）实证：只有无 flag 才并入 WT。
+    // 代价：并入时新标签激活 WT 窗口（可能抢焦点）——正确性优先；合并进已有终端窗口由默认终端委托（WT）+
+    // WT windowingBehavior=useAnyExisting 承担。
     // 单引号 PS 字符串无转义（仅 '' 表示字面 '），复用 terminalLauncher.psQuote 同款策略。
     const psQuote = (s: string): string => `'${s.replace(/'/g, "''")}'`
     // 2026-08-31 根修：exe 一律网关自身（协议必然匹配；目录扫描旧案已废，见 webSessionExe 注释）
@@ -2842,10 +3061,15 @@ export function startLocalGateway(opts?: { host?: string; port?: number; token?:
     // 浏览器授权全靠 cookie（/gateway/activate 配对激活时种下），URL 无 token。
     const wsToken = url.searchParams.get('token') || ''
     const qOk = wsToken !== '' && wsToken === currentToken
-    const cOk = isGatewayTicket(parseCookieHeader(req.headers.cookie)[AUTH_COOKIE_NAME])
+    const wsCookieVal = parseCookieHeader(req.headers.cookie)[AUTH_COOKIE_NAME]
+    const cOk = isGatewayTicket(wsCookieVal)
     if (!qOk && !cOk) {
       socket.destroy()
       return
+    }
+    // 授权设备活跃回写（WS 长连接是设备在线的主要形态，upgrade 即更新 UA/IP/lastSeen）
+    if (cOk) {
+      touchGatewayTicket(wsCookieVal, req.headers['user-agent'], remoteIPv4(req.socket.remoteAddress))
     }
     if (url.pathname === '/ws') {
       // 遥测端（浏览器 floria）连接

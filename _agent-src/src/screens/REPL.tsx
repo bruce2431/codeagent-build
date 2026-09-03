@@ -308,6 +308,37 @@ const HISTORY_STUB = {
 // https://anthropic.slack.com/archives/C07VBSHV7EV/p1773545449871739
 const RECENT_SCROLL_REPIN_WINDOW_MS = 3000;
 
+// ---- P1 渲染历史上限（2026-08-31，20260828145952-内存增长根因与代码层修改建议.md）----
+// UI 渲染投影（React messages state）只保留尾部窗口，更早的消息替换为单条归档占位。
+// 磁盘 jsonl 不动（会话持久化权威在盘）；数据层（query 循环 / filterConversationForDisplay
+// 的完整尾部结构语义）不经此路径；尾部窗口恒完整。计数从占位文案自身解析，天然幂等，
+// /clear、resume 换会话后自动从零重计。
+const MAX_RENDER_MESSAGES = 200;
+const ARCHIVE_PLACEHOLDER_PREFIX = '… 早期 ';
+function isRenderArchivePlaceholder(msg: MessageType | undefined): msg is MessageType & { content: string } {
+  return msg?.type === 'system' && (msg as { subtype?: string }).subtype === 'informational'
+    && typeof (msg as { content?: unknown }).content === 'string'
+    && (msg as { content: string }).content.startsWith(ARCHIVE_PLACEHOLDER_PREFIX);
+}
+/** 占位已归档条数（首条非占位 = 0）。cap 后物理长度不再随追加增长，
+ *  一切「数组长度 = 逻辑进度」语义（baseline/pending）必须走 logicalRenderedLength。 */
+function renderArchivedCount(list: MessageType[]): number {
+  const head = list[0];
+  if (!isRenderArchivePlaceholder(head)) return 0;
+  const n = parseInt(head!.content.slice(ARCHIVE_PLACEHOLDER_PREFIX.length), 10);
+  return Number.isFinite(n) ? n : 0;
+}
+function logicalRenderedLength(list: MessageType[]): number {
+  return list.length + renderArchivedCount(list);
+}
+function capRenderedMessages(list: MessageType[]): MessageType[] {
+  const excess = list.length - MAX_RENDER_MESSAGES;
+  if (excess <= 0) return list;
+  const archived = excess + renderArchivedCount(list);
+  const placeholder = createSystemMessage(`${ARCHIVE_PLACEHOLDER_PREFIX}${archived} 条消息已归档 — 完整历史在会话 jsonl（/transcript 可查）`, 'info');
+  return [placeholder, ...list.slice(excess)];
+}
+
 // Use LRU cache to prevent unbounded memory growth
 // 100 files should be sufficient for most coding sessions while preventing
 // memory issues when working across many files in large projects
@@ -1210,7 +1241,7 @@ export function REPL({
     registerLeaderToolUseConfirmQueue(setToolUseConfirmQueue);
     return () => unregisterLeaderToolUseConfirmQueue();
   }, [setToolUseConfirmQueue]);
-  const [messages, rawSetMessages] = useState<MessageType[]>(initialMessages ?? []);
+  const [messages, rawSetMessages] = useState<MessageType[]>(() => capRenderedMessages(initialMessages ?? []));
   const messagesRef = useRef(messages);
   // Stores the willowMode variant that was shown (or false if no hint shown).
   // Captured at hint_shown time so hint_converted telemetry reports the same
@@ -1229,33 +1260,44 @@ export function REPL({
   const setMessages = useCallback((action: React.SetStateAction<MessageType[]>) => {
     const prev = messagesRef.current;
     const next = typeof action === 'function' ? action(messagesRef.current) : action;
-    messagesRef.current = next;
-    if (next.length < userInputBaselineRef.current) {
+    // P1 cap 后物理长度不再单调增长（追加→砍头→长度不变），「长度=逻辑进度」
+    // 判定一律用逻辑长度（物理长度+占位已归档数），保证 baseline/pending 语义
+    // 与未 cap 时一致（否则发送回显永不消失 = 用户消息渲染两条）。
+    const prevLogical = logicalRenderedLength(prev);
+    const nextLogical = logicalRenderedLength(next);
+    if (nextLogical < userInputBaselineRef.current) {
       // Shrank (compact/rewind/clear) — clamp so placeholderText's length
       // check can't go stale.
       userInputBaselineRef.current = 0;
-    } else if (next.length > prev.length && userMessagePendingRef.current) {
+    } else if (nextLogical > prevLogical && userMessagePendingRef.current) {
       // Grew while the submitted user message hasn't landed yet. If the
       // added messages don't include it (bridge status, hook results,
       // scheduled tasks landing async during processUserInputBase), bump
       // baseline so the placeholder stays visible. Once the user message
       // lands, stop tracking — later additions (assistant stream) should
       // not re-show the placeholder.
-      const delta = next.length - prev.length;
-      const added = prev.length === 0 || next[0] === prev[0] ? next.slice(-delta) : next.slice(0, delta);
+      const delta = nextLogical - prevLogical;
+      // cap 砍头保尾：常规追加恒在尾部；全量替换场景（resume/compact）新增
+      // 可能在头部——先试尾部窗口，不含人发消息再试头部窗口。
+      const tail = next.slice(-Math.min(delta, next.length));
+      const added = tail.some(isHumanTurn) ? tail : next.slice(0, Math.min(delta, next.length));
       if (added.some(isHumanTurn)) {
         userMessagePendingRef.current = false;
       } else {
-        userInputBaselineRef.current = next.length;
+        userInputBaselineRef.current = nextLogical;
       }
     }
-    rawSetMessages(next);
+    // P1 渲染历史上限：占位归档早期消息后再落 ref/state（cap 在 baseline 判定之后，
+    // 保证 delta/增长判定用未截断数组）。
+    const capped = capRenderedMessages(next);
+    messagesRef.current = capped;
+    rawSetMessages(capped);
   }, []);
   // Capture the baseline message count alongside the placeholder text so
   // the render can hide it once displayedMessages grows past the baseline.
   const setUserInputOnProcessing = useCallback((input: string | undefined) => {
     if (input !== undefined) {
-      userInputBaselineRef.current = messagesRef.current.length;
+      userInputBaselineRef.current = logicalRenderedLength(messagesRef.current);
       userMessagePendingRef.current = true;
     } else {
       userMessagePendingRef.current = false;
@@ -1575,11 +1617,17 @@ export function REPL({
   const pickNewSpinnerTip = useCallback(() => {
     if (tipPickedThisTurnRef.current) return;
     tipPickedThisTurnRef.current = true;
-    const newMessages = messagesRef.current.slice(bashToolsProcessedIdx.current);
+    // P1 cap 砍头会使物理索引失位（数组内容整体左移，slice(idx) 恒空），
+    // 改用「上次处理到的最后一条消息」定位起点；引用被 cap 砍掉则全量重扫
+    // （bashTools 是 Set，幂等）。
+    const list = messagesRef.current;
+    const last = bashToolsLastMsgRef.current;
+    const startIdx = last ? list.findIndex(m => m === last) + 1 : 0;
+    const newMessages = list.slice(startIdx);
     for (const tool of extractBashToolsFromMessages(newMessages)) {
       bashTools.current.add(tool);
     }
-    bashToolsProcessedIdx.current = messagesRef.current.length;
+    bashToolsLastMsgRef.current = list[list.length - 1];
     void getTipToShowOnSpinner({
       theme,
       readFileState: readFileState.current,
@@ -2002,7 +2050,7 @@ export function REPL({
   const [initialReadFileState] = useState(() => createFileStateCacheWithSizeLimit(READ_FILE_STATE_CACHE_SIZE));
   const readFileState = useRef(initialReadFileState);
   const bashTools = useRef(new Set<string>());
-  const bashToolsProcessedIdx = useRef(0);
+  const bashToolsLastMsgRef = useRef<MessageType | undefined>(undefined);
   // Session-scoped skill discovery tracking (feeds was_discovered on
   // tengu_skill_tool_invocation). Must persist across getToolUseContext
   // rebuilds within a session: turn-0 discovery writes via processUserInput
@@ -3101,7 +3149,7 @@ export function REPL({
         haikuTitleAttemptedRef.current = false;
         setHaikuTitle(undefined);
         bashTools.current.clear();
-        bashToolsProcessedIdx.current = 0;
+        bashToolsLastMsgRef.current = undefined;
 
         // Restore the plan slug for the new session so getPlan() finds the file
         if (oldPlanSlug) {
@@ -4615,7 +4663,7 @@ export function REPL({
   // while deferredMessages lags behind messages. Suppressed when viewing an
   // agent — displayedMessages is a different array there, and onAgentSubmit
   // doesn't use the placeholder anyway.
-  const placeholderText = userInputOnProcessing && !viewedAgentTask && displayedMessages.length <= userInputBaselineRef.current ? userInputOnProcessing : undefined;
+  const placeholderText = userInputOnProcessing && !viewedAgentTask && logicalRenderedLength(displayedMessages) <= userInputBaselineRef.current ? userInputOnProcessing : undefined;
   const toolPermissionOverlay = focusedInputDialog === 'tool-permission' ? <PermissionRequest key={toolUseConfirmQueue[0]?.toolUseID} onDone={() => setToolUseConfirmQueue(([_, ...tail]) => tail)} onReject={handleQueuedCommandOnCancel} toolUseConfirm={toolUseConfirmQueue[0]!} toolUseContext={getToolUseContext(messages, messages, abortController ?? createAbortController(), mainLoopModel)} verbose={verbose} workerBadge={toolUseConfirmQueue[0]?.workerBadge} setStickyFooter={isFullscreenEnvEnabled() ? setPermissionStickyFooter : undefined} /> : null;
 
   // Narrow terminals: companion collapses to a one-liner that REPL stacks
@@ -4894,7 +4942,7 @@ export function REPL({
               haikuTitleAttemptedRef.current = false;
               setHaikuTitle(undefined);
               bashTools.current.clear();
-              bashToolsProcessedIdx.current = 0;
+              bashToolsLastMsgRef.current = undefined;
             }
             skipIdleCheckRef.current = true;
             void onSubmitRef.current(pending.input, {

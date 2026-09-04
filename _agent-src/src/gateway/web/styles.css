@@ -457,10 +457,12 @@ a { text-decoration: none; color: inherit; }
 .msg .body .code-block pre, .done-think .code-block pre, .tr-body .code-block pre { margin: 0; padding: 10px 12px; overflow-x: auto; font-family: var(--mono); font-size: 12px; line-height: 1.55; color: var(--text); white-space: pre; }
 .msg .body .code-block code, .done-think .code-block code, .tr-body .code-block code { background: transparent; padding: 0; font-size: inherit; }
 .msg .body .code-block .code-lang, .done-think .code-block .code-lang, .tr-body .code-block .code-lang { position: absolute; top: 6px; right: 10px; font-size: 10px; color: var(--text-3); font-family: var(--mono); }
-.msg .body .md-table { margin: 6px 0; overflow-x: auto; }
-.msg .body .md-table table { border-collapse: collapse; font-size: 13px; width: 100%; }
-.msg .body .md-table th, .msg .body .md-table td { border: 1px solid var(--border); padding: 5px 9px; text-align: left; white-space: normal; word-break: break-word; }
-.msg .body .md-table th { background: var(--rail-bg); font-weight: 600; }
+/* 2026-09-04：md-table 作用域同步扩展到 .done-think/.tr-body（08-31 code 对齐漏了表格，
+   旁白/思考正文里的表格此前以裸 table 渲染=无边框无内距，视觉等同未渲染） */
+.msg .body .md-table, .done-think .md-table, .tr-body .md-table { margin: 6px 0; overflow-x: auto; }
+.msg .body .md-table table, .done-think .md-table table, .tr-body .md-table table { border-collapse: collapse; font-size: 13px; width: 100%; }
+.msg .body .md-table th, .msg .body .md-table td, .done-think .md-table th, .done-think .md-table td, .tr-body .md-table th, .tr-body .md-table td { border: 1px solid var(--border); padding: 5px 9px; text-align: left; white-space: normal; word-break: break-word; }
+.msg .body .md-table th, .done-think .md-table th, .tr-body .md-table th { background: var(--rail-bg); font-weight: 600; }
 
 .msg-system { text-align: center; color: var(--text-3); font-size: 12px; padding: 2px 24px 10px; }
 

@@ -398,6 +398,22 @@ function sendQueueState(): void {
   }
 }
 
+/**
+ * 2026-09-04 压缩实时态：REPL onCompactProgress（compact_start/compact_end，auto/manual 共用
+ * compactConversation）→ /clients WS {type:'compact-state', active} → 网关 SSE 群发 → web 真空态
+ * 强制「正在压缩会话中……」。压缩进行中 jsonl 零写入（boundary+summary 同毫秒落盘于结束时刻），
+ * 本事件是 web 端唯一实时源。与 sendQueueState 同通道同形态；非关键路径，失败全静默。
+ */
+export function notifyCompactProgress(active: boolean): void {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    try {
+      ws.send(JSON.stringify({ type: 'compact-state', active }))
+    } catch {
+      /* 断开忽略 */
+    }
+  }
+}
+
 let queueSubscriptionAttached = false
 
 /**

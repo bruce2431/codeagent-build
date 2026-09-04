@@ -129,6 +129,10 @@ const SnipTool = feature('HISTORY_SNIP')
 const ListPeersTool = feature('UDS_INBOX')
   ? require('./tools/ListPeersTool/ListPeersTool.js').ListPeersTool
   : null
+// NEURON_RAG: 神经元内置检索/记忆（recall/remember + ops 三件），默认关（不进 defaultFeatures）
+const neturonModule = feature('NEURON_RAG')
+  ? (require('./tools/neturon/index.js') as typeof import('./tools/neturon/index.js'))
+  : null
 // NOTE: 原来用 IIFE（require bundled/index.js 调 initBundledWorkflows() 后
 // return require WorkflowTool.js）触发 esbuild `--minify-identifiers` 名字
 // 冲突（ReferenceError: returnmO is not defined，启动即崩）。改为直接 require
@@ -209,6 +213,8 @@ export function getAllBaseTools(): Tools {
     FileEditTool,
     FileWriteTool,
     NotebookEditTool,
+    // recall 定位仅次于六大基础工具（紧跟核心读写组注册）
+    ...(neturonModule ? neturonModule.neturonTools : []),
     WebFetchTool,
     TodoWriteTool,
     WebSearchTool,

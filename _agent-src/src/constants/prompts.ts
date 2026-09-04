@@ -73,6 +73,10 @@ const proactiveModule =
   feature('PROACTIVE') || feature('KAIROS')
     ? require('../proactive/index.js')
     : null
+// NEURON_RAG 名册（gate 同工具注册，默认关）
+const neturonRosterModule = feature('NEURON_RAG')
+  ? (require('../tools/neturon/roster.js') as typeof import('../tools/neturon/roster.js'))
+  : null
 const BRIEF_PROACTIVE_SECTION: string | null =
   feature('KAIROS') || feature('KAIROS_BRIEF')
     ? (
@@ -483,6 +487,9 @@ ${CYBER_RISK_INSTRUCTION}`,
       getSessionSpecificGuidanceSection(enabledTools, skillToolCommands),
     ),
     systemPromptSection('memory', () => loadMemoryPrompt()),
+    systemPromptSection('neuron_roster', () =>
+      neturonRosterModule ? neturonRosterModule.renderNeuronRoster() : null,
+    ),
     systemPromptSection('ant_model_override', () =>
       getAntModelOverrideSection(),
     ),

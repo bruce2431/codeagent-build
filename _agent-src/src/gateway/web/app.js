@@ -150,7 +150,7 @@
   let ALL = []
   let timer = null
   // 阶段1 实时同步：SSE 变更驱动的去重/防抖状态
-  const live = { es: null, listSig: '', curSig: '', listT: null, sessT: null, lastUserSig: '', pinnedUserSig: '', lastMsgLen: null, lastDataTs: 0, curUuid: null, queueRemote: [], maxImgId: 0 }
+  const live = { es: null, listSig: '', curSig: '', listT: null, sessT: null, lastUserSig: '', pinnedUserSig: '', lastMsgLen: null, lastDataTs: 0, curUuid: null, queueRemote: [], maxImgId: 0, compactFlags: new Map() }
 
   // ---------- 工具 ----------
   const esc = (s) =>
@@ -356,6 +356,16 @@
         if (live.curUuid && ev.session === live.curUuid) {
           live.queueRemote = Array.isArray(ev.items) ? ev.items : []
           renderQueueDock()
+        }
+      }
+      else if (ev.type === 'compact-state') {
+        // 2026-09-04 压缩实时态（queue-state 同款链）：CLI onCompactProgress → 网关 SSE 群发。
+        // 压缩进行中 jsonl 零写入 → SSE 'updated' 不来，本事件是「正在压缩」唯一实时源。
+        // Map 按会话 uuid 存到达时刻（render 侧 5min TTL 防 compact_end 丢失后卡死），结束即删。
+        if (typeof ev.session === 'string') {
+          if (ev.active) live.compactFlags.set(ev.session, Date.now())
+          else live.compactFlags.delete(ev.session)
+          if (ev.session === live.curUuid) refreshSession()
         }
       }
       else if (ev.type === 'updated') {
@@ -996,13 +1006,15 @@
   // 【思考/压缩态】尾动作为思考间隙/压缩标记时，「末尾工具组的折叠行 label 原位替换」为
   // 『正在思考』/『正在压缩会话中……』（带 data-ts 起点，bindLiveFoldTimer 每秒补「· Ns」，
   // 对齐 CLI spinner 计时；新一轮工具开始后恢复「正在运行：Y」——与工具调用等权轮转）。
-  // 仅纯空窗（items 无任何可见步骤，如刚发消息 CLI 首段思考）才退化为折叠体内独立状态行兜底。
-  // 思考永不独立成行（if (it.kind === 'think') continue）：有尾工具组=label 原位替换，纯空窗=兜底行。
+  // 仅纯空窗（items 无任何可见步骤，如刚发消息 CLI 首段思考）或尾项非工具组（提问卡已答/旁白，
+  // 2026-09-04 挤占根修：提问后压缩实测状态行被丢弃）才退化为折叠体内独立状态行兜底。
+  // 思考永不独立成行（if (it.kind === 'think') continue）：有尾工具组=label 原位替换，其余=兜底行。
   // 2026-08-30 随 groupTools 一并从 182358 取回。引导气泡（kind 'guide'）按非 tool 项原样穿插，
   // 打断工具组时组照常收口（状态只在真正的尾组上亮）。
   function liveFoldBody(items, vacuumState, vacuumStart) {
     let html = ''
     let tools = []
+    let stateShown = false
     const stateLabel = (st) => {
       const verb = st === 'compact' ? '正在压缩会话中……' : '正在思考'
       const attr = vacuumStart ? ` data-ts="${vacuumStart}" data-mode="${st}"` : ''
@@ -1017,6 +1029,7 @@
         html += `<details class="tool-fold"><summary><span class="tool-line tool-running"><span class="t-ico">${toolIcon(cur.name)}</span><span class="tl-text">正在运行：${esc(cur.zh)}${cur.detail ? ' · ' + esc(cur.detail) : ''}</span></span></summary><div class="tool-fold-body">${rows}</div></details>`
       } else if (tailState) {
         // 尾组全部完成 + 真空期（思考/压缩）→ 复用此折叠行的 label 原位替换为状态闪烁文本（保扫光/可展开明细）
+        stateShown = true
         html += `<details class="tool-fold"><summary><span class="tool-line tool-running"><span class="t-ico">${THINK_ICON}</span><span class="tl-text">${stateLabel(tailState)}</span></span></summary><div class="tool-fold-body">${rows}</div></details>`
       } else {
         html += `<details class="tool-fold"><summary><span class="tf-label">${esc(toolFoldLabel(tools))}</span></summary><div class="tool-fold-body">${rows}</div></details>`
@@ -1032,9 +1045,10 @@
       html += it.html
     }
     flushTools(vacuumState || null) // 循环结束后仍挂着的尾组才可能进入思考/压缩态
-    // 纯空窗兜底：没有任何可见输出（无工具组/旁白，items 至多为被抑制的 think 占位）
-    // → 折叠体内独立状态行。真实场景：CLI 高 effort 思考期 web 段内原本全空白。
-    if (vacuumState && !html) html = stateLabel(vacuumState)
+    // 状态行兜底（2026-09-04 挤占根修）：尾项非工具组（提问卡已答/旁白——flushTools 无料可挂，
+    // 原 `!html` 纯空窗判定也救不了，提问后压缩实测全程无提示）→ 状态行独立追加折叠体末尾，
+    // 与原纯空窗同形态（同 blink/计时：bindLiveFoldTimer 按 .think-state[data-ts] 通配，无需接线）。
+    if (vacuumState && !stateShown) html += stateLabel(vacuumState)
     return html
   }
   // 当前正在运行的工具步（实时段专用）：复用原灰色工具行（tool-line）的 inline 形态，仅加 .tool-running
@@ -1439,9 +1453,13 @@
       // web 保持本次渲染的思考态直到落盘轮转（须有本兜底才不空白）。
       const busyOk = processing && !s.pendingTools.length
         && !(s.lastAsk && s.lastAsk.answer == null)
+      // 压缩实时态（2026-09-04 queue-state 同款链）：压缩进行中 jsonl 零写入（boundary+summary
+      // 同毫秒落盘于结束时刻）→ lastStep 停在 'result'，CLI onCompactProgress → 网关 compact-state
+      // SSE 到达即强制真空态 compact（TTL 5min 防 compact_end 丢失卡死）；结束回退 lastStep 逻辑。
+      const cfTs = live.compactFlags.get(live.curUuid)
       let vacuumState = null
       if (busyOk) {
-        if (s.lastStep === 'compact') vacuumState = 'compact'
+        if (s.lastStep === 'compact' || (cfTs && Date.now() - cfTs < 300000)) vacuumState = 'compact'
         else if (!s.lastStep || s.lastStep === 'result' || s.lastStep === 'thinking') vacuumState = 'think'
       }
       // 思考/压缩态计时起点：段内最后一条落盘记录的时刻（真空期从那时开始）；尚无记录退回段 user 时间

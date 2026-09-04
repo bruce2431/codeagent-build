@@ -3118,6 +3118,7 @@ export function startLocalGateway(opts?: { host?: string; port?: number; token?:
             blockedPath?: string
             response?: unknown
             items?: unknown
+            active?: unknown
           }
           try {
             m = JSON.parse(data.toString())
@@ -3141,6 +3142,14 @@ export function startLocalGateway(opts?: { host?: string; port?: number; token?:
             sessionQueues.set(sid, { items, updatedAt: Date.now() })
             sweepStaleMaps()
             const s = `data: ${JSON.stringify({ type: 'queue-state', session: sid, items })}\n\n`
+            sendAll(sseClients, (c) => { c.res.write(s) })
+            return
+          }
+          // 2026-09-04 压缩实时态：CLI onCompactProgress → /clients WS {type:'compact-state', active}
+          // → SSE 群发（无状态转发，web 自持 per-session 标记）。压缩进行中 jsonl 零写入（boundary+
+          // summary 同毫秒落盘于结束时刻），SSE 'updated' 不会来——本事件是 web「正在压缩」唯一实时源。
+          if (m.type === 'compact-state') {
+            const s = `data: ${JSON.stringify({ type: 'compact-state', session: sid, active: m.active === true })}\n\n`
             sendAll(sseClients, (c) => { c.res.write(s) })
             return
           }

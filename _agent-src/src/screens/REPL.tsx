@@ -2599,11 +2599,15 @@ export function REPL({
             break;
           case 'compact_start':
             setSpinnerMessage('Compacting conversation');
+            // 2026-09-04 压缩实时态：同步上报网关 → SSE 群发 → web「正在压缩会话中……」
+            // （压缩进行中 jsonl 零写入，网关 compact-state 是 web 唯一实时信号源）
+            void import('../utils/gatewayClient.js').then(m => m.notifyCompactProgress(true));
             break;
           case 'compact_end':
             setSpinnerMessage(null);
             setSpinnerColor(null);
             setSpinnerShimmerColor(null);
+            void import('../utils/gatewayClient.js').then(m => m.notifyCompactProgress(false));
             break;
         }
       },

@@ -34,7 +34,7 @@
 
 - `.claude/` 内部：
   - `skills/` — 纯 skill（json-canvas / officecli / wetrace-wechat-tool）
-  - `plugins/` — 插件（neturon / codegraph）
+  - `plugins/` — 插件（agent-browser / codegraph）
   - `plugins/` 下 `marketplaces/`、`data/`、`known_marketplaces.json` 是**系统管理目录，勿动**；缓存清理只动 `cache/` 三层，不碰插件目录
   - `projects/` — 旧版全局自动记忆桶（2026-08-11 起自动记忆改项目级，遗留桶不再读写），App 管理
   - `sessions/`、`history.jsonl` — 旧版会话存储，App 管理（新会话写入项目 `.claude/projects/*.jsonl` 平铺目录）
@@ -153,7 +153,7 @@ description: <何时用/怎么用，一句话，供 Skill 工具自动命中>
 - `.mcp.json` 用 `${CLAUDE_PLUGIN_ROOT}` 指向插件根定位脚本（相对路径，便携）。
 
 ### 5.7 现状清单
-- `neturon/`（name=`neturon-rag`）— RAG 引擎：`mcp/` 引擎 + `brain/` 活数据 + `Neturon-Template/` 模板 + `docs/`
+- ~~`neturon/`~~（已移除，2026-09-04 核实不存在）— neturon-rag RAG 插件（MCP 形态 `rag_search`/`rag_cog_context`/`rag_fill_precog`/`rag_source`/`rag_should_search`）。已被 Pj16 TS 内置版取代：引擎重写为纯进程内置工具 `_agent-src/src/tools/neturon/`（15 件，NEURON_RAG 门控），插件随之退役。**数据根 `@WrokSpace/.claude/neturon/` 不动**（neurons/ 记忆库 + cache/models 模型，TS 版原样续用）；`engine/` Python 引擎已随之归档 `.trash/2026-09-04/engine/`（用户定案不留兜底，出问题直接报错；neurons/ 记忆库与 cache/models 留原位供 TS 版使用）。
 - `codegraph/`（name=`codegraph`）— 代码知识图谱 MCP，索引 `Pj16-CodeAgent构建/_agent-src/src/.codegraph/`
 - ~~`qwen-mm/`~~（已移除 2026-08-24 → `.trash/2026-08-24/qwen-mm/`）— Qwen-MM-Plugins 便携版（2026-08-14）：core（本地多模态读取/可视化 MCP + skill）+ api（云端 Qwen VL/Omni/ASR，需 DashScope key）。引擎 `src/`（精简 pyproject：core viz 全依赖 + api 依赖并入 `[project].dependencies`，entry `qwen-mm-plugins-core`/`qwen-mm-plugins-api`）+ `skills/qwen-mm-plugins-core/`、`skills/qwen-mm-plugins-api/` + `config/config` 活数据。`.mcp.json` 两个 server，均 `uvx --from ${CLAUDE_PLUGIN_ROOT}`（本地构建，不联网）：`qwen-mm-plugins-core` / `qwen-mm-plugins-api`，env `PYTHONUTF8=1`（防 Windows GBK `UnicodeEncodeError`）+ `QWEN_MM_CONFIG_DIR=${CLAUDE_PLUGIN_ROOT}/config`（便携）。config 写 `DASHSCOPE_API_KEY` + `DASHSCOPE_BASE_URL`（用户百炼专属网关 `…maas.aliyuncs.com/compatible-mode/v1`，可覆盖默认 dashscope 地址）。MCP 工具命名空间 `mcp__plugin_qwen-mm_qwen-mm-plugins-core__*` / `mcp__plugin_qwen-mm_qwen-mm-plugins-api__*`。移除原因：用户主动移除视觉插件；config 内 `DASHSCOPE_API_KEY` 已随目录进 `.trash` 未删除。MCP 工具下次重启会话后消失。
 - ~~`telemetry-monitor/`~~（已移除 2026-08-14 → `.trash/2026-08-14/telemetry-monitor/`）：会话遥测 MCP（notify_progress 推飞书 / get_session_status 读会话摘要）。`get_session_status` 用的旧桶 glob（`projects/*/*.jsonl`）与平铺会话存储不兼容已失效，功能被 SubPj1/SubPj2 `/gateway/sessions` 覆盖；`notify_progress` 飞书推送能力随 SubPj2 网关接管。MCP 工具下次重启会话后消失。
@@ -169,6 +169,7 @@ description: <何时用/怎么用，一句话，供 Skill 工具自动命中>
 
 ## 7. 记忆 / RAG 标准（neturon）
 
+- **TS 内置化进行时（2026-09-03/09-04）**：引擎已重写为纯进程内置工具 `_agent-src/src/tools/neturon/`（15 件：config/serialize/npyio/embedder/segment/retriever/memwriter/precog/usageHint/recall/remember/leiden/coggraph/roster/index），`feature('NEURON_RAG')` 门控**默认关**。工具 = `neuron_recall` / `neuron_remember` / `neuron_list` / `neuron_source` / `neuron_fill_precog` / `neuron_cog`（build_graph / detect_communities）。双引擎对照 114/114 全绿。**两个 Python quirk 保真勿「修正」**：`partition.q` = igraph VertexClustering.q 无权 γ=1 模块度（加权 Q 以 `q_weighted` 随工具返回）、fold 路径 `merged_from` 恒空（仅 phase1 全量归并写入）。neturon-rag 插件**已移除**（2026-09-04，见 §5.7）——下方 MCP 时代流程描述仅作数据格式/管线语义参考。待重建 NEURON_RAG exe（`cd _agent-src && bun run ./scripts/build.ts --dev --feature=NEURON_RAG`）实测 p5/p6（`neuron_cog`），通过后定案 NEURON_RAG 转默认开。定案全文 → 项目根 `20260829142535-神经元内置架构定案.md`（v2.2）。
 - **三层管线**：`l3.raw`（脚本/工具全文）→ `l2.mem`（记忆片段，blocks[0] 必须是原始 query）→ `l1.cog`（概念/社群/precog）。
 - **写记忆**：脚本/工具全文存 `l3.raw/`，`core_file` 只存**相对路径**引用；同一源不重复记录（复用同一源）。
 - **检索（双检索）**：`rag_search` 查 mem（唯一写 precog）+ `rag_cog_context` 全查五层（概念/社群/precog节点/聚合节点/mem）。
@@ -229,7 +230,7 @@ description: <何时用/怎么用，一句话，供 Skill 工具自动命中>
 ## 12. 常见坑速查
 
 - **`.claude/.claude-portable` / `.claude/` 挪走** → exe 副本向上找不到标记 → 配置掉回 `~/.claude`，插件/记忆/凭证全失效。
-- **exe 副本放进带配置根标记的项目 `.claude/`**（含 `.claude.json`/`settings.json`/`plugins`/`skills` 等）→ 配置根判定第 2 步静默切到项目本地，插件/记忆/凭证全失效（Pj2 已踩坑，见记忆 portable_config_behavior）。**只有 `projects/` 的目录不算配置根**。
+- **exe 副本放进带配置根标记的项目 `.claude/`**（含 `.claude.json`/`settings.json`/`plugins`/`skills` 等）→ 配置根判定第 2 步静默切到项目本地，插件/记忆/凭证全失效（Pj2 已踩坑，见记忆 portable_config_behavior）。**只有 `projects/` 的目录不算配置根**。Pj16 现状（2026-09-04 核实）：`Pj16-CodeAgent构建/.claude/` 自带 `settings.json`（08-12 会话权限）标记位本就命中，但本机 `CLAUDE_CONFIG_DIR` 已设 **HKCU 用户级**恒指 `@WrokSpace/.claude`（envUtils.ts 第 1 步 env 永远赢）→ 邻接判定永不生效，项目级 skill（archify）/`preview/` 可安全存放；仅无该 env 的拷 exe 部署场景按本条处理。
 - **会话/自动记忆项目级、平铺**（2026-08-11 起，不再按启动目录分 `<sanitized>` 桶）：会话写入 `<项目>/.claude/projects/*.jsonl`，自动记忆写入 `<项目>/.claude/projects/memory/`，均随项目打包归档不丢失。跨项目会话列表用逐级向上扫描。
 - **项目级 `.claude/` 启动不自动建** → 只在首次写项目设置（`/permissions`、`/config`、MCP 审批、插件装项目 scope）才惰性创建；要手动放 `CLAUDE.md` 或空 `settings.json`。
 - **settings.json hooks 用 CWD 相对路径**（`.claude/...`）→ 在 `@WrokSpace\[项目]\` 等子目录会话里 `recall_hook.py`/`statusline.mjs` 静默跳过（RAG 自动触发失效），只在 `@WrokSpace` 根目录跑才命中。
